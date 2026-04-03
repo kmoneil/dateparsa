@@ -28,6 +28,9 @@ const (
 	TokMidnight                  // "midnight"
 	TokAMPM                      // "am", "pm"
 	TokTime                      // Inline time: "5pm", "14:00", "5:30pm"
+	TokHalf                      // "half" (halves the next unit)
+	TokTimeOfDay                 // "morning", "afternoon", "evening", "night"
+	TokAnd                       // "and" (for compound durations)
 	TokUnknown                   // Anything else
 )
 
@@ -59,6 +62,7 @@ const (
 	RelToday
 	RelYesterday
 	RelTomorrow
+	RelTonight
 )
 
 // Unit represents a time unit.
@@ -395,17 +399,84 @@ func classifyWord(word string, pos int) Token {
 		tok.Kind = TokAMPM
 		tok.AMPM = 2
 
+	// Time-of-day words
+	case "morning":
+		tok.Kind = TokTimeOfDay
+		tok.Hour = 8
+	case "afternoon":
+		tok.Kind = TokTimeOfDay
+		tok.Hour = 14
+	case "evening":
+		tok.Kind = TokTimeOfDay
+		tok.Hour = 18
+	case "night":
+		tok.Kind = TokTimeOfDay
+		tok.Hour = 21
+	case "tonight":
+		tok.Kind = TokRelWord
+		tok.RelVal = RelTonight
+
+	// "half" quantifier
+	case "half":
+		tok.Kind = TokHalf
+
+	// Compound duration conjunction
+	case "and":
+		tok.Kind = TokAnd
+
 	default:
 		// Check for "a" as a number (e.g., "a week ago" = "1 week ago").
 		if word == "a" || word == "an" {
 			tok.Kind = TokNumber
 			tok.IntVal = 1
+		} else if n, ok := wordToNumber(word); ok {
+			tok.Kind = TokNumber
+			tok.IntVal = n
 		} else {
 			tok.Kind = TokUnknown
 		}
 	}
 
 	return tok
+}
+
+// wordToNumber maps written-out number words and special quantifiers to integers.
+func wordToNumber(word string) (int, bool) {
+	switch word {
+	case "one":
+		return 1, true
+	case "two":
+		return 2, true
+	case "three":
+		return 3, true
+	case "four":
+		return 4, true
+	case "five":
+		return 5, true
+	case "six":
+		return 6, true
+	case "seven":
+		return 7, true
+	case "eight":
+		return 8, true
+	case "nine":
+		return 9, true
+	case "ten":
+		return 10, true
+	case "eleven":
+		return 11, true
+	case "twelve":
+		return 12, true
+	case "fifteen":
+		return 15, true
+	case "twenty":
+		return 20, true
+	case "thirty":
+		return 30, true
+	case "few":
+		return 3, true
+	}
+	return 0, false
 }
 
 func isAlpha(c byte) bool {
@@ -461,6 +532,16 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 		}
 	}
 
+	// Add ASCII-folded variants for accented phrases.
+	var extras []localeWord
+	for _, w := range words {
+		folded := foldAccents(w.phrase)
+		if folded != w.phrase {
+			extras = append(extras, localeWord{folded, w.tok})
+		}
+	}
+	words = append(words, extras...)
+
 	// Sort by length descending so longer phrases match first.
 	for i := 0; i < len(words); i++ {
 		for j := i + 1; j < len(words); j++ {
@@ -480,9 +561,8 @@ func ScanLocale(s string, loc *locale.Data) []Token {
 	}
 
 	lower := strings.ToLower(s)
-	if len(lower) != len(s) {
-		return nil
-	}
+	// Fold accents for matching (e.g., "días" → "dias").
+	lower = foldAccents(lower)
 
 	words := buildLocaleWords(loc)
 	var tokens []Token
@@ -544,6 +624,48 @@ func isUnicodeWord(s string, pos int) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(s[pos:])
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// foldAccents strips common accented latin characters to their ASCII base.
+// This allows matching "dias" against "días", "Minuten" against "Minüten", etc.
+func foldAccents(s string) string {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		f := foldRune(r)
+		if f != r {
+			changed = true
+		}
+		b.WriteRune(f)
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
+}
+
+func foldRune(r rune) rune {
+	switch {
+	case r >= 'à' && r <= 'å':
+		return 'a'
+	case r == 'æ':
+		return 'a'
+	case r == 'ç':
+		return 'c'
+	case r >= 'è' && r <= 'ë':
+		return 'e'
+	case r >= 'ì' && r <= 'ï':
+		return 'i'
+	case r == 'ñ':
+		return 'n'
+	case r >= 'ò' && r <= 'ö':
+		return 'o'
+	case r >= 'ù' && r <= 'ü':
+		return 'u'
+	case r == 'ý' || r == 'ÿ':
+		return 'y'
+	}
+	return r
 }
 
 // prevCharPos returns the start position of the previous UTF-8 character.

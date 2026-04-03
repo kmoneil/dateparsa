@@ -37,17 +37,36 @@ func Eval(tokens []Token, base time.Time, preferFuture bool) *Result {
 		return nil
 	}
 
+	// Collapse consecutive TokNumber tokens: "a few" → [1, 3] → keep 3.
+	// When "a"/"an" (IntVal=1) precedes another number, drop the "a"/"an".
+	tokens = collapseNumbers(tokens)
+
 	// Try each pattern in priority order.
 	if r := evalRelWord(tokens, base); r != nil {
 		return r
 	}
+	if r := evalTimeOfDay(tokens, base); r != nil {
+		return r
+	}
+	if r := evalHalf(tokens, base); r != nil {
+		return r
+	}
+	if r := evalCompoundNAgo(tokens, base); r != nil {
+		return r
+	}
 	if r := evalNAgo(tokens, base); r != nil {
+		return r
+	}
+	if r := evalPrefixAgo(tokens, base); r != nil {
 		return r
 	}
 	if r := evalInN(tokens, base); r != nil {
 		return r
 	}
 	if r := evalSelectorWeekday(tokens, base, preferFuture); r != nil {
+		return r
+	}
+	if r := evalMonthDay(tokens, base); r != nil {
 		return r
 	}
 	if r := evalSelectorMonth(tokens, base, preferFuture); r != nil {
@@ -57,6 +76,9 @@ func Eval(tokens []Token, base time.Time, preferFuture bool) *Result {
 		return r
 	}
 	if r := evalBoundary(tokens, base); r != nil {
+		return r
+	}
+	if r := evalBareWeekday(tokens, base, preferFuture); r != nil {
 		return r
 	}
 
@@ -83,6 +105,9 @@ func evalRelWord(tokens []Token, base time.Time) *Result {
 		kind = KindRelative
 	case RelTomorrow:
 		t = truncateDay(base).AddDate(0, 0, 1)
+		kind = KindRelative
+	case RelTonight:
+		t = truncateDay(base).Add(21 * time.Hour)
 		kind = KindRelative
 	default:
 		return nil
@@ -317,6 +342,219 @@ func applyTimeSuffix(tokens []Token, t time.Time) time.Time {
 	}
 
 	return t
+}
+
+// evalTimeOfDay handles "this morning", "this afternoon", "this evening",
+// "last night", and selector + time-of-day patterns.
+func evalTimeOfDay(tokens []Token, base time.Time) *Result {
+	// Pattern: SELECTOR TIMEOFDAY (e.g. "this morning", "last night")
+	if len(tokens) >= 2 && tokens[0].Kind == TokSelector && tokens[1].Kind == TokTimeOfDay {
+		day := truncateDay(base)
+		hour := tokens[1].Hour
+		if tokens[0].SelVal == SelLast {
+			day = day.AddDate(0, 0, -1)
+		}
+		t := day.Add(time.Duration(hour) * time.Hour)
+		return &Result{Time: t, Kind: KindRelative}
+	}
+
+	// Bare time-of-day word alone (unlikely in tests but for completeness).
+	if len(tokens) == 1 && tokens[0].Kind == TokTimeOfDay {
+		day := truncateDay(base)
+		t := day.Add(time.Duration(tokens[0].Hour) * time.Hour)
+		return &Result{Time: t, Kind: KindRelative}
+	}
+
+	return nil
+}
+
+// evalHalf handles "half an hour ago", "half a day ago".
+// Pattern: HALF NUMBER? UNIT DIRECTION
+func evalHalf(tokens []Token, base time.Time) *Result {
+	if len(tokens) < 3 || tokens[0].Kind != TokHalf {
+		return nil
+	}
+
+	idx := 1
+	// Skip optional "a"/"an" (TokNumber with IntVal=1)
+	if idx < len(tokens) && tokens[idx].Kind == TokNumber && tokens[idx].IntVal == 1 {
+		idx++
+	}
+	if idx >= len(tokens) || tokens[idx].Kind != TokUnit {
+		return nil
+	}
+	unit := tokens[idx].UnitVal
+	idx++
+	if idx >= len(tokens) || tokens[idx].Kind != TokDirection {
+		return nil
+	}
+	dir := tokens[idx].DirVal
+
+	// Compute half the unit duration.
+	var d time.Duration
+	switch unit {
+	case UnitMinute:
+		d = 30 * time.Second
+	case UnitHour:
+		d = 30 * time.Minute
+	case UnitDay:
+		d = 12 * time.Hour
+	case UnitWeek:
+		d = 84 * time.Hour // 3.5 days
+	default:
+		return nil
+	}
+
+	if dir == DirAgo {
+		d = -d
+	}
+
+	return &Result{Time: base.Add(d), Kind: KindRelative}
+}
+
+// evalCompoundNAgo handles compound durations like "1 hour and 3 minutes ago".
+// Pattern: (NUMBER UNIT AND)+ NUMBER UNIT DIRECTION
+// Also: DIRECTION(in) (NUMBER UNIT AND)+ NUMBER UNIT
+func evalCompoundNAgo(tokens []Token, base time.Time) *Result {
+	// Check prefix "in" form: IN (N UNIT AND)* N UNIT
+	startIdx := 0
+	prefixIn := false
+	if len(tokens) >= 5 && tokens[0].Kind == TokDirection && tokens[0].DirVal == DirIn {
+		startIdx = 1
+		prefixIn = true
+	}
+
+	// We need at least N UNIT AND N UNIT DIR (6 tokens from startIdx), or
+	// for prefix form: IN N UNIT AND N UNIT (6 tokens total).
+	remaining := tokens[startIdx:]
+	if len(remaining) < 5 {
+		return nil
+	}
+
+	// Collect N UNIT pairs separated by AND.
+	type pair struct {
+		n    int
+		unit Unit
+	}
+	var pairs []pair
+	i := 0
+	for {
+		if i+1 >= len(remaining) {
+			return nil
+		}
+		if remaining[i].Kind != TokNumber || remaining[i+1].Kind != TokUnit {
+			return nil
+		}
+		pairs = append(pairs, pair{remaining[i].IntVal, remaining[i+1].UnitVal})
+		i += 2
+
+		// Check for AND followed by more pairs.
+		if i < len(remaining) && remaining[i].Kind == TokAnd {
+			i++
+			continue
+		}
+		break
+	}
+
+	if len(pairs) < 2 {
+		return nil // Not a compound — let other handlers deal with it.
+	}
+
+	// Determine direction.
+	dir := DirFromNow
+	if prefixIn {
+		dir = DirIn
+	} else {
+		if i >= len(remaining) || remaining[i].Kind != TokDirection {
+			return nil
+		}
+		dir = remaining[i].DirVal
+	}
+
+	// Accumulate duration.
+	t := base
+	for _, p := range pairs {
+		n := p.n
+		if dir == DirAgo {
+			n = -n
+		}
+		t = addUnit(t, n, p.unit)
+	}
+
+	return &Result{Time: t, Kind: KindRelative}
+}
+
+// evalPrefixAgo handles prefix-ago patterns used in French/Spanish/German:
+// DIRECTION(ago) NUMBER UNIT → "il y a 2 heures", "hace 3 dias", "vor 5 Minuten"
+func evalPrefixAgo(tokens []Token, base time.Time) *Result {
+	if len(tokens) < 3 {
+		return nil
+	}
+	if tokens[0].Kind != TokDirection || tokens[0].DirVal != DirAgo {
+		return nil
+	}
+	if tokens[1].Kind != TokNumber || tokens[2].Kind != TokUnit {
+		return nil
+	}
+
+	n := -tokens[1].IntVal
+	unit := tokens[2].UnitVal
+	t := addUnit(base, n, unit)
+	return &Result{Time: t, Kind: KindRelative}
+}
+
+// evalMonthDay handles "december 25th", "november 1st", optionally with "at TIME".
+// Pattern: MONTH NUMBER [AT TIME]
+func evalMonthDay(tokens []Token, base time.Time) *Result {
+	if len(tokens) < 2 {
+		return nil
+	}
+	if tokens[0].Kind != TokMonth || tokens[1].Kind != TokNumber {
+		return nil
+	}
+
+	month := time.Month(tokens[0].MonVal)
+	day := tokens[1].IntVal
+	if day < 1 || day > 31 {
+		return nil
+	}
+
+	t := time.Date(base.Year(), month, day, 0, 0, 0, 0, base.Location())
+	t = applyTimeSuffix(tokens[2:], t)
+
+	return &Result{Time: t, Kind: KindRelative}
+}
+
+// evalBareWeekday handles a bare weekday name like "sunday" with no selector.
+// Defaults to most recent past occurrence, or next future if preferFuture.
+func evalBareWeekday(tokens []Token, base time.Time, preferFuture bool) *Result {
+	if len(tokens) != 1 || tokens[0].Kind != TokWeekday {
+		return nil
+	}
+
+	sel := SelLast
+	if preferFuture {
+		sel = SelNext
+	}
+
+	targetWday := time.Weekday(tokens[0].WdayVal)
+	t := resolveWeekday(base, targetWday, sel, preferFuture)
+	return &Result{Time: t, Kind: KindRelative}
+}
+
+// collapseNumbers removes redundant "a"/"an" (IntVal=1) tokens when
+// they immediately precede another TokNumber (e.g., "a few" → keep "few").
+func collapseNumbers(tokens []Token) []Token {
+	result := make([]Token, 0, len(tokens))
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i].Kind == TokNumber && tokens[i].IntVal == 1 &&
+			(tokens[i].Raw == "a" || tokens[i].Raw == "an") &&
+			i+1 < len(tokens) && tokens[i+1].Kind == TokNumber {
+			continue // skip "a"/"an" before another number
+		}
+		result = append(result, tokens[i])
+	}
+	return result
 }
 
 // --- Time arithmetic helpers ---

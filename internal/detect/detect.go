@@ -37,6 +37,11 @@ func Detect(s string, cfg Config) (Result, bool) {
 		return r, true
 	}
 
+	// Step 1b: Try CJK ideographic dates before textual month (年月日).
+	if r, ok := detectCJKDate(s); ok {
+		return r, true
+	}
+
 	// Step 2: Try textual month formats if the string contains letters.
 	if hasLetter(s) {
 		if result, ok := detectTextualMonth(s, cfg); ok {
@@ -50,6 +55,18 @@ func Detect(s string, cfg Config) (Result, bool) {
 	if entry == nil {
 		// Step 3b: Try variable-width numeric formats (e.g. 3/15/2024, 3/15/24).
 		if r, ok := detectVariableNumeric(s, cfg); ok {
+			return r, true
+		}
+		// Step 3c: Try Go time.String() output and other complex formats.
+		if r, ok := detectGoTimeString(s); ok {
+			return r, true
+		}
+		// Step 3d: Try date + tz offset without time (e.g. 2020-07-20+08:00).
+		if r, ok := detectDatePlusTZ(s); ok {
+			return r, true
+		}
+		// Step 3e: Try CJK ideographic dates (e.g. 2014年04月08日).
+		if r, ok := detectCJKDate(s); ok {
 			return r, true
 		}
 		return Result{}, false
@@ -75,6 +92,157 @@ func Detect(s string, cfg Config) (Result, bool) {
 
 // resolveAmbiguous handles DD/DD/DDDD type signatures where the format
 // could be MM/DD/YYYY or DD/MM/YYYY.
+// detectGoTimeString handles Go's time.Time.String() output:
+// "2012-08-03 18:31:59.257000000 +0000 UTC"
+// "2015-02-08 03:02:00 +0300 MSK"
+// Pattern: YYYY-MM-DD HH:MM:SS[.nnnnnnnnn] +HHMM [TZName]
+func detectGoTimeString(s string) (Result, bool) {
+	n := len(s)
+	// Minimum: "YYYY-MM-DD HH:MM:SS +HHMM" = 25 chars
+	if n < 25 {
+		return Result{}, false
+	}
+	// Must start with YYYY-MM-DD HH:MM:SS pattern.
+	if !(isDigit(s[0]) && s[4] == '-' && s[7] == '-' && s[10] == ' ' &&
+		s[13] == ':' && s[16] == ':') {
+		return Result{}, false
+	}
+
+	fields := make([]compile.Field, 0, 10)
+	fields = append(fields,
+		compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+		compile.Field{Kind: compile.FMonth2, Offset: 5, Len: 2},
+		compile.Field{Kind: compile.FDay2, Offset: 8, Len: 2},
+		compile.Field{Kind: compile.FHour24, Offset: 11, Len: 2},
+		compile.Field{Kind: compile.FMinute2, Offset: 14, Len: 2},
+		compile.Field{Kind: compile.FSecond2, Offset: 17, Len: 2},
+	)
+
+	pos := 19
+	// Optional fractional seconds.
+	if pos < n && s[pos] == '.' {
+		fracStart := pos + 1
+		fracEnd := fracStart
+		for fracEnd < n && isDigit(s[fracEnd]) {
+			fracEnd++
+		}
+		if fracEnd > fracStart {
+			fields = append(fields, compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracEnd - fracStart})
+			pos = fracEnd
+		}
+	}
+
+	// Skip space.
+	if pos < n && s[pos] == ' ' {
+		pos++
+	}
+
+	// Timezone offset: +HHMM or +HH:MM
+	if pos < n && (s[pos] == '+' || s[pos] == '-') {
+		tzStart := pos
+		pos++
+		// Count digits and optional colon.
+		digits := 0
+		for pos < n && (isDigit(s[pos]) || s[pos] == ':') {
+			pos++
+			digits++
+		}
+		if digits >= 4 {
+			fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: tzStart, Len: pos - tzStart})
+		}
+	}
+
+	// Skip space and optional timezone name (UTC, MSK, etc.).
+	if pos < n && s[pos] == ' ' {
+		pos++
+	}
+	// Skip timezone name and any trailing content (e.g. "m=+0.000000001").
+	// We don't need to parse it — the offset is sufficient.
+
+	def := &compile.FormatDef{Name: "GO_TIME_STRING", Fields: fields}
+	return Result{Def: def}, true
+}
+
+// detectDatePlusTZ handles date + timezone offset without time:
+// "2020-07-20+08:00"
+func detectDatePlusTZ(s string) (Result, bool) {
+	n := len(s)
+	if n < 15 || n > 16 {
+		return Result{}, false
+	}
+	// Must be YYYY-MM-DD±HH:MM
+	if !(isDigit(s[0]) && s[4] == '-' && isDigit(s[5]) && s[7] == '-' && isDigit(s[8])) {
+		return Result{}, false
+	}
+	if s[10] != '+' && s[10] != '-' {
+		return Result{}, false
+	}
+
+	tzLen := n - 10
+	fields := []compile.Field{
+		{Kind: compile.FYear4, Offset: 0, Len: 4},
+		{Kind: compile.FMonth2, Offset: 5, Len: 2},
+		{Kind: compile.FDay2, Offset: 8, Len: 2},
+		{Kind: compile.FTZOffset, Offset: 10, Len: tzLen},
+	}
+	def := &compile.FormatDef{Name: "ISO_DATE_TZ", Fields: fields}
+	return Result{Def: def}, true
+}
+
+// detectCJKDate handles dates with CJK ideographic characters:
+// "2014年04月08日" (year年month月day日)
+func detectCJKDate(s string) (Result, bool) {
+	// Look for 年 (U+5E74), 月 (U+6708), 日 (U+65E5)
+	// In UTF-8: 年=E5B9B4, 月=E69C88, 日=E697A5
+	yearIdx := strings.Index(s, "年")
+	monthIdx := strings.Index(s, "月")
+	dayIdx := strings.Index(s, "日")
+
+	if yearIdx < 0 || monthIdx < 0 || dayIdx < 0 {
+		return Result{}, false
+	}
+	if yearIdx >= monthIdx || monthIdx >= dayIdx {
+		return Result{}, false
+	}
+
+	// Extract year (digits before 年).
+	yearStr := s[:yearIdx]
+	if len(yearStr) != 4 {
+		return Result{}, false
+	}
+
+	// Extract month (digits between 年 and 月).
+	monStr := s[yearIdx+len("年") : monthIdx]
+	// Extract day (digits between 月 and 日).
+	dayStr := s[monthIdx+len("月") : dayIdx]
+
+	// Validate they're all digits.
+	for _, c := range []byte(yearStr) {
+		if !isDigit(c) {
+			return Result{}, false
+		}
+	}
+	for _, c := range []byte(monStr) {
+		if !isDigit(c) {
+			return Result{}, false
+		}
+	}
+	for _, c := range []byte(dayStr) {
+		if !isDigit(c) {
+			return Result{}, false
+		}
+	}
+
+	// Build fields using byte offsets.
+	fields := []compile.Field{
+		{Kind: compile.FYear4, Offset: 0, Len: len(yearStr)},
+		{Kind: compile.FMonth1or2, Offset: yearIdx + len("年"), Len: len(monStr)},
+		{Kind: compile.FDay1or2, Offset: monthIdx + len("月"), Len: len(dayStr)},
+	}
+	def := &compile.FormatDef{Name: "CJK_DATE", Fields: fields}
+	return Result{Def: def}, true
+}
+
 // detectVariableNumeric handles numeric dates with variable-width fields:
 // "3/15/2024", "3/15/24", "3/15/2024 10:30:00 AM", etc.
 // Recognizes patterns of 2-3 numeric parts separated by / or -.
@@ -398,6 +566,14 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	before := strings.TrimSpace(s[:monthStart])
 	after := strings.TrimSpace(s[monthEnd:])
 
+	// If the after-month portion contains " at " (NL time indicator like
+	// "december 25th at 5pm") and there's no explicit 4-digit year, bail
+	// so the NL parser can handle it properly.
+	afterLower := strings.ToLower(after)
+	if strings.Contains(afterLower, " at ") && !hasFourDigitYear(after) {
+		return Result{}, false
+	}
+
 	// Handle "March 15, 2024" or "Mar 15, 2024"
 	// after = "15, 2024"
 	// Handle "15 March 2024" or "15 Mar 2024"
@@ -417,7 +593,18 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// Parse numbers from before and after the month name.
 	beforeNums := extractNumbers(before)
 	afterStr := strings.TrimLeft(after, ", ")
-	afterNums := extractNumbers(afterStr)
+	// Stop at "at" only when it would misinterpret a bare time number as year.
+	// e.g. "25th at 5pm" → trim to "25th" (1 number, no year).
+	// But NOT "17, 2012 at 10:09am" → keep as "17, 2012 at 10:09am" (has year).
+	afterForNums := afterStr
+	if atIdx := strings.Index(strings.ToLower(afterStr), " at "); atIdx >= 0 {
+		textBeforeAt := afterStr[:atIdx]
+		numsBeforeAt := extractNumbers(textBeforeAt)
+		if len(numsBeforeAt) <= 1 || !hasFourDigitYear(textBeforeAt) {
+			afterForNums = afterStr[:atIdx]
+		}
+	}
+	afterNums := extractNumbers(afterForNums)
 
 	var day, year int
 
@@ -949,6 +1136,25 @@ func extractNumbers(s string) []int {
 		}
 	}
 	return nums
+}
+
+// hasFourDigitYear checks if a string contains a 4-digit number (likely a year).
+func hasFourDigitYear(s string) bool {
+	i := 0
+	for i < len(s) {
+		if s[i] >= '0' && s[i] <= '9' {
+			start := i
+			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+				i++
+			}
+			if i-start == 4 {
+				return true
+			}
+		} else {
+			i++
+		}
+	}
+	return false
 }
 
 func findSep(s string) int {

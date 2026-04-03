@@ -42,7 +42,7 @@ func tryParse(tokens []Token, cfg Config) *Result {
 	for _, t := range tokens {
 		switch t.Kind {
 		case TokRelWord, TokDirection, TokSelector, TokWeekday,
-			TokBoundary, TokNoon, TokMidnight, TokUnit:
+			TokBoundary, TokNoon, TokMidnight, TokUnit, TokHalf, TokTimeOfDay, TokMonth:
 			hasMeaningful = true
 		}
 	}

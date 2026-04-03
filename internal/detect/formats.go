@@ -420,6 +420,175 @@ func phase2Formats() []formatEntry {
 				{Kind: compile.FTZOffset, Offset: 23, Len: 6},
 			},
 		},
+
+		// === SQL datetime with comma fractional (Java/log4j) ===
+
+		// 2014-05-11 08:20:13,787 (23 chars, comma = fractional separator)
+		// sig: DDDDSDDSDDWDDCDDCDDXDDD (comma maps to X/special)
+		{
+			name: "SQL_DATETIME_COMMA_FRAC3",
+			sig:  sig("DDDDSDDSDDWDDCDDCDDXDDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+				{Kind: compile.FLiteral, Offset: 7, Len: 1},
+				{Kind: compile.FDay2, Offset: 8, Len: 2},
+				{Kind: compile.FLiteral, Offset: 10, Len: 1},
+				{Kind: compile.FHour24, Offset: 11, Len: 2},
+				{Kind: compile.FLiteral, Offset: 13, Len: 1},
+				{Kind: compile.FMinute2, Offset: 14, Len: 2},
+				{Kind: compile.FLiteral, Offset: 16, Len: 1},
+				{Kind: compile.FSecond2, Offset: 17, Len: 2},
+				{Kind: compile.FLiteral, Offset: 19, Len: 1}, // comma
+				{Kind: compile.FFracSec, Offset: 20, Len: 3},
+			},
+		},
+
+		// === ISO 8601 partial dates ===
+
+		// 2014-04 (year-month, 7 chars)
+		{
+			name: "ISO_YEAR_MONTH",
+			sig:  sig("DDDDSDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+			},
+		},
+		// 2014 (bare year, 4 digits)
+		{
+			name: "BARE_YEAR",
+			sig:  sig("DDDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+			},
+		},
+
+		// === SQL datetime with timezone name ===
+
+		// 2014-12-16 06:20:00 UTC (23 chars)
+		{
+			name: "SQL_DATETIME_TZ_NAME",
+			sig:  sig("DDDDSDDSDDWDDCDDCDDWLLL"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+				{Kind: compile.FLiteral, Offset: 7, Len: 1},
+				{Kind: compile.FDay2, Offset: 8, Len: 2},
+				{Kind: compile.FLiteral, Offset: 10, Len: 1},
+				{Kind: compile.FHour24, Offset: 11, Len: 2},
+				{Kind: compile.FLiteral, Offset: 13, Len: 1},
+				{Kind: compile.FMinute2, Offset: 14, Len: 2},
+				{Kind: compile.FLiteral, Offset: 16, Len: 1},
+				{Kind: compile.FSecond2, Offset: 17, Len: 2},
+				{Kind: compile.FLiteral, Offset: 18, Len: 1},
+				{Kind: compile.FTZName, Offset: 20, Len: 3},
+			},
+		},
+
+		// === SQL datetime with AM/PM ===
+
+		// 2014-04-26 05:24:37 PM (22 chars)
+		{
+			name: "SQL_DATETIME_AMPM",
+			sig:  sig("DDDDSDDSDDWDDCDDCDDWLL"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+				{Kind: compile.FLiteral, Offset: 7, Len: 1},
+				{Kind: compile.FDay2, Offset: 8, Len: 2},
+				{Kind: compile.FLiteral, Offset: 10, Len: 1},
+				{Kind: compile.FHour12, Offset: 11, Len: 2},
+				{Kind: compile.FLiteral, Offset: 13, Len: 1},
+				{Kind: compile.FMinute2, Offset: 14, Len: 2},
+				{Kind: compile.FLiteral, Offset: 16, Len: 1},
+				{Kind: compile.FSecond2, Offset: 17, Len: 2},
+				{Kind: compile.FLiteral, Offset: 19, Len: 1},
+				{Kind: compile.FAMPM, Offset: 20, Len: 2},
+			},
+		},
+
+		// === EXIF colon-separated dates ===
+
+		// 2014:03:31 (10 chars)
+		{
+			name: "EXIF_DATE",
+			sig:  sig("DDDDCDDCDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+				{Kind: compile.FLiteral, Offset: 7, Len: 1},
+				{Kind: compile.FDay2, Offset: 8, Len: 2},
+			},
+		},
+		// 2014:04:08 22:05 (16 chars)
+		{
+			name: "EXIF_DATETIME_HM",
+			sig:  sig("DDDDCDDCDDWDDCDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+				{Kind: compile.FLiteral, Offset: 7, Len: 1},
+				{Kind: compile.FDay2, Offset: 8, Len: 2},
+				{Kind: compile.FLiteral, Offset: 10, Len: 1},
+				{Kind: compile.FHour24, Offset: 11, Len: 2},
+				{Kind: compile.FLiteral, Offset: 13, Len: 1},
+				{Kind: compile.FMinute2, Offset: 14, Len: 2},
+			},
+		},
+		// 2014:04:08 22:05:13 (19 chars)
+		{
+			name: "EXIF_DATETIME_HMS",
+			sig:  sig("DDDDCDDCDDWDDCDDCDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear4, Offset: 0, Len: 4},
+				{Kind: compile.FLiteral, Offset: 4, Len: 1},
+				{Kind: compile.FMonth2, Offset: 5, Len: 2},
+				{Kind: compile.FLiteral, Offset: 7, Len: 1},
+				{Kind: compile.FDay2, Offset: 8, Len: 2},
+				{Kind: compile.FLiteral, Offset: 10, Len: 1},
+				{Kind: compile.FHour24, Offset: 11, Len: 2},
+				{Kind: compile.FLiteral, Offset: 13, Len: 1},
+				{Kind: compile.FMinute2, Offset: 14, Len: 2},
+				{Kind: compile.FLiteral, Offset: 16, Len: 1},
+				{Kind: compile.FSecond2, Offset: 17, Len: 2},
+			},
+		},
+
+		// === 6-digit YYMMDD compact ===
+
+		// 171113 (6 chars)
+		{
+			name: "COMPACT_YYMMDD",
+			sig:  sig("DDDDDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear2, Offset: 0, Len: 2},
+				{Kind: compile.FMonth2, Offset: 2, Len: 2},
+				{Kind: compile.FDay2, Offset: 4, Len: 2},
+			},
+		},
+		// 171113 14:14:20 (15 chars)
+		{
+			name: "COMPACT_YYMMDD_TIME",
+			sig:  sig("DDDDDDWDDCDDCDD"),
+			fields: []compile.Field{
+				{Kind: compile.FYear2, Offset: 0, Len: 2},
+				{Kind: compile.FMonth2, Offset: 2, Len: 2},
+				{Kind: compile.FDay2, Offset: 4, Len: 2},
+				{Kind: compile.FLiteral, Offset: 6, Len: 1},
+				{Kind: compile.FHour24, Offset: 7, Len: 2},
+				{Kind: compile.FLiteral, Offset: 9, Len: 1},
+				{Kind: compile.FMinute2, Offset: 10, Len: 2},
+				{Kind: compile.FLiteral, Offset: 12, Len: 1},
+				{Kind: compile.FSecond2, Offset: 13, Len: 2},
+			},
+		},
 	}
 }
 

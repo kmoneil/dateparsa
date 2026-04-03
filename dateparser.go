@@ -135,6 +135,15 @@ func ParseWith(s string, opts ...Option) (ParseResult, error) {
 		return ParseResult{}, &ParseError{Input: s, Message: err.Error()}
 	}
 
+	// If the detected format had no year, fill in the base year.
+	if t.Year() == 0 {
+		baseYear := cfg.baseTime.Year()
+		if baseYear == 0 {
+			baseYear = time.Now().Year()
+		}
+		t = time.Date(baseYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+	}
+
 	layout := &Layout{
 		program:  program,
 		goLayout: result.Def.GoLayout,

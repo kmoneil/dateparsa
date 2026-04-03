@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kmoneil/dateparsa/internal/compile"
+	"github.com/kmoneil/dateparsa/internal/locale"
 )
 
 // globalTrie is built once at init time.
@@ -25,20 +26,21 @@ type Config struct {
 	PreferDayFirst  bool
 	PreferYearFirst bool
 	Timezone        *time.Location
+	Locales         []*locale.Data // Locale data for month/day name lookup
 }
 
 // Detect analyzes a date string and returns the matching FormatDef.
-// Returns nil if no structured format matches.
-func Detect(s string, cfg Config) *Result {
+// Returns ok=false if no structured format matches.
+func Detect(s string, cfg Config) (Result, bool) {
 	// Step 1: Try special formats that contain letters but aren't textual months.
-	if r := detectISOWeekOrOrdinal(s); r != nil {
-		return r
+	if r, ok := detectISOWeekOrOrdinal(s); ok {
+		return r, true
 	}
 
 	// Step 2: Try textual month formats if the string contains letters.
 	if hasLetter(s) {
-		if result := detectTextualMonth(s, cfg); result != nil {
-			return result
+		if result, ok := detectTextualMonth(s, cfg); ok {
+			return result, true
 		}
 	}
 
@@ -46,7 +48,11 @@ func Detect(s string, cfg Config) *Result {
 	sig := Scan(s)
 	entry := globalTrie.lookup(&sig)
 	if entry == nil {
-		return nil
+		// Step 3b: Try variable-width numeric formats (e.g. 3/15/2024, 3/15/24).
+		if r, ok := detectVariableNumeric(s, cfg); ok {
+			return r, true
+		}
+		return Result{}, false
 	}
 
 	// Step 3: Handle ambiguous formats.
@@ -54,22 +60,114 @@ func Detect(s string, cfg Config) *Result {
 		return resolveAmbiguous(s, entry, cfg)
 	}
 
-	// Step 4: Build the FormatDef from the matched entry.
+	// Step 4: Return the pre-built FormatDef (zero allocation for trie-matched formats).
+	if entry.def != nil {
+		return Result{Def: entry.def}, true
+	}
+	// Fallback for entries without pre-built defs.
 	def := &compile.FormatDef{
 		Name:     entry.name,
 		GoLayout: entry.goLayout,
 		Fields:   entry.fields,
 	}
-	return &Result{Def: def}
+	return Result{Def: def}, true
 }
 
 // resolveAmbiguous handles DD/DD/DDDD type signatures where the format
 // could be MM/DD/YYYY or DD/MM/YYYY.
-func resolveAmbiguous(s string, entry *formatEntry, cfg Config) *Result {
+// detectVariableNumeric handles numeric dates with variable-width fields:
+// "3/15/2024", "3/15/24", "3/15/2024 10:30:00 AM", etc.
+// Recognizes patterns of 2-3 numeric parts separated by / or -.
+func detectVariableNumeric(s string, cfg Config) (Result, bool) {
+	if len(s) < 3 {
+		return Result{}, false
+	}
+
+	// Find the separator (must be / or -).
+	sepIdx := -1
+	for i := 0; i < len(s) && i < 4; i++ {
+		if s[i] == '/' || s[i] == '-' {
+			sepIdx = i
+			break
+		}
+	}
+	if sepIdx < 1 {
+		return Result{}, false
+	}
+	sep := s[sepIdx]
+
+	// Split the date portion (stop at space for compound formats).
+	dateEnd := len(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			dateEnd = i
+			break
+		}
+	}
+	datePart := s[:dateEnd]
+
+	parts := splitOnSep(datePart, sep)
+	if len(parts) < 2 || len(parts) > 3 {
+		return Result{}, false
+	}
+
+	// Validate all parts are numeric and reasonable length.
+	for _, p := range parts {
+		if len(p) == 0 || len(p) > 4 {
+			return Result{}, false
+		}
+		for j := 0; j < len(p); j++ {
+			if p[j] < '0' || p[j] > '9' {
+				return Result{}, false
+			}
+		}
+	}
+
+	// For 2-part dates, not a full date. Skip.
+	if len(parts) < 3 {
+		return Result{}, false
+	}
+
+	// Use resolveAmbiguous logic on the date portion.
+	// But first, verify this looks like a numeric date, not an ISO date
+	// (ISO dates are 4-digit year first with - separator, already handled by trie).
+	if sep == '-' && len(parts[0]) == 4 {
+		return Result{}, false // YYYY-MM-DD handled by trie
+	}
+
+	// Dot separator with 4-digit last part also handled by trie.
+	if sep == '.' {
+		return Result{}, false
+	}
+
+	// Build the result using resolveAmbiguous on the date portion.
+	ambigResult, ok := resolveAmbiguous(datePart, nil, cfg)
+	if !ok {
+		return Result{}, false
+	}
+
+	// If there's a time component after the date, parse it.
+	if dateEnd < len(s) {
+		timeFields := parseTimeComponent(s, dateEnd)
+		if len(timeFields) > 0 {
+			combined := make([]compile.Field, 0, len(ambigResult.Def.Fields)+len(timeFields))
+			combined = append(combined, ambigResult.Def.Fields...)
+			combined = append(combined, timeFields...)
+			ambigResult.Def = &compile.FormatDef{
+				Name:   ambigResult.Def.Name + "_TIME",
+				Fields: combined,
+			}
+		}
+	}
+
+	return ambigResult, true
+}
+
+func resolveAmbiguous(s string, entry *formatEntry, cfg Config) (Result, bool) {
 	// Parse the first two numeric components.
 	sep := findSep(s)
 	if sep < 0 {
-		return nil
+		return Result{}, false
 	}
 	sepChar := s[sep]
 
@@ -81,7 +179,7 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) *Result {
 	parts := splitOnSep(s, sepChar)
 
 	if len(parts) < 3 {
-		return nil
+		return Result{}, false
 	}
 
 	first := parseSmallInt(parts[0])
@@ -89,7 +187,7 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) *Result {
 	third := parseSmallInt(parts[2])
 
 	if first < 0 || second < 0 || third < 0 {
-		return nil
+		return Result{}, false
 	}
 
 	// Determine year position and value.
@@ -160,10 +258,10 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) *Result {
 	}
 
 	if monthVal < 1 || monthVal > 12 || dayVal < 1 || dayVal > 31 {
-		return nil
+		return Result{}, false
 	}
 
-	var fields []compile.Field
+	fields := make([]compile.Field, 0, 8)
 
 	// Build fields in input order.
 	type fieldInfo struct {
@@ -227,13 +325,13 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) *Result {
 		GoLayout: goLayout,
 		Fields:   fields,
 	}
-	return &Result{Def: def, Ambig: ambig}
+	return Result{Def: def, Ambig: ambig}, true
 }
 
 // detectTextualMonth handles formats like "March 15, 2024", "15 Mar 2024",
 // "Mar 15, 2024", "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822).
 // detectISOWeekOrOrdinal detects ISO week dates (2024-W11-5) and ordinal dates (2024-074).
-func detectISOWeekOrOrdinal(s string) *Result {
+func detectISOWeekOrOrdinal(s string) (Result, bool) {
 	n := len(s)
 
 	// ISO week date: YYYY-Www-D (10 chars) or YYYY-Www (8 chars)
@@ -241,24 +339,24 @@ func detectISOWeekOrOrdinal(s string) *Result {
 	if n >= 8 && s[4] == '-' && (s[5] == 'W' || s[5] == 'w') {
 		if n == 8 && isDigit(s[6]) && isDigit(s[7]) {
 			// YYYY-Www (week only, assume day 1=Monday)
-			return &Result{Def: &compile.FormatDef{
+			return Result{Def: &compile.FormatDef{
 				Name: "ISO_WEEK",
 				Fields: []compile.Field{
 					{Kind: compile.FYear4, Offset: 0, Len: 4},
 					{Kind: compile.FISOWeek, Offset: 6, Len: 2},
 				},
-			}}
+			}}, true
 		}
 		if n == 10 && isDigit(s[6]) && isDigit(s[7]) && s[8] == '-' && isDigit(s[9]) {
 			// YYYY-Www-D
-			return &Result{Def: &compile.FormatDef{
+			return Result{Def: &compile.FormatDef{
 				Name: "ISO_WEEK_DATE",
 				Fields: []compile.Field{
 					{Kind: compile.FYear4, Offset: 0, Len: 4},
 					{Kind: compile.FISOWeek, Offset: 6, Len: 2},
 					{Kind: compile.FISOWeekDay, Offset: 9, Len: 1},
 				},
-			}}
+			}}, true
 		}
 	}
 
@@ -273,33 +371,26 @@ func detectISOWeekOrOrdinal(s string) *Result {
 		if d0 <= 9 && d1 <= 9 && d2 <= 9 {
 			val := int(d0)*100 + int(d1)*10 + int(d2)
 			if val >= 1 && val <= 366 {
-				return &Result{Def: &compile.FormatDef{
+				return Result{Def: &compile.FormatDef{
 					Name: "ISO_ORDINAL",
 					Fields: []compile.Field{
 						{Kind: compile.FYear4, Offset: 0, Len: 4},
 						{Kind: compile.FOrdinalDay, Offset: 5, Len: 3},
 					},
-				}}
+				}}, true
 			}
 		}
 	}
 
-	return nil
+	return Result{}, false
 }
 
-func detectTextualMonth(s string, cfg Config) *Result {
-	lower := strings.ToLower(s)
-
-	// Try to find a month name in the string.
-	monthNum, monthStart, monthEnd := findMonthName(lower)
+func detectTextualMonth(s string, cfg Config) (Result, bool) {
+	// Find month name using case-insensitive matching directly on the input.
+	// No strings.ToLower allocation needed.
+	monthNum, monthStart, monthEnd := findMonthNameCI(s, cfg.Locales)
 	if monthNum == 0 {
-		return nil
-	}
-
-	// ToLower can change byte length for non-ASCII input.
-	// If the positions don't map cleanly to the original, bail out.
-	if monthEnd > len(s) || monthStart > len(s) || len(lower) != len(s) {
-		return nil
+		return Result{}, false
 	}
 
 	// Extract the rest and figure out the structure.
@@ -313,7 +404,7 @@ func detectTextualMonth(s string, cfg Config) *Result {
 	// before = "15"
 	// Handle "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822)
 
-	var fields []compile.Field
+	fields := make([]compile.Field, 0, 6)
 	name := "TEXTUAL_MONTH"
 	goLayout := ""
 
@@ -366,7 +457,7 @@ func detectTextualMonth(s string, cfg Config) *Result {
 		name = "DAY_MONTH"
 
 	default:
-		return nil
+		return Result{}, false
 	}
 
 	if year < 100 && year > 0 {
@@ -399,16 +490,17 @@ func detectTextualMonth(s string, cfg Config) *Result {
 	// We need to build a proper field list by analyzing the actual positions.
 	def.Fields = buildTextualFields(s, monthNum, monthStart, monthEnd)
 
-	return &Result{Def: def}
+	return Result{Def: def}, true
 }
 
 // buildTextualFields constructs compile.Fields for a textual-month date string
 // by scanning the actual byte positions.
 func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []compile.Field {
-	var fields []compile.Field
+	// Use stack-allocated fixed-size arrays to avoid heap allocations.
+	fields := make([]compile.Field, 0, 10)
 
 	// Scan for numeric tokens in the string, skipping the month name region.
-	var nums []numToken
+	nums := make([]numToken, 0, 6)
 
 	i := 0
 	for i < len(s) {
@@ -489,12 +581,29 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 		isTimeAtN1 := n1.end < len(s) && s[n1.end] == ':' && len(nums) >= 3
 
 		if isTimeAtN1 && n0.value <= 31 && n1.value <= 23 {
-			// Pattern: "day time" (no year), e.g. "Mar 15 10:30:00"
+			// Pattern: "day time [year]", e.g. "Mar 15 10:30:00 2024"
 			fields = append(fields, dayField(n0))
-			// Time starts at n1, but parseTimeComponent expects to skip to HH:MM.
-			// Position the start just before n1 so it finds the digits.
 			timeFields := parseTimeComponent(s, n0.end)
 			fields = append(fields, timeFields...)
+
+			// Look for a trailing year after the time+tz fields.
+			// Scan remaining nums for a 4-digit number (year).
+			for _, num := range nums {
+				if num.start > n0.end && num.value >= 1000 && num.value <= 9999 {
+					// Check this number isn't already part of the time fields.
+					isTimeField := false
+					for _, tf := range timeFields {
+						if int(tf.Offset) == num.start {
+							isTimeField = true
+							break
+						}
+					}
+					if !isTimeField {
+						fields = append(fields, yearField(num))
+						break
+					}
+				}
+			}
 		} else {
 			if n1.value > 31 {
 				fields = append(fields, dayField(n0))
@@ -536,7 +645,7 @@ func dayField(n numToken) compile.Field {
 // parseTimeComponent looks for HH:MM or HH:MM:SS or HH:MM:SS.fff patterns
 // starting from offset `from` in the string.
 func parseTimeComponent(s string, from int) []compile.Field {
-	var fields []compile.Field
+	fields := make([]compile.Field, 0, 8)
 
 	// Skip whitespace, punctuation, and colons to find time start.
 	// Colons appear as time separators in CLF: "2024:10:30:00".
@@ -580,7 +689,22 @@ func parseTimeComponent(s string, from int) []compile.Field {
 			j++
 		}
 
-		if j < len(s) {
+		// Check for AM/PM first (before timezone, since "AM"/"PM" would be
+		// misidentified as timezone abbreviations).
+		ampmHandled := false
+		if j+2 <= len(s) {
+			c0 := s[j] | 0x20
+			c1 := s[j+1] | 0x20
+			if (c0 == 'a' || c0 == 'p') && c1 == 'm' && (j+2 == len(s) || !isLetter(s[j+2])) {
+				if len(fields) > 0 && fields[0].Kind == compile.FHour24 {
+					fields[0].Kind = compile.FHour12
+				}
+				fields = append(fields, compile.Field{Kind: compile.FAMPM, Offset: j, Len: 2})
+				ampmHandled = true
+			}
+		}
+
+		if !ampmHandled && j < len(s) {
 			if s[j] == 'Z' && (j+1 == len(s) || !isLetter(s[j+1])) {
 				fields = append(fields, compile.Field{Kind: compile.FTZZ, Offset: j, Len: 1})
 			} else if s[j] == '+' || s[j] == '-' {
@@ -602,26 +726,6 @@ func parseTimeComponent(s string, from int) []compile.Field {
 				fields = append(fields, compile.Field{Kind: compile.FTZName, Offset: tzStart, Len: j - tzStart})
 			}
 		}
-
-		// Check for AM/PM.
-		k := i + 5
-		if len(fields) > 2 { // has seconds
-			k = fields[2].Offset + fields[2].Len
-		}
-		for k < len(s) && s[k] == ' ' {
-			k++
-		}
-		if k+2 <= len(s) {
-			upper0 := s[k] | 0x20
-			upper1 := s[k+1] | 0x20
-			if (upper0 == 'a' || upper0 == 'p') && upper1 == 'm' {
-				// Replace the hour field with 12h variant.
-				if len(fields) > 0 && fields[0].Kind == compile.FHour24 {
-					fields[0].Kind = compile.FHour12
-				}
-				fields = append(fields, compile.Field{Kind: compile.FAMPM, Offset: k, Len: 2})
-			}
-		}
 	}
 
 	return fields
@@ -633,8 +737,8 @@ type numToken struct {
 	end   int
 }
 
-// Month name lookup tables.
-var monthNames = map[string]int{
+// English month names — fallback when no locale is specified.
+var defaultMonthNames = map[string]int{
 	"january": 1, "jan": 1,
 	"february": 2, "feb": 2,
 	"march": 3, "mar": 3,
@@ -649,23 +753,64 @@ var monthNames = map[string]int{
 	"december": 12, "dec": 12,
 }
 
-// findMonthName finds the first month name in the lowercase string.
+// findMonthName finds the first month name in the lowercase string,
+// searching both the default English names and any locale-specific names.
 // Returns (month number 1-12, start index, end index) or (0, 0, 0) if not found.
-func findMonthName(lower string) (int, int, int) {
-	// Try longer names first to avoid partial matches.
-	for i := 0; i < len(lower); i++ {
-		if lower[i] < 'a' || lower[i] > 'z' {
-			continue
+func findMonthName(lower string, locales []*locale.Data) (int, int, int) {
+	// Fast path: search default English names first (no allocation).
+	if num, start, end := searchMonthMap(lower, defaultMonthNames); num > 0 {
+		return num, start, end
+	}
+
+	// Search locale-specific names.
+	for _, loc := range locales {
+		for i := 0; i < 12; i++ {
+			wide := strings.ToLower(loc.MonthsWide[i])
+			if num, start, end := matchMonthWord(lower, wide, i+1); num > 0 {
+				return num, start, end
+			}
+			abbr := strings.ToLower(loc.MonthsAbbr[i])
+			if num, start, end := matchMonthWord(lower, abbr, i+1); num > 0 {
+				return num, start, end
+			}
+			// Try without trailing dot (e.g. "janv." -> "janv").
+			clean := strings.TrimRight(abbr, ".")
+			if clean != abbr {
+				if num, start, end := matchMonthWord(lower, clean, i+1); num > 0 {
+					return num, start, end
+				}
+			}
 		}
-		// Try to match a month name starting at position i.
-		for name, num := range monthNames {
-			if i+len(name) <= len(lower) {
-				candidate := lower[i : i+len(name)]
-				if candidate == name {
-					// Ensure it's a whole word.
-					if (i == 0 || !isLetter(lower[i-1])) &&
-						(i+len(name) == len(lower) || !isLetter(lower[i+len(name)])) {
-						return num, i, i + len(name)
+	}
+	return 0, 0, 0
+}
+
+// findMonthNameCI is like findMonthName but does case-insensitive matching
+// directly on the input string without allocating a lowered copy.
+func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
+	// Search English names (case-insensitive).
+	for name, num := range defaultMonthNames {
+		if idx, end, ok := matchWordCI(s, name); ok {
+			return num, idx, end
+		}
+	}
+	// Search locale-specific names.
+	for _, loc := range locales {
+		for i := 0; i < 12; i++ {
+			if name := loc.MonthsWide[i]; name != "" {
+				if idx, end, ok := matchWordCI(s, name); ok {
+					return i + 1, idx, end
+				}
+			}
+			if name := loc.MonthsAbbr[i]; name != "" {
+				if idx, end, ok := matchWordCI(s, name); ok {
+					return i + 1, idx, end
+				}
+				// Try without trailing dot.
+				clean := strings.TrimRight(name, ".")
+				if clean != name {
+					if idx, end, ok := matchWordCI(s, clean); ok {
+						return i + 1, idx, end
 					}
 				}
 			}
@@ -674,9 +819,109 @@ func findMonthName(lower string) (int, int, int) {
 	return 0, 0, 0
 }
 
+// matchWordCI finds `word` as a whole word in `s`, case-insensitive.
+// Returns (start, end, true) on match, or (0, 0, false).
+func matchWordCI(s, word string) (int, int, bool) {
+	wlen := len(word)
+	if wlen == 0 || wlen > len(s) {
+		return 0, 0, false
+	}
+	for i := 0; i <= len(s)-wlen; i++ {
+		if !equalsFoldASCII(s[i:i+wlen], word) {
+			continue
+		}
+		// Check word boundaries.
+		if (i == 0 || !isWordChar(s[i-1])) &&
+			(i+wlen == len(s) || !isWordChar(s[i+wlen])) {
+			return i, i + wlen, true
+		}
+	}
+	return 0, 0, false
+}
+
+// equalsFoldASCII compares two strings case-insensitively for ASCII.
+// For non-ASCII bytes, compares exact. Both strings must be same length.
+func equalsFoldASCII(a, b string) bool {
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca == cb {
+			continue
+		}
+		// ASCII case fold.
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 0x20
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 0x20
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// searchMonthMap scans for any month name from the map in the string.
+func searchMonthMap(lower string, names map[string]int) (int, int, int) {
+	for i := 0; i < len(lower); i++ {
+		if lower[i] < 0x41 {
+			continue
+		}
+		for name, num := range names {
+			if i+len(name) <= len(lower) && lower[i:i+len(name)] == name {
+				if (i == 0 || !isWordChar(lower[i-1])) &&
+					(i+len(name) == len(lower) || !isWordChar(lower[i+len(name)])) {
+					return num, i, i + len(name)
+				}
+			}
+		}
+	}
+	return 0, 0, 0
+}
+
+// matchMonthWord checks if the given month name appears as a whole word in lower.
+func matchMonthWord(lower, name string, monthNum int) (int, int, int) {
+	if name == "" {
+		return 0, 0, 0
+	}
+	idx := strings.Index(lower, name)
+	for idx >= 0 {
+		end := idx + len(name)
+		if (idx == 0 || !isWordChar(lower[idx-1])) &&
+			(end == len(lower) || !isWordChar(lower[end])) {
+			return monthNum, idx, end
+		}
+		// Try next occurrence.
+		next := strings.Index(lower[end:], name)
+		if next < 0 {
+			break
+		}
+		idx = end + next
+	}
+	return 0, 0, 0
+}
+
+// isWordChar returns true for characters that can be part of a word
+// (letters, including non-ASCII bytes which may be part of UTF-8 sequences).
+func isWordChar(c byte) bool {
+	return isLetter(c) || c >= 0x80
+}
+
 func hasLetter(s string) bool {
 	for i := 0; i < len(s); i++ {
-		if isLetter(s[i]) {
+		c := s[i]
+		if c >= 0x80 {
+			// Non-ASCII byte — could be UTF-8 letter (Cyrillic, etc.)
+			return true
+		}
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+			// Skip 'T' and 'Z' when they appear in ISO-like positions.
+			if c == 'T' && i > 0 && i < len(s)-1 && isDigit(s[i-1]) && isDigit(s[i+1]) {
+				continue
+			}
+			if c == 'Z' && (i == len(s)-1 || (i < len(s)-1 && (s[i+1] == '+' || s[i+1] == '-'))) {
+				continue
+			}
 			return true
 		}
 	}

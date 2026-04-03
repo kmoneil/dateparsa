@@ -8,19 +8,13 @@ type config struct {
 	timezone       *time.Location
 	preferDayFirst bool
 	preferYearFirst bool
-	preferFuture   bool
-	strictMode     bool
-}
-
-func defaultConfig() config {
-	return config{
-		baseTime: time.Now(),
-		timezone: time.UTC,
-	}
+	preferFuture    bool
+	strictMode      bool
+	locales         []Locale
 }
 
 func buildConfig(opts []Option) config {
-	c := defaultConfig()
+	c := config{timezone: time.UTC}
 	for _, o := range opts {
 		o(&c)
 	}

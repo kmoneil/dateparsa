@@ -10,6 +10,7 @@ type formatEntry struct {
 	sig      []CharClass // Expected signature pattern
 	fields   []compile.Field
 	ambig    bool // True if this signature is ambiguous (DD/MM vs MM/DD)
+	def      *compile.FormatDef // Pre-built, set at init time
 }
 
 // Phase 1 format definitions. Each entry maps a character-class signature

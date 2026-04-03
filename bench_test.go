@@ -98,6 +98,40 @@ func BenchmarkParser_Cached(b *testing.B) {
 	}
 }
 
+// Benchmark10M_Layout_Parse benchmarks parsing 10M rows with a compiled layout.
+func Benchmark10M_Layout_Parse(b *testing.B) {
+	result, err := Parse("2024-03-15T10:30:00Z")
+	if err != nil {
+		b.Fatal(err)
+	}
+	layout := result.Layout
+
+	const rows = 10_000_000
+	input := "2025-01-15T08:30:00Z"
+
+	b.ResetTimer()
+	for range b.N {
+		for range rows {
+			layout.Parse(input)
+		}
+	}
+}
+
+// Benchmark10M_Parser_ParseColumn benchmarks batch parsing 10M rows.
+func Benchmark10M_Parser_ParseColumn(b *testing.B) {
+	const rows = 10_000_000
+	values := make([]string, rows)
+	for i := range values {
+		values[i] = "2024-06-15T12:00:00Z"
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		p := NewParser()
+		p.ParseColumn(values)
+	}
+}
+
 // TestLayoutParseZeroAlloc verifies that Layout.Parse allocates nothing.
 func TestLayoutParseZeroAlloc(t *testing.T) {
 	result, err := Parse("2024-03-15T10:30:00Z")

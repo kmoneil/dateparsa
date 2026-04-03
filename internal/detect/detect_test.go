@@ -44,8 +44,8 @@ func TestScan_RFC3339(t *testing.T) {
 
 func TestDetect_ISO8601Date(t *testing.T) {
 	cfg := Config{Timezone: nil}
-	result := Detect("2024-03-15", cfg)
-	if result == nil {
+	result, ok := Detect("2024-03-15", cfg)
+	if !ok {
 		t.Fatal("expected a result")
 	}
 	if result.Def.Name != "ISO8601_DATE" {
@@ -55,8 +55,8 @@ func TestDetect_ISO8601Date(t *testing.T) {
 
 func TestDetect_TextualMonth(t *testing.T) {
 	cfg := Config{}
-	result := Detect("March 15, 2024", cfg)
-	if result == nil {
+	result, ok := Detect("March 15, 2024", cfg)
+	if !ok {
 		t.Fatal("expected a result")
 	}
 	if result.Def == nil {
@@ -66,8 +66,8 @@ func TestDetect_TextualMonth(t *testing.T) {
 
 func TestDetect_AmbiguousSlash(t *testing.T) {
 	cfg := Config{}
-	result := Detect("01/02/2024", cfg)
-	if result == nil {
+	result, ok := Detect("01/02/2024", cfg)
+	if !ok {
 		t.Fatal("expected a result")
 	}
 	if !result.Ambig {
@@ -76,8 +76,8 @@ func TestDetect_AmbiguousSlash(t *testing.T) {
 
 	// With day-first preference.
 	cfg.PreferDayFirst = true
-	result2 := Detect("01/02/2024", cfg)
-	if result2 == nil {
+	result2, ok2 := Detect("01/02/2024", cfg)
+	if !ok2 {
 		t.Fatal("expected a result")
 	}
 	if !result2.Ambig {
@@ -87,8 +87,8 @@ func TestDetect_AmbiguousSlash(t *testing.T) {
 
 func TestDetect_UnambiguousSlash(t *testing.T) {
 	cfg := Config{}
-	result := Detect("13/01/2024", cfg)
-	if result == nil {
+	result, ok := Detect("13/01/2024", cfg)
+	if !ok {
 		t.Fatal("expected a result")
 	}
 	if result.Ambig {
@@ -109,7 +109,7 @@ func TestFindMonthName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		month, _, _ := findMonthName(tt.input)
+		month, _, _ := findMonthName(tt.input, nil)
 		if month != tt.month {
 			t.Errorf("findMonthName(%q) = %d, want %d", tt.input, month, tt.month)
 		}

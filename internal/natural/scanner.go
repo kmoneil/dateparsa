@@ -4,6 +4,10 @@ package natural
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/kmoneil/dateparsa/internal/locale"
 )
 
 // TokenKind identifies the type of a token in a natural language date expression.
@@ -37,14 +41,25 @@ type Token struct {
 	IntVal  int // TokNumber: the parsed integer
 	UnitVal Unit
 	DirVal  Direction
-	WdayVal int // TokWeekday: 0=Sunday .. 6=Saturday (matches time.Weekday)
-	MonVal  int // TokMonth: 1=January .. 12=December
+	RelVal  RelWord // TokRelWord: which relative keyword
+	WdayVal int     // TokWeekday: 0=Sunday .. 6=Saturday (matches time.Weekday)
+	MonVal  int     // TokMonth: 1=January .. 12=December
 	SelVal  Selector
 	BndVal  Boundary
 	Hour    int // TokTime: hour (0-23)
 	Min     int // TokTime: minute (0-59)
 	AMPM    int // TokAMPM/TokTime: 1=AM, 2=PM
 }
+
+// RelWord identifies a specific relative keyword.
+type RelWord byte
+
+const (
+	RelNow       RelWord = iota
+	RelToday
+	RelYesterday
+	RelTomorrow
+)
 
 // Unit represents a time unit.
 type Unit byte
@@ -94,7 +109,7 @@ func Scan(s string) []Token {
 		return nil
 	}
 
-	var tokens []Token
+	tokens := make([]Token, 0, 6)
 	i := 0
 	n := len(lower)
 
@@ -240,12 +255,18 @@ func classifyWord(word string, pos int) Token {
 
 	switch word {
 	// Relative keywords
-	case "now", "today":
+	case "now":
 		tok.Kind = TokRelWord
+		tok.RelVal = RelNow
+	case "today":
+		tok.Kind = TokRelWord
+		tok.RelVal = RelToday
 	case "yesterday":
 		tok.Kind = TokRelWord
+		tok.RelVal = RelYesterday
 	case "tomorrow":
 		tok.Kind = TokRelWord
+		tok.RelVal = RelTomorrow
 
 	// Directions
 	case "ago":
@@ -389,4 +410,150 @@ func classifyWord(word string, pos int) Token {
 
 func isAlpha(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// localeWord maps a lowercase word/phrase to a token.
+type localeWord struct {
+	phrase string
+	tok    Token
+}
+
+// buildLocaleWords builds a word list from locale relative keywords.
+func buildLocaleWords(loc *locale.Data) []localeWord {
+	var words []localeWord
+
+	add := func(phrases []string, kind TokenKind, setFn func(*Token)) {
+		for _, p := range phrases {
+			tok := Token{Kind: kind, Raw: p}
+			if setFn != nil {
+				setFn(&tok)
+			}
+			words = append(words, localeWord{strings.ToLower(p), tok})
+		}
+	}
+
+	add(loc.Relative.Now, TokRelWord, func(t *Token) { t.RelVal = RelNow })
+	add(loc.Relative.Today, TokRelWord, func(t *Token) { t.RelVal = RelToday })
+	add(loc.Relative.Yesterday, TokRelWord, func(t *Token) { t.RelVal = RelYesterday })
+	add(loc.Relative.Tomorrow, TokRelWord, func(t *Token) { t.RelVal = RelTomorrow })
+	add(loc.Relative.Ago, TokDirection, func(t *Token) { t.DirVal = DirAgo })
+	add(loc.Relative.InFuture, TokDirection, func(t *Token) { t.DirVal = DirIn })
+	add(loc.Relative.Last, TokSelector, func(t *Token) { t.SelVal = SelLast })
+	add(loc.Relative.Next, TokSelector, func(t *Token) { t.SelVal = SelNext })
+	add(loc.Relative.This, TokSelector, func(t *Token) { t.SelVal = SelThis })
+	add(loc.Relative.Seconds, TokUnit, func(t *Token) { t.UnitVal = UnitSecond })
+	add(loc.Relative.Minutes, TokUnit, func(t *Token) { t.UnitVal = UnitMinute })
+	add(loc.Relative.Hours, TokUnit, func(t *Token) { t.UnitVal = UnitHour })
+	add(loc.Relative.Days, TokUnit, func(t *Token) { t.UnitVal = UnitDay })
+	add(loc.Relative.Weeks, TokUnit, func(t *Token) { t.UnitVal = UnitWeek })
+	add(loc.Relative.Months, TokUnit, func(t *Token) { t.UnitVal = UnitMonth })
+	add(loc.Relative.Years, TokUnit, func(t *Token) { t.UnitVal = UnitYear })
+
+	// Weekdays.
+	for i, name := range loc.WeekdaysWide {
+		if name != "" {
+			words = append(words, localeWord{strings.ToLower(name), Token{Kind: TokWeekday, Raw: name, WdayVal: i}})
+		}
+	}
+	for i, name := range loc.WeekdaysAbbr {
+		if name != "" {
+			words = append(words, localeWord{strings.ToLower(name), Token{Kind: TokWeekday, Raw: name, WdayVal: i}})
+		}
+	}
+
+	// Sort by length descending so longer phrases match first.
+	for i := 0; i < len(words); i++ {
+		for j := i + 1; j < len(words); j++ {
+			if len(words[j].phrase) > len(words[i].phrase) {
+				words[i], words[j] = words[j], words[i]
+			}
+		}
+	}
+
+	return words
+}
+
+// ScanLocale tokenizes a natural language date string using locale-specific keywords.
+func ScanLocale(s string, loc *locale.Data) []Token {
+	if loc == nil {
+		return nil
+	}
+
+	lower := strings.ToLower(s)
+	if len(lower) != len(s) {
+		return nil
+	}
+
+	words := buildLocaleWords(loc)
+	var tokens []Token
+	i := 0
+	n := len(lower)
+
+	for i < n {
+		// Skip whitespace and commas.
+		if lower[i] == ' ' || lower[i] == '\t' || lower[i] == ',' {
+			i++
+			continue
+		}
+
+		// Try matching a locale phrase at current position.
+		matched := false
+		for _, w := range words {
+			wlen := len(w.phrase)
+			if i+wlen <= n && lower[i:i+wlen] == w.phrase {
+				// Check word boundary.
+				if (i+wlen == n || !isUnicodeWord(lower, i+wlen)) &&
+					(i == 0 || !isUnicodeWord(lower, prevCharPos(lower, i))) {
+					tok := w.tok
+					tok.Pos = i
+					tokens = append(tokens, tok)
+					i += wlen
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			continue
+		}
+
+		// Number.
+		if lower[i] >= '0' && lower[i] <= '9' {
+			tok := scanNumber(lower, i)
+			tokens = append(tokens, tok)
+			i = tok.Pos + len(tok.Raw)
+			continue
+		}
+
+		// Skip to next whitespace/number (unknown word).
+		start := i
+		for i < n && lower[i] != ' ' && lower[i] != '\t' && lower[i] != ',' && !(lower[i] >= '0' && lower[i] <= '9') {
+			i++
+		}
+		tokens = append(tokens, Token{Kind: TokUnknown, Pos: start, Raw: lower[start:i]})
+	}
+
+	return tokens
+}
+
+// isUnicodeWord checks if the byte at position pos in s starts a word character
+// (letter or digit), handling UTF-8.
+func isUnicodeWord(s string, pos int) bool {
+	if pos >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[pos:])
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// prevCharPos returns the start position of the previous UTF-8 character.
+func prevCharPos(s string, pos int) int {
+	if pos <= 0 {
+		return 0
+	}
+	pos--
+	for pos > 0 && !utf8.RuneStart(s[pos]) {
+		pos--
+	}
+	return pos
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/kmoneil/dateparsa/internal/compile"
 	"github.com/kmoneil/dateparsa/internal/detect"
 	"github.com/kmoneil/dateparsa/internal/epoch"
+	"github.com/kmoneil/dateparsa/internal/locale"
 	"github.com/kmoneil/dateparsa/internal/natural"
 )
 
@@ -35,21 +36,63 @@ type ParseResult struct {
 // Returns a ParseResult containing both the time and the reusable Layout.
 // Uses the default configuration (English locale, UTC base time).
 func Parse(s string) (ParseResult, error) {
-	return ParseWith(s)
+	// Fast path: no options, skip config allocation entirely.
+	dcfg := detect.Config{Timezone: time.UTC}
+
+	result, ok := detect.Detect(s, dcfg)
+	if !ok {
+		// Try epoch timestamp.
+		if er := epoch.Detect(s); er != nil {
+			return ParseResult{Time: er.Time, Kind: KindAbsolute}, nil
+		}
+
+		// Try English NL.
+		nlCfg := natural.Config{BaseTime: time.Now()}
+		if nlr := natural.Parse(s, nlCfg); nlr != nil {
+			kind := KindRelative
+			if nlr.Kind == natural.KindNow {
+				kind = KindNow
+			}
+			return ParseResult{Time: nlr.Time, Kind: kind}, nil
+		}
+
+		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found"}
+	}
+
+	program := compile.Compile(result.Def, time.UTC)
+	t, err := program.Execute(s)
+	if err != nil {
+		return ParseResult{}, &ParseError{Input: s, Message: err.Error()}
+	}
+
+	layout := &Layout{
+		program:  program,
+		goLayout: result.Def.GoLayout,
+		label:    result.Def.Name,
+	}
+
+	return ParseResult{
+		Time:      t,
+		Layout:    layout,
+		Ambiguous: result.Ambig,
+		Kind:      KindAbsolute,
+	}, nil
 }
 
 // ParseWith parses using explicit options (locale, base time, preferences).
 func ParseWith(s string, opts ...Option) (ParseResult, error) {
 	cfg := buildConfig(opts)
+	localeDatas := localeDataFromConfig(cfg)
 
 	dcfg := detect.Config{
 		PreferDayFirst:  cfg.preferDayFirst,
 		PreferYearFirst: cfg.preferYearFirst,
 		Timezone:        cfg.timezone,
+		Locales:         localeDatas,
 	}
 
-	result := detect.Detect(s, dcfg)
-	if result == nil {
+	result, ok := detect.Detect(s, dcfg)
+	if !ok {
 		// Try epoch timestamp.
 		if er := epoch.Detect(s); er != nil {
 			return ParseResult{
@@ -59,9 +102,14 @@ func ParseWith(s string, opts ...Option) (ParseResult, error) {
 		}
 
 		// Try natural language.
+		baseTime := cfg.baseTime
+		if baseTime.IsZero() {
+			baseTime = time.Now()
+		}
 		nlCfg := natural.Config{
-			BaseTime:     cfg.baseTime,
+			BaseTime:     baseTime,
 			PreferFuture: cfg.preferFuture,
+			Locales:      localeDatas,
 		}
 		if nlr := natural.Parse(s, nlCfg); nlr != nil {
 			kind := KindRelative
@@ -120,10 +168,11 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		PreferDayFirst:  cfg.preferDayFirst,
 		PreferYearFirst: cfg.preferYearFirst,
 		Timezone:        cfg.timezone,
+		Locales:         localeDataFromConfig(cfg),
 	}
 
-	result := detect.Detect(s, dcfg)
-	if result == nil {
+	result, ok := detect.Detect(s, dcfg)
+	if !ok {
 		return nil, &ParseError{Input: s, Message: "no matching format found"}
 	}
 
@@ -135,16 +184,13 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 	}, nil
 }
 
-func buildAmbiguousError(s string, result *detect.Result, cfg config) *AmbiguousDateError {
+func buildAmbiguousError(s string, result detect.Result, cfg config) *AmbiguousDateError {
 	// Build both interpretations (MDY and DMY).
 	var interps []Interpretation
 
 	// MDY interpretation.
-	mdyCfg := cfg
-	mdyCfg.preferDayFirst = false
 	mdyDcfg := detect.Config{PreferDayFirst: false, Timezone: cfg.timezone}
-	mdyResult := detect.Detect(s, mdyDcfg)
-	if mdyResult != nil {
+	if mdyResult, ok := detect.Detect(s, mdyDcfg); ok {
 		prog := compile.Compile(mdyResult.Def, cfg.timezone)
 		t, err := prog.Execute(s)
 		if err == nil {
@@ -158,8 +204,7 @@ func buildAmbiguousError(s string, result *detect.Result, cfg config) *Ambiguous
 
 	// DMY interpretation.
 	dmyDcfg := detect.Config{PreferDayFirst: true, Timezone: cfg.timezone}
-	dmyResult := detect.Detect(s, dmyDcfg)
-	if dmyResult != nil {
+	if dmyResult, ok := detect.Detect(s, dmyDcfg); ok {
 		prog := compile.Compile(dmyResult.Def, cfg.timezone)
 		t, err := prog.Execute(s)
 		if err == nil {
@@ -175,4 +220,19 @@ func buildAmbiguousError(s string, result *detect.Result, cfg config) *Ambiguous
 		Input:           s,
 		Interpretations: interps,
 	}
+}
+
+// localeDataFromConfig extracts the internal locale data pointers from
+// the user-facing Locale values in the config.
+func localeDataFromConfig(cfg config) []*locale.Data {
+	if len(cfg.locales) == 0 {
+		return nil
+	}
+	datas := make([]*locale.Data, 0, len(cfg.locales))
+	for _, l := range cfg.locales {
+		if l.data != nil {
+			datas = append(datas, l.data)
+		}
+	}
+	return datas
 }

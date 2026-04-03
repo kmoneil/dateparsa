@@ -1,5 +1,7 @@
 package detect
 
+import "github.com/kmoneil/dateparsa/internal/compile"
+
 // trieNode is a node in the format signature trie.
 // Children are indexed by CharClass (0..5), keeping the structure compact.
 type trieNode struct {
@@ -47,6 +49,14 @@ func buildTrie() *trie {
 	for _, formats := range [][]formatEntry{phase1Formats(), phase2Formats()} {
 		for i := range formats {
 			if len(formats[i].sig) > 0 {
+				// Pre-build the FormatDef so Detect doesn't allocate one per call.
+				if !formats[i].ambig && len(formats[i].fields) > 0 {
+					formats[i].def = &compile.FormatDef{
+						Name:     formats[i].name,
+						GoLayout: formats[i].goLayout,
+						Fields:   formats[i].fields,
+					}
+				}
 				t.insert(&formats[i])
 			}
 		}

@@ -73,15 +73,15 @@ func evalRelWord(tokens []Token, base time.Time) *Result {
 	t := base
 	kind := KindNow
 
-	switch tokens[0].Raw {
-	case "now":
+	switch tokens[0].RelVal {
+	case RelNow:
 		// t = base (as-is, including time)
-	case "today":
+	case RelToday:
 		t = truncateDay(base)
-	case "yesterday":
+	case RelYesterday:
 		t = truncateDay(base).AddDate(0, 0, -1)
 		kind = KindRelative
-	case "tomorrow":
+	case RelTomorrow:
 		t = truncateDay(base).AddDate(0, 0, 1)
 		kind = KindRelative
 	default:

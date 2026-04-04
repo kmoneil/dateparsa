@@ -30,15 +30,14 @@ func (s *Signature) Len() int { return s.len }
 // At returns the character class at index i.
 func (s *Signature) At(i int) CharClass { return s.buf[i] }
 
-// Scan maps each byte of the input to a CharClass.
-// Operates on the raw bytes — no UTF-8 decode needed for the signature
-// since all date-relevant characters are ASCII.
+// Scan maps each byte of the input to a CharClass, producing a Signature
+// used for trie-based format lookup. No heap allocation.
 //
-// Special handling:
-//   - 'T' between digits is CSpecial (ISO 8601 separator)
-//   - 'Z' at end of string or before +/- is CSpecial (UTC indicator)
-//   - '+' and '-' after digits/T/Z are CSpecial (timezone offset sign)
-//   - ',' after digits is CSpecial (fractional separator or RFC 2822)
+// Context-dependent classification rules:
+//   - 'T' between digits → CSpecial (ISO 8601 date-time separator)
+//   - 'Z' at end or before +/- → CSpecial (UTC indicator)
+//   - '-' after a time pattern → CSpecial (timezone offset sign)
+//   - '+' and ',' → always CSpecial
 func Scan(s string) Signature {
 	var sig Signature
 	n := len(s)
@@ -49,12 +48,15 @@ func Scan(s string) Signature {
 
 	for i := 0; i < n; i++ {
 		c := s[i]
+
 		switch {
 		case c >= '0' && c <= '9':
 			sig.buf[i] = CDigit
 
+		// ── Context-dependent: T, Z ─────────────────────────────
+		// 'T' between digits → ISO 8601 separator ("2024-03-15T10:30:00").
+		// Otherwise it's a letter ("Tuesday", "TZ").
 		case c == 'T':
-			// 'T' is special when it appears between digit sequences (ISO separator)
 			if i > 0 && i < n-1 && isDigit(s[i-1]) && isDigit(s[i+1]) {
 				sig.buf[i] = CSpecial
 			} else {
@@ -62,8 +64,9 @@ func Scan(s string) Signature {
 				sig.HasLetter = true
 			}
 
+		// 'Z' at end or before +/- → UTC marker ("...00Z", "...Z+05:00").
+		// Otherwise it's a letter ("Zone").
 		case c == 'Z':
-			// 'Z' is special at end of string or before +/-
 			if i == n-1 || (i < n-1 && (s[i+1] == '+' || s[i+1] == '-')) {
 				sig.buf[i] = CSpecial
 			} else {
@@ -71,37 +74,35 @@ func Scan(s string) Signature {
 				sig.HasLetter = true
 			}
 
+		// ── Letters ──────────────────────────────────────────────
 		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Y'):
-			// Letters (A-Y excluding T handled above, Z handled above)
 			sig.buf[i] = CLetter
 			sig.HasLetter = true
 
+		// ── Context-dependent: dash ──────────────────────────────
+		// '-' is a date separator unless after a time pattern ("10:30:00-05:00").
+		// '/' is always a date separator.
 		case c == '-' || c == '/':
-			// These could be separators OR timezone offset signs.
-			// After T/Z/digits at a timezone position, treat as special.
 			if c == '-' && i > 0 && isTZSignPosition(s, i, n) {
 				sig.buf[i] = CSpecial
 			} else {
 				sig.buf[i] = CSep
 			}
 
+		// ── Simple one-to-one mappings ───────────────────────────
 		case c == '.':
 			sig.buf[i] = CSep
-
 		case c == ' ' || c == '\t':
 			sig.buf[i] = CSpace
-
 		case c == ':':
 			sig.buf[i] = CColon
-
 		case c == '+':
 			sig.buf[i] = CSpecial
-
 		case c == ',':
 			sig.buf[i] = CSpecial
 
 		default:
-			// Non-ASCII bytes, rare punctuation: treat as letter for now.
+			// Non-ASCII bytes, rare punctuation: treat as letter.
 			sig.buf[i] = CLetter
 			sig.HasLetter = true
 		}

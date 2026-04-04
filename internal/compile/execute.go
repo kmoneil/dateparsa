@@ -101,6 +101,9 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		off := int(inst.Offset) + delta
 
 		switch inst.Op {
+
+		// ── Date fields ──────────────────────────────────────────────
+
 		case OpYear4:
 			if off+4 > slen {
 				return time.Time{}, fieldError("year", off, slen)
@@ -150,6 +153,8 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 			day = v
 			delta += consumed1or2(s, off, slen) - int(inst.Len)
+
+		// ── Time fields ───────────────────────────────────────────��──
 
 		case OpHour24:
 			v, ok := parse2Bounded(s, off, slen, 0, 23)
@@ -212,6 +217,8 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("am/pm", off, slen)
 			}
 
+		// ── Timezone fields ───────────────────────────────────────��──
+
 		case OpTZZ:
 			loc = time.UTC
 
@@ -237,6 +244,26 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("timezone name", off, slen)
 			}
 			loc = tzLoc
+
+		case OpTZZOrOffset:
+			if off >= slen {
+				return time.Time{}, fieldError("timezone", off, slen)
+			}
+			if s[off] == 'Z' {
+				loc = time.UTC
+			} else {
+				length := int(inst.Len)
+				if off+length > slen {
+					return time.Time{}, fieldError("timezone offset", off, slen)
+				}
+				tzLoc, ok := parseTZOffset(s, off, length)
+				if !ok {
+					return time.Time{}, fieldError("timezone offset", off, slen)
+				}
+				loc = tzLoc
+			}
+
+		// ── ISO week/ordinal fields ──────────────────────────────────
 
 		case OpISOWeek:
 			v, ok := parse2Bounded(s, off, slen, 1, 53)
@@ -273,24 +300,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 			ordinalDay = val
 
-		case OpTZZOrOffset:
-			if off >= slen {
-				return time.Time{}, fieldError("timezone", off, slen)
-			}
-			if s[off] == 'Z' {
-				loc = time.UTC
-				// 'Z' consumes 1 byte; no further action needed.
-			} else {
-				length := int(inst.Len)
-				if off+length > slen {
-					return time.Time{}, fieldError("timezone offset", off, slen)
-				}
-				tzLoc, ok := parseTZOffset(s, off, length)
-				if !ok {
-					return time.Time{}, fieldError("timezone offset", off, slen)
-				}
-				loc = tzLoc
-			}
+		// ── Structural fields ────────────────────────────────────────
 
 		case OpLiteral:
 			// When Aux is set (compiled layouts), validate the literal character.

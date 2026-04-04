@@ -656,115 +656,67 @@ func trimAtSuffix(s string) string {
 // "March 15, 2024", "15 Mar 2024", "Mar 15, 2024",
 // "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822), "March 2024", "15 March".
 func detectTextualMonth(s string, cfg Config) (Result, bool) {
-	// Find month name using case-insensitive matching directly on the input.
-	// No strings.ToLower allocation needed.
 	monthNum, monthStart, monthEnd := findMonthNameCI(s, cfg.Locales)
 	if monthNum == 0 {
 		return Result{}, false
 	}
 
-	// Extract the rest and figure out the structure.
-	// Strategy: remove the month name, find the remaining numeric components.
-	before := strings.TrimSpace(s[:monthStart])
+	// If the post-month text contains " at " without a 4-digit year,
+	// this is a NL expression like "december 25th at 5pm" — bail so the
+	// NL parser handles it.
 	after := strings.TrimSpace(s[monthEnd:])
-
-	// If the after-month portion contains " at " (NL time indicator like
-	// "december 25th at 5pm") and there's no explicit 4-digit year, bail
-	// so the NL parser can handle it properly.
-	afterLower := strings.ToLower(after)
-	if strings.Contains(afterLower, " at ") && !hasFourDigitYear(after) {
+	if strings.Contains(strings.ToLower(after), " at ") && !hasFourDigitYear(after) {
 		return Result{}, false
 	}
 
-	// Handle "March 15, 2024" or "Mar 15, 2024"
-	// after = "15, 2024"
-	// Handle "15 March 2024" or "15 Mar 2024"
-	// before = "15"
-	// Handle "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822)
+	// Classify the surrounding structure to determine the format name.
+	name := classifyTextualPattern(s, monthStart, monthEnd)
+	if name == "" {
+		return Result{}, false
+	}
 
-	fields := make([]compile.Field, 0, 6)
-	var name string
-	goLayout := ""
+	// Build field list from actual byte positions.
+	fields := buildTextualFields(s, monthNum, monthStart, monthEnd)
+	def := &compile.FormatDef{Name: name, Fields: fields}
+	return Result{Def: def}, true
+}
 
-	// Month is already resolved.
-	fields = append(fields, compile.Field{
-		Kind: compile.FMonthName,
-		Aux:  uint16(monthNum),
-	})
+// classifyTextualPattern determines the format name based on how numbers
+// are arranged around the month name. This decides whether the format is
+// "MONTH_DAY_YEAR", "DAY_MONTH_YEAR", "MONTH_YEAR", "MONTH_DAY", or "DAY_MONTH".
+//
+// Returns "" if the surrounding structure doesn't match any known pattern.
+func classifyTextualPattern(s string, monthStart, monthEnd int) string {
+	before := strings.TrimSpace(s[:monthStart])
+	after := strings.TrimSpace(s[monthEnd:])
 
-	// Parse numbers from before and after the month name.
 	beforeNums := extractNumbers(before)
 	afterStr := strings.TrimLeft(after, ", ")
 	afterNums := extractNumbers(trimAtSuffix(afterStr))
 
-	var day, year int
-
 	switch {
 	case len(beforeNums) == 0 && len(afterNums) >= 2:
-		// "March 15, 2024" pattern
-		day = afterNums[0]
-		year = afterNums[1]
-		name = "MONTH_DAY_YEAR"
+		// "March 15, 2024"
+		return "MONTH_DAY_YEAR"
 
 	case len(beforeNums) >= 1 && len(afterNums) >= 1:
-		// Check for "Fri, 15 Mar 2024" (weekday prefix)
-		if len(beforeNums) == 1 && beforeNums[0] <= 31 {
-			day = beforeNums[0]
-			year = afterNums[0]
-			name = "DAY_MONTH_YEAR"
-		} else {
-			day = beforeNums[len(beforeNums)-1]
-			year = afterNums[0]
-			name = "DAY_MONTH_YEAR"
-		}
+		// "15 Mar 2024" or "Fri, 15 Mar 2024"
+		return "DAY_MONTH_YEAR"
 
 	case len(beforeNums) == 0 && len(afterNums) == 1:
-		// "March 2024" (month + year only) or "Mar 15" (month + day)
+		// "March 2024" (value > 31 → year) or "March 15" (value ≤ 31 → day)
 		if afterNums[0] > 31 {
-			year = afterNums[0]
-			day = 1
-			name = "MONTH_YEAR"
-		} else {
-			day = afterNums[0]
-			name = "MONTH_DAY"
+			return "MONTH_YEAR"
 		}
+		return "MONTH_DAY"
 
 	case len(beforeNums) == 1 && len(afterNums) == 0:
-		// "15 March" (day + month)
-		day = beforeNums[0]
-		name = "DAY_MONTH"
+		// "15 March"
+		return "DAY_MONTH"
 
 	default:
-		return Result{}, false
+		return ""
 	}
-
-	if year < 100 && year > 0 {
-		year = compile.NormalizeTwoDigitYear(year)
-	}
-
-	// For textual month formats, we build a "virtual" program that uses
-	// pre-resolved values. The fields here are positional markers but the
-	// actual parsing re-scans the input. For Phase 1, we take a simpler approach:
-	// build fields that extract components by re-parsing the input string.
-	//
-	// This is the "slow path" for first parse — the Layout is then reusable
-	// for same-format strings where the month name position/length is the same.
-
-	_ = day
-	_ = year
-
-	// For now, construct a FormatDef that will use the re-parse approach.
-	// The compiler handles MonthName fields specially.
-	def := &compile.FormatDef{
-		Name:     name,
-		GoLayout: goLayout,
-		Fields:   fields,
-	}
-
-	// We need to build a proper field list by analyzing the actual positions.
-	def.Fields = buildTextualFields(s, monthNum, monthStart, monthEnd)
-
-	return Result{Def: def}, true
 }
 
 // buildTextualFields constructs compile.Fields for a textual-month date string

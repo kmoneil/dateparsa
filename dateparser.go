@@ -36,52 +36,7 @@ type ParseResult struct {
 // Returns a ParseResult containing both the time and the reusable Layout.
 // Uses the default configuration (English locale, UTC base time).
 func Parse(s string) (ParseResult, error) {
-	// Fast path: no options, skip config allocation entirely.
-	dcfg := detect.Config{Timezone: time.UTC}
-
-	result, ok := detect.Detect(s, dcfg)
-	if !ok {
-		// Try epoch timestamp.
-		if er := epoch.Detect(s); er != nil {
-			return ParseResult{Time: er.Time, Kind: KindAbsolute, Layout: LayoutEpoch}, nil
-		}
-
-		// Try English NL.
-		nlCfg := natural.Config{BaseTime: time.Now()}
-		if nlr := natural.Parse(s, nlCfg); nlr != nil {
-			kind := KindRelative
-			if nlr.Kind == natural.KindNow {
-				kind = KindNow
-			}
-			return ParseResult{Time: nlr.Time, Kind: kind, Layout: LayoutNaturalLanguage}, nil
-		}
-
-		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
-	}
-
-	program := compile.Compile(result.Def, time.UTC)
-	t, err := program.Execute(s)
-	if err != nil {
-		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
-	}
-
-	// If the detected format had no year, fill in the current year.
-	if t.Year() == 0 {
-		t = time.Date(time.Now().Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
-	}
-
-	layout := &Layout{
-		program:  program,
-		goLayout: result.Def.GoLayout,
-		label:    result.Def.Name,
-	}
-
-	return ParseResult{
-		Time:      t,
-		Layout:    layout,
-		Ambiguous: result.Ambig,
-		Kind:      KindAbsolute,
-	}, nil
+	return parseWithConfig(s, config{timezone: time.UTC})
 }
 
 // ParseWith parses using explicit options (locale, base time, preferences).
@@ -138,7 +93,7 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 	}
 
 	if cfg.strictMode && result.Ambig {
-		return ParseResult{}, buildAmbiguousError(s, result, cfg)
+		return ParseResult{}, buildAmbiguousError(s, cfg)
 	}
 
 	program := compile.Compile(result.Def, cfg.timezone)
@@ -150,7 +105,7 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 	// If the detected format had no year, fill in the base year.
 	if t.Year() == 0 {
 		baseYear := cfg.baseTime.Year()
-		if baseYear == 0 {
+		if cfg.baseTime.IsZero() {
 			baseYear = time.Now().Year()
 		}
 		t = time.Date(baseYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
@@ -205,7 +160,7 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 	}, nil
 }
 
-func buildAmbiguousError(s string, _ detect.Result, cfg config) error {
+func buildAmbiguousError(s string, cfg config) error {
 	// Build both interpretations (MDY and DMY).
 	var interps []Interpretation
 

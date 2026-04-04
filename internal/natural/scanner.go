@@ -3,6 +3,7 @@
 package natural
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -599,13 +600,9 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 	words = append(words, extras...)
 
 	// Sort by length descending so longer phrases match first.
-	for i := 0; i < len(words); i++ {
-		for j := i + 1; j < len(words); j++ {
-			if len(words[j].phrase) > len(words[i].phrase) {
-				words[i], words[j] = words[j], words[i]
-			}
-		}
-	}
+	sort.Slice(words, func(i, j int) bool {
+		return len(words[i].phrase) > len(words[j].phrase)
+	})
 
 	return words
 }

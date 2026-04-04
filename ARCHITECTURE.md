@@ -55,16 +55,16 @@ dateparsa ──┬── compile
 
 `detect.Detect(s, cfg)` is the entry point. It runs a cascade of detectors, each more expensive than the last. The first match wins.
 
-| Step | Detector | What it catches | Cost |
-|------|----------|-----------------|------|
-| 1 | `detectISOWeekOrOrdinal` | `2024-W11-5`, `2024-074` | Byte checks at fixed offsets |
-| 2 | `detectCJKDate` | `2014年04月08日` | Scan for 年/月/日 bytes |
-| 3 | `detectTextualMonth` | `March 15, 2024`, `Fri, 15 Mar 2024 10:30:00 +0000` | Case-insensitive word scan |
-| 4 | **Trie lookup** | 50+ fixed-signature formats | O(n) signature scan + O(n) trie walk |
-| 5 | `detectISO8601Frac` | `2024-03-15T10:30:00.123Z` (any frac length) | Fixed-offset checks |
-| 6 | `detectVariableNumeric` | `3/15/2024`, `3/15/24`, `3/15/2024 10:30 AM` | Split-and-parse |
-| 7 | `detectGoTimeString` | `2012-08-03 18:31:59.257000000 +0000 UTC` | Fixed-offset checks |
-| 8 | `detectDatePlusTZ` | `2020-07-20+08:00` | Length + byte checks |
+| Step | Detector                 | What it catches                                     | Cost                                 |
+| ---- | ------------------------ | --------------------------------------------------- | ------------------------------------ |
+| 1    | `detectISOWeekOrOrdinal` | `2024-W11-5`, `2024-074`                            | Byte checks at fixed offsets         |
+| 2    | `detectCJKDate`          | `2014年04月08日`                                    | Scan for 年/月/日 bytes              |
+| 3    | `detectTextualMonth`     | `March 15, 2024`, `Fri, 15 Mar 2024 10:30:00 +0000` | Case-insensitive word scan           |
+| 4    | **Trie lookup**          | 50+ fixed-signature formats                         | O(n) signature scan + O(n) trie walk |
+| 5    | `detectISO8601Frac`      | `2024-03-15T10:30:00.123Z` (any frac length)        | Fixed-offset checks                  |
+| 6    | `detectVariableNumeric`  | `3/15/2024`, `3/15/24`, `3/15/2024 10:30 AM`        | Split-and-parse                      |
+| 7    | `detectGoTimeString`     | `2012-08-03 18:31:59.257000000 +0000 UTC`           | Fixed-offset checks                  |
+| 8    | `detectDatePlusTZ`       | `2020-07-20+08:00`                                  | Length + byte checks                 |
 
 If all structured detection fails, the caller (`Parse`/`ParseWith`) tries epoch timestamps, then natural language.
 
@@ -72,14 +72,14 @@ If all structured detection fails, the caller (`Parse`/`ParseWith`) tries epoch 
 
 The trie is the fast path for common formats. Every supported structured format has a **character-class signature** — a sequence of 6 possible classes:
 
-| Class | Symbol | Matches |
-|-------|--------|---------|
-| Digit | `D` | `0-9` |
-| Letter | `L` | `a-zA-Z` (except T/Z in ISO positions) |
-| Separator | `S` | `- / .` |
-| Space | `W` | space, tab |
-| Colon | `C` | `:` |
-| Special | `X` | `T` (between digits), `Z` (terminal), `+`, `,` |
+| Class     | Symbol | Matches                                        |
+| --------- | ------ | ---------------------------------------------- |
+| Digit     | `D`    | `0-9`                                          |
+| Letter    | `L`    | `a-zA-Z` (except T/Z in ISO positions)         |
+| Separator | `S`    | `- / .`                                        |
+| Space     | `W`    | space, tab                                     |
+| Colon     | `C`    | `:`                                            |
+| Special   | `X`    | `T` (between digits), `Z` (terminal), `+`, `,` |
 
 Example: `"2024-03-15T10:30:00Z"` → `DDDDSDDSDDXDDCDDCDDX`
 
@@ -185,6 +185,7 @@ Result{Time: ..., Kind: KindRelative}
 `Scan(s)` tokenizes English. `ScanLocale(s, locale)` tokenizes using locale-specific keywords.
 
 Key design decisions:
+
 - "a" and "an" produce `TokNumber{IntVal: 1}` so "a week ago" = "1 week ago"
 - Written-out numbers (one through thirty, plus "few"=3) produce TokNumber
 - "half" produces TokHalf, handled specially in evaluation
@@ -258,22 +259,24 @@ This produces **1 allocation** (the `Layout` pointer) for common formats. The `L
 
 ## Performance Model
 
-| Operation | ns/op | Allocs | What dominates |
-|-----------|-------|--------|----------------|
-| `Layout.Parse` | 21-36 | 0 | Instruction loop + `time.Date` |
-| `Parse` (trie hit) | 87-143 | 1 | Signature scan + trie walk + compile |
-| `Parse` (textual month) | 603 | 6 | Month name search + field building |
-| `Parse` (NL) | 634-1015 | 3 | Tokenization + evaluation |
-| `Parse` (epoch) | 55 | 1 | Digit scan + range check |
-| `ParseWith` (with opts) | +50-80 | +1 | Config allocation |
-| `Parser.Parse` (cached) | 38 | 0 | Same as Layout.Parse |
+| Operation               | ns/op    | Allocs | What dominates                       |
+| ----------------------- | -------- | ------ | ------------------------------------ |
+| `Layout.Parse`          | 21-36    | 0      | Instruction loop + `time.Date`       |
+| `Parse` (trie hit)      | 87-143   | 1      | Signature scan + trie walk + compile |
+| `Parse` (textual month) | 603      | 6      | Month name search + field building   |
+| `Parse` (NL)            | 634-1015 | 3      | Tokenization + evaluation            |
+| `Parse` (epoch)         | 55       | 1      | Digit scan + range check             |
+| `ParseWith` (with opts) | +50-80   | +1     | Config allocation                    |
+| `Parser.Parse` (cached) | 38       | 0      | Same as Layout.Parse                 |
 
 ### Where Allocations Come From
 
 For `Parse("2024-03-15")` → 1 alloc:
+
 1. `&Layout{...}` — the returned Layout pointer (**intentional**: user keeps this)
 
 For `ParseWith("March 15, 2024")` → 6 allocs:
+
 1. `config` struct (escapes due to option closures)
 2. `Layout` pointer
 3. `FormatDef` (textual month builds dynamically)
@@ -289,17 +292,17 @@ The textual month path is inherently more expensive because the format isn't in 
 
 ### Test Layers
 
-| Layer | Files | What it tests |
-|-------|-------|---------------|
-| Unit | `internal/*/..._test.go` | Individual components in isolation |
-| Integration | `dateparser_test.go` | Full `Parse`/`ParseWith` pipeline |
-| Format coverage | `coverage_test.go` | All 53+ format strings parse correctly |
-| Gap coverage | `gaps_format_test.go`, `gaps_nl_test.go` | Every competitive gap is closed |
-| Phase tests | `phase2_test.go`, `phase3_test.go`, `phase4_test.go` | Feature-specific coverage |
-| Examples | `example_test.go` | README code compiles and runs |
-| Benchmarks | `bench_test.go` | Performance regression tracking |
-| Panic fuzzing | `fuzz_test.go` | `FuzzParse`, `FuzzDetect` — no panics on arbitrary input |
-| **Semantic fuzzing** | `roundtrip_test.go` | **29 formats × 1000 random dates: format → parse → verify** |
+| Layer                | Files                                                | What it tests                                               |
+| -------------------- | ---------------------------------------------------- | ----------------------------------------------------------- |
+| Unit                 | `internal/*/..._test.go`                             | Individual components in isolation                          |
+| Integration          | `dateparser_test.go`                                 | Full `Parse`/`ParseWith` pipeline                           |
+| Format coverage      | `coverage_test.go`                                   | All 53+ format strings parse correctly                      |
+| Gap coverage         | `gaps_format_test.go`, `gaps_nl_test.go`             | Every competitive gap is closed                             |
+| Phase tests          | `phase2_test.go`, `phase3_test.go`, `phase4_test.go` | Feature-specific coverage                                   |
+| Examples             | `example_test.go`                                    | README code compiles and runs                               |
+| Benchmarks           | `bench_test.go`                                      | Performance regression tracking                             |
+| Panic fuzzing        | `fuzz_test.go`                                       | `FuzzParse`, `FuzzDetect` — no panics on arbitrary input    |
+| **Semantic fuzzing** | `roundtrip_test.go`                                  | **29 formats × 1000 random dates: format → parse → verify** |
 
 ### The Semantic Round-Trip Fuzzer
 
@@ -362,7 +365,7 @@ If the signature collides with an existing entry, you'll need a fallback detecto
 ## Adding a New Locale
 
 1. Create `internal/locale/data/xx.go` following the existing pattern
-2. Include `init() { locale.Register(&XX) }` 
+2. Include `init() { locale.Register(&XX) }`
 3. Add the pre-built var in `locale.go`: `XX, _ = LookupLocale("xx")`
 4. Add test cases in `phase4_test.go` for month names and NL expressions
 5. The locale data should include: MonthsWide, MonthsAbbr, WeekdaysWide, WeekdaysAbbr, AM/PM, and RelativeKeywords

@@ -62,6 +62,15 @@ func NormalizeTwoDigitYear(y int) int {
 	return 2000 + y
 }
 
+// consumed1or2 returns how many digits parse1or2Bounded actually consumed
+// at position off. Checks the second character to distinguish "04" (2) from "4-" (1).
+func consumed1or2(s string, off, slen int) int {
+	if off+1 < slen && s[off+1] >= '0' && s[off+1] <= '9' {
+		return 2
+	}
+	return 1
+}
+
 func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	var (
 		year       = 0
@@ -82,9 +91,14 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		loc = time.UTC
 	}
 
+	// delta tracks the cumulative offset adjustment caused by variable-width
+	// fields (Op*1or2) that consumed more bytes than their minimum Len.
+	// For fixed-width programs (detection path), delta stays 0 — zero cost.
+	var delta int
+
 	for i := 0; i < p.N; i++ {
 		inst := &p.Insts[i]
-		off := int(inst.Offset)
+		off := int(inst.Offset) + delta
 
 		switch inst.Op {
 		case OpYear4:
@@ -117,6 +131,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("month", off, slen)
 			}
 			month = time.Month(v)
+			delta += consumed1or2(s, off, slen) - int(inst.Len)
 
 		case OpMonthName:
 			month = time.Month(inst.Aux)
@@ -134,6 +149,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("day", off, slen)
 			}
 			day = v
+			delta += consumed1or2(s, off, slen) - int(inst.Len)
 
 		case OpHour24:
 			v, ok := parse2Bounded(s, off, slen, 0, 23)
@@ -155,6 +171,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
+			delta += consumed1or2(s, off, slen) - int(inst.Len)
 
 		case OpMinute2:
 			v, ok := parse2Bounded(s, off, slen, 0, 59)
@@ -256,8 +273,36 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 			ordinalDay = val
 
-		case OpLiteral, OpSkip:
-			// Nothing to extract — these exist for offset tracking.
+		case OpTZZOrOffset:
+			if off >= slen {
+				return time.Time{}, fieldError("timezone", off, slen)
+			}
+			if s[off] == 'Z' {
+				loc = time.UTC
+				// 'Z' consumes 1 byte; no further action needed.
+			} else {
+				length := int(inst.Len)
+				if off+length > slen {
+					return time.Time{}, fieldError("timezone offset", off, slen)
+				}
+				tzLoc, ok := parseTZOffset(s, off, length)
+				if !ok {
+					return time.Time{}, fieldError("timezone offset", off, slen)
+				}
+				loc = tzLoc
+			}
+
+		case OpLiteral:
+			// When Aux is set (compiled layouts), validate the literal character.
+			// Detection-path programs leave Aux=0 since the detector already validated.
+			if inst.Aux != 0 {
+				if off >= slen || s[off] != byte(inst.Aux) {
+					return time.Time{}, fmt.Errorf("dateparsa: expected %q at offset %d", rune(inst.Aux), off)
+				}
+			}
+
+		case OpSkip:
+			// Nothing to extract — skip N bytes.
 		}
 	}
 

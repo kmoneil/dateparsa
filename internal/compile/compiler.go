@@ -28,6 +28,7 @@ const (
 	FISOWeek     // ISO week number
 	FISOWeekDay  // ISO weekday (1=Mon)
 	FOrdinalDay  // Ordinal day of year (1-366)
+	FTZZOrOffset // 'Z' → UTC, or ±HH:MM/±HHMM offset (conditional)
 
 	numFieldKinds // sentinel — must be last
 )
@@ -56,7 +57,8 @@ var fieldKindToOp = [numFieldKinds]OpCode{
 	FSkip:      OpSkip,
 	FISOWeek:   OpISOWeek,
 	FISOWeekDay: OpISOWeekDay,
-	FOrdinalDay: OpOrdinalDay,
+	FOrdinalDay:  OpOrdinalDay,
+	FTZZOrOffset: OpTZZOrOffset,
 }
 
 // Field describes one component in a format definition.

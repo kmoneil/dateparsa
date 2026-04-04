@@ -117,6 +117,87 @@ func TestExecute_InvalidDigits(t *testing.T) {
 	}
 }
 
+func TestExecute_TZZOrOffset(t *testing.T) {
+	// Build a program: HH:MM:SS then OpTZZOrOffset at offset 8
+	base := [4]Inst{
+		{Op: OpHour24, Offset: 0, Len: 2},
+		{Op: OpLiteral, Offset: 2, Len: 1},
+		{Op: OpMinute2, Offset: 3, Len: 2},
+		{Op: OpLiteral, Offset: 5, Len: 1},
+	}
+
+	t.Run("Z_means_UTC", func(t *testing.T) {
+		var p Program
+		p.Tz = time.UTC
+		copy(p.Insts[:], base[:])
+		p.Insts[4] = Inst{Op: OpSecond2, Offset: 6, Len: 2}
+		p.Insts[5] = Inst{Op: OpTZZOrOffset, Offset: 8, Len: 6}
+		p.N = 6
+
+		got, err := p.Execute("10:30:00Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Location() != time.UTC {
+			t.Errorf("expected UTC, got %v", got.Location())
+		}
+	})
+
+	t.Run("plus_offset", func(t *testing.T) {
+		var p Program
+		p.Tz = time.UTC
+		copy(p.Insts[:], base[:])
+		p.Insts[4] = Inst{Op: OpSecond2, Offset: 6, Len: 2}
+		p.Insts[5] = Inst{Op: OpTZZOrOffset, Offset: 8, Len: 6}
+		p.N = 6
+
+		got, err := p.Execute("10:30:00+05:30")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, offset := got.Zone()
+		if offset != 5*3600+30*60 {
+			t.Errorf("got offset=%d, want %d", offset, 5*3600+30*60)
+		}
+	})
+
+	t.Run("minus_offset", func(t *testing.T) {
+		var p Program
+		p.Tz = time.UTC
+		copy(p.Insts[:], base[:])
+		p.Insts[4] = Inst{Op: OpSecond2, Offset: 6, Len: 2}
+		p.Insts[5] = Inst{Op: OpTZZOrOffset, Offset: 8, Len: 6}
+		p.N = 6
+
+		got, err := p.Execute("10:30:00-08:00")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, offset := got.Zone()
+		if offset != -8*3600 {
+			t.Errorf("got offset=%d, want %d", offset, -8*3600)
+		}
+	})
+
+	t.Run("compact_plus_offset", func(t *testing.T) {
+		var p Program
+		p.Tz = time.UTC
+		copy(p.Insts[:], base[:])
+		p.Insts[4] = Inst{Op: OpSecond2, Offset: 6, Len: 2}
+		p.Insts[5] = Inst{Op: OpTZZOrOffset, Offset: 8, Len: 5} // +HHMM
+		p.N = 6
+
+		got, err := p.Execute("10:30:00+0530")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, offset := got.Zone()
+		if offset != 5*3600+30*60 {
+			t.Errorf("got offset=%d, want %d", offset, 5*3600+30*60)
+		}
+	})
+}
+
 func TestCompile(t *testing.T) {
 	def := &FormatDef{
 		Name:     "TEST",

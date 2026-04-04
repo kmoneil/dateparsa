@@ -149,6 +149,40 @@ _, err := dateparsa.ParseWith("01/02/2024",
 // err is *dateparsa.AmbiguousDateError with both interpretations
 ```
 
+### Database and JSON integration
+
+The `flextime` subpackage provides a `FlexTime` type that works as a drop-in replacement for `time.Time` in database models and JSON APIs. It implements `sql.Scanner`, `driver.Valuer`, `json.Marshaler`, `json.Unmarshaler`, and the `encoding.Text*` interfaces.
+
+```go
+import "github.com/kmoneil/dateparsa/flextime"
+
+// Use directly in database models — handles time.Time, string, []byte,
+// int64, float64, and NULL from any driver (PostgreSQL, MySQL, SQLite).
+type User struct {
+    CreatedAt flextime.FlexTime
+    DeletedAt flextime.FlexTime // NULL-safe
+}
+
+var u User
+db.QueryRow("SELECT created_at, deleted_at FROM users WHERE id = $1", id).
+    Scan(&u.CreatedAt, &u.DeletedAt)
+
+fmt.Println(u.CreatedAt.Time())  // 2024-03-15 10:30:00 +0000 UTC
+fmt.Println(u.DeletedAt.Valid()) // false (was NULL)
+
+// Works in JSON APIs with mixed date formats
+type APIResponse struct {
+    Created flextime.FlexTime `json:"created"` // "2024-03-15T10:30:00Z"
+    Epoch   flextime.FlexTime `json:"epoch"`   // 1710505800
+    Deleted flextime.FlexTime `json:"deleted"` // null
+}
+
+// Pre-configured scanner for non-default options
+scanner := flextime.NewScanner(flextime.WithPreferDayFirst(true))
+var ft flextime.FlexTime
+scanner.Scan(&ft, "01/02/2024") // February 1, not January 2
+```
+
 ### Options
 
 ```go
@@ -284,7 +318,8 @@ Subsequent:     input → execute (same instructions) → time.Time
 - [x] Phase 3: English natural language ("3 days ago", "next friday", "yesterday at 5pm")
 - [x] Phase 4: 20 locale support (French, German, Spanish, Russian, CJK, Arabic, ...)
 - [x] Phase 5: Batch optimization and allocation elimination pass
-- [ ] Phase 6: Documentation and v0.1.0 release
+- [x] Phase 6: `flextime` subpackage — `sql.Scanner`/`driver.Valuer`/JSON integration
+- [ ] Phase 7: Documentation and v0.1.0 release
 
 ## License
 

@@ -30,6 +30,7 @@ Input string
 
 ```
 dateparsa/                  Public API
+├── flextime/               sql.Scanner / driver.Valuer / JSON integration
 ├── internal/compile/       Instruction set, compiler, executor
 ├── internal/detect/        Signature scanner, trie, format database
 ├── internal/epoch/         Unix timestamp detection
@@ -41,6 +42,7 @@ dateparsa/                  Public API
 **Dependency graph** (no cycles):
 
 ```
+flextime ────── dateparsa (one-way; dateparsa must never import flextime)
 dateparsa ──┬── compile
             ├── detect ──── compile, locale
             ├── epoch

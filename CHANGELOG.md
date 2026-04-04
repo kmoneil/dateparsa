@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-04
+
+### Added
+
+- **`dateparsa/flextime` subpackage**: `FlexTime` type wrapping `time.Time` with
+  automatic format detection for seamless database and JSON integration
+- **`sql.Scanner` implementation**: accepts `time.Time`, `string`, `[]byte`,
+  `int64` (Unix seconds), `float64` (Unix seconds with fractional), and `nil`
+  (SQL NULL) — works out of the box with PostgreSQL, MySQL, and SQLite drivers
+- **`driver.Valuer` implementation**: returns `time.Time` natively, `nil` for
+  SQL NULL
+- **`json.Marshaler` / `json.Unmarshaler`**: encodes as RFC3339Nano, decodes
+  quoted strings (any format dateparsa can detect), numeric Unix timestamps,
+  and JSON `null`
+- **`encoding.TextMarshaler` / `encoding.TextUnmarshaler`**: RFC3339Nano
+  encoding with auto-detection on decode
+- **`flextime.Scanner` type**: pre-configured scanner with `WithPreferDayFirst`,
+  `WithTimezone`, and `WithJSONFormat` options for non-default scanning behavior
+- **Fuzz targets**: `FuzzScanString` and `FuzzUnmarshalJSON` for robustness
+  testing
+
 ## [0.1.0] - 2026-04-04
 
 Initial release of dateparsa — a high-performance, zero-dependency date parsing
@@ -47,4 +68,5 @@ library for Go.
   tests, benchmarks, panic fuzz targets (`FuzzParse`, `FuzzDetect`), and a
   semantic round-trip fuzzer (29 formats x 1000 random dates)
 
+[0.2.0]: https://github.com/kmoneil/dateparsa/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kmoneil/dateparsa/releases/tag/v0.1.0

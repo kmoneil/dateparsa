@@ -53,7 +53,11 @@ func Detect(s string, cfg Config) (Result, bool) {
 	sig := Scan(s)
 	entry := globalTrie.lookup(&sig)
 	if entry == nil {
-		// Step 3b: Try variable-width numeric formats (e.g. 3/15/2024, 3/15/24).
+		// Step 3b: Try ISO 8601 with variable-length fractional seconds.
+		if r, ok := detectISO8601Frac(s); ok {
+			return r, true
+		}
+		// Step 3c: Try variable-width numeric formats (e.g. 3/15/2024, 3/15/24).
 		if r, ok := detectVariableNumeric(s, cfg); ok {
 			return r, true
 		}
@@ -92,6 +96,68 @@ func Detect(s string, cfg Config) (Result, bool) {
 
 // resolveAmbiguous handles DD/DD/DDDD type signatures where the format
 // could be MM/DD/YYYY or DD/MM/YYYY.
+// detectISO8601Frac handles ISO 8601/RFC 3339 with variable-length fractional seconds:
+// "2024-03-15T10:30:00.123Z", "2024-03-15T10:30:00.123456+05:30",
+// "2024-03-15 10:30:00.123456789Z", etc.
+// Matches: YYYY-MM-DD[T ]HH:MM:SS.{1-9 digits}[Z|±HH:MM|±HHMM]
+func detectISO8601Frac(s string) (Result, bool) {
+	n := len(s)
+	// Minimum: "YYYY-MM-DDTHH:MM:SS.fZ" = 22 chars
+	if n < 22 {
+		return Result{}, false
+	}
+	// Check the fixed prefix: YYYY-MM-DD[T ]HH:MM:SS.
+	if !(isDigit(s[0]) && s[4] == '-' && s[7] == '-' &&
+		(s[10] == 'T' || s[10] == ' ') &&
+		s[13] == ':' && s[16] == ':' && s[19] == '.') {
+		return Result{}, false
+	}
+
+	// Count fractional digits after the dot.
+	fracStart := 20
+	fracEnd := fracStart
+	for fracEnd < n && isDigit(s[fracEnd]) {
+		fracEnd++
+	}
+	fracLen := fracEnd - fracStart
+	if fracLen < 1 || fracLen > 9 {
+		return Result{}, false
+	}
+
+	fields := make([]compile.Field, 0, 10)
+	fields = append(fields,
+		compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+		compile.Field{Kind: compile.FMonth2, Offset: 5, Len: 2},
+		compile.Field{Kind: compile.FDay2, Offset: 8, Len: 2},
+		compile.Field{Kind: compile.FHour24, Offset: 11, Len: 2},
+		compile.Field{Kind: compile.FMinute2, Offset: 14, Len: 2},
+		compile.Field{Kind: compile.FSecond2, Offset: 17, Len: 2},
+		compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracLen},
+	)
+
+	// Parse timezone immediately after fractional seconds (no space).
+	// If there's a space, bail — let detectGoTimeString handle it.
+	pos := fracEnd
+	if pos < n {
+		if s[pos] == 'Z' && (pos+1 == n) {
+			fields = append(fields, compile.Field{Kind: compile.FTZZ, Offset: pos, Len: 1})
+		} else if s[pos] == '+' || s[pos] == '-' {
+			tzLen := n - pos
+			if tzLen == 5 || tzLen == 6 {
+				fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: pos, Len: tzLen})
+			} else {
+				return Result{}, false // complex tz — let other handlers deal with it
+			}
+		} else if s[pos] != ' ' {
+			return Result{}, false // unexpected character after frac
+		}
+		// Space after frac = Go time.String or SQL+tz — fall through to other handlers.
+	}
+
+	def := &compile.FormatDef{Name: "ISO8601_FRAC", Fields: fields}
+	return Result{Def: def}, true
+}
+
 // detectGoTimeString handles Go's time.Time.String() output:
 // "2012-08-03 18:31:59.257000000 +0000 UTC"
 // "2015-02-08 03:02:00 +0300 MSK"

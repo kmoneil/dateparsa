@@ -4,6 +4,7 @@ package natural
 
 import (
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -104,12 +105,45 @@ const (
 	BndEnd
 )
 
+// lowerASCII performs an in-place ASCII-only lowering into a stack-friendly buffer.
+// Returns the lowered string, or "" if non-ASCII case mapping would change length.
+// For pure-ASCII inputs (common in English NL), this avoids the strings.ToLower heap allocation.
+func lowerASCII(s string) string {
+	// Check for non-ASCII bytes that could change length under Unicode lowering.
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			// Fall back to strings.ToLower for non-ASCII.
+			lower := strings.ToLower(s)
+			if len(lower) != len(s) {
+				return ""
+			}
+			return lower
+		}
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+		}
+	}
+	if !hasUpper {
+		return s // already lowercase, zero alloc
+	}
+	// ASCII-only with uppercase: allocate and fold.
+	buf := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 0x20
+		}
+		buf[i] = c
+	}
+	return string(buf)
+}
+
 // Scan tokenizes a natural language date string into a token sequence.
 // All matching is case-insensitive. Unknown words become TokUnknown.
 func Scan(s string) []Token {
-	lower := strings.ToLower(s)
-	if len(lower) != len(s) {
-		// Non-ASCII case mapping changed length — bail to avoid offset mismatch.
+	lower := lowerASCII(s)
+	if lower == "" {
 		return nil
 	}
 
@@ -576,6 +610,21 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 	return words
 }
 
+// localeWordCache caches the built word list per locale Data pointer.
+// Built once per locale on first use, reused thereafter. Safe for concurrent access
+// since sync.Map handles concurrent reads and writes.
+var localeWordCache sync.Map // map[*locale.Data][]localeWord
+
+// getLocaleWords returns the cached word list for a locale, building it on first use.
+func getLocaleWords(loc *locale.Data) []localeWord {
+	if v, ok := localeWordCache.Load(loc); ok {
+		return v.([]localeWord)
+	}
+	words := buildLocaleWords(loc)
+	localeWordCache.Store(loc, words)
+	return words
+}
+
 // ScanLocale tokenizes a natural language date string using locale-specific keywords.
 func ScanLocale(s string, loc *locale.Data) []Token {
 	if loc == nil {
@@ -586,7 +635,7 @@ func ScanLocale(s string, loc *locale.Data) []Token {
 	// Fold accents for matching (e.g., "días" → "dias").
 	lower = foldAccents(lower)
 
-	words := buildLocaleWords(loc)
+	words := getLocaleWords(loc)
 	var tokens []Token
 	i := 0
 	n := len(lower)

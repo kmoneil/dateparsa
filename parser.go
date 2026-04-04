@@ -35,8 +35,8 @@ func (p *Parser) Parse(s string) (ParseResult, error) {
 		}
 	}
 
-	// Slow path: full detection.
-	result, err := ParseWith(s, p.options()...)
+	// Slow path: full detection using stored config directly (no option reconstruction).
+	result, err := parseWithConfig(s, p.cfg)
 	if err != nil {
 		return ParseResult{}, err
 	}
@@ -69,29 +69,4 @@ func (p *Parser) ParseColumn(values []string) ([]time.Time, []error) {
 // Reset clears the cached layout, forcing re-detection on the next call.
 func (p *Parser) Reset() {
 	p.layout = nil
-}
-
-func (p *Parser) options() []Option {
-	// Reconstruct options from the stored config.
-	var opts []Option
-	if p.cfg.preferDayFirst {
-		opts = append(opts, WithPreferDayFirst(true))
-	}
-	if p.cfg.preferYearFirst {
-		opts = append(opts, WithPreferYearFirst(true))
-	}
-	if p.cfg.preferFuture {
-		opts = append(opts, WithPreferFuture(true))
-	}
-	if p.cfg.strictMode {
-		opts = append(opts, WithStrictMode(true))
-	}
-	if p.cfg.timezone != nil {
-		opts = append(opts, WithTimezone(p.cfg.timezone))
-	}
-	if len(p.cfg.locales) > 0 {
-		opts = append(opts, WithLocales(p.cfg.locales...))
-	}
-	opts = append(opts, WithBaseTime(p.cfg.baseTime))
-	return opts
 }

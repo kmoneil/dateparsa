@@ -87,6 +87,11 @@ func Parse(s string) (ParseResult, error) {
 // ParseWith parses using explicit options (locale, base time, preferences).
 func ParseWith(s string, opts ...Option) (ParseResult, error) {
 	cfg := buildConfig(opts)
+	return parseWithConfig(s, cfg)
+}
+
+// parseWithConfig is the internal implementation shared by ParseWith and Parser.
+func parseWithConfig(s string, cfg config) (ParseResult, error) {
 	localeDatas := localeDataFromConfig(cfg)
 
 	dcfg := detect.Config{

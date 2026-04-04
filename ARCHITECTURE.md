@@ -263,11 +263,12 @@ This produces **1 allocation** (the `Layout` pointer) for common formats. The `L
 | ----------------------- | -------- | ------ | ------------------------------------ |
 | `Layout.Parse`          | 21-36    | 0      | Instruction loop + `time.Date`       |
 | `Parse` (trie hit)      | 87-143   | 1      | Signature scan + trie walk + compile |
-| `Parse` (textual month) | 603      | 6      | Month name search + field building   |
-| `Parse` (NL)            | 634-1015 | 3      | Tokenization + evaluation            |
-| `Parse` (epoch)         | 55       | 1      | Digit scan + range check             |
+| `Parse` (RFC3339/+TZ)   | 170-180  | 1      | Same + pre-built TZ offset lookup    |
+| `Parse` (textual month) | 430-490  | 6      | Month name search + field building   |
+| `Parse` (NL)            | 490-900  | 3      | Tokenization + evaluation            |
+| `Parse` (epoch)         | 55-70    | 1      | Digit scan + range check             |
 | `ParseWith` (with opts) | +50-80   | +1     | Config allocation                    |
-| `Parser.Parse` (cached) | 38       | 0      | Same as Layout.Parse                 |
+| `Parser.Parse` (cached) | 38-45    | 0      | Same as Layout.Parse                 |
 
 ### Where Allocations Come From
 

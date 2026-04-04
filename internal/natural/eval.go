@@ -544,7 +544,22 @@ func evalBareWeekday(tokens []Token, base time.Time, preferFuture bool) *Result 
 
 // collapseNumbers removes redundant "a"/"an" (IntVal=1) tokens when
 // they immediately precede another TokNumber (e.g., "a few" → keep "few").
+// Returns the input slice unchanged (zero allocation) when no collapsing is needed.
 func collapseNumbers(tokens []Token) []Token {
+	// Quick scan: check if any collapsing is needed.
+	needsCollapse := false
+	for i := 0; i < len(tokens)-1; i++ {
+		if tokens[i].Kind == TokNumber && tokens[i].IntVal == 1 &&
+			(tokens[i].Raw == "a" || tokens[i].Raw == "an") &&
+			tokens[i+1].Kind == TokNumber {
+			needsCollapse = true
+			break
+		}
+	}
+	if !needsCollapse {
+		return tokens
+	}
+
 	result := make([]Token, 0, len(tokens))
 	for i := 0; i < len(tokens); i++ {
 		if tokens[i].Kind == TokNumber && tokens[i].IntVal == 1 &&

@@ -297,7 +297,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			// Detection-path programs leave Aux=0 since the detector already validated.
 			if inst.Aux != 0 {
 				if off >= slen || s[off] != byte(inst.Aux) {
-					return time.Time{}, fmt.Errorf("dateparsa: expected %q at offset %d", rune(inst.Aux), off)
+					return time.Time{}, fieldError("literal", off, slen)
 				}
 			}
 
@@ -353,7 +353,7 @@ func parse4Digits(s string, off int) (int, bool) {
 // parseFracSec parses fractional seconds and returns nanoseconds.
 func parseFracSec(s string, off, length int) (int, bool) {
 	val := 0
-	for i := 0; i < length; i++ {
+	for i := range length {
 		d := s[off+i] - '0'
 		if d > 9 {
 			return 0, false
@@ -361,13 +361,70 @@ func parseFracSec(s string, off, length int) (int, bool) {
 		val = val*10 + int(d)
 	}
 	// Scale to nanoseconds: if length=3 (millis), multiply by 1e6; length=6 (micros), 1e3; etc.
-	for i := length; i < 9; i++ {
+	for i := length; i < 9; i++ { //nolint:rangeint
 		val *= 10
 	}
 	return val, true
 }
 
+// tzOffsetTable is a pre-built lookup table of *time.Location for common UTC
+// offsets at 15-minute granularity. Eliminates time.FixedZone allocations on
+// the hot path. Covers -12:00 to +14:00 (105 entries at 15-min increments).
+// Index = (offsetMinutes / 15) + 48, where offsetMinutes ranges from -720 to +840.
+const (
+	tzTableMinOffset = -720 // -12:00 in minutes
+	tzTableMaxOffset = 840  // +14:00 in minutes
+	tzTableStep      = 15   // 15-minute granularity
+	tzTableSize = (tzTableMaxOffset-tzTableMinOffset)/tzTableStep + 1
+)
+
+var tzOffsetTable [tzTableSize]*time.Location
+
+func init() {
+	for i := range tzTableSize {
+		minutes := tzTableMinOffset + i*tzTableStep
+		seconds := minutes * 60
+		sign := "+"
+		absMin := minutes
+		if minutes < 0 {
+			sign = "-"
+			absMin = -minutes
+		}
+		h := absMin / 60
+		m := absMin % 60
+		var name string
+		if m == 0 {
+			name = fmt.Sprintf("%s%02d:00", sign, h)
+		} else {
+			name = fmt.Sprintf("%s%02d:%02d", sign, h, m)
+		}
+		tzOffsetTable[i] = time.FixedZone(name, seconds)
+	}
+}
+
+// lookupTZByOffset returns a pre-built *time.Location for the given offset
+// in seconds. Returns nil if the offset is not in the lookup table (i.e., not
+// at a 15-minute boundary or out of range).
+func lookupTZByOffset(totalSeconds int) *time.Location {
+	if totalSeconds == 0 {
+		return time.UTC
+	}
+	minutes := totalSeconds / 60
+	if minutes*60 != totalSeconds {
+		return nil // not an exact minute boundary
+	}
+	if minutes%tzTableStep != 0 {
+		return nil // not at 15-minute granularity
+	}
+	idx := (minutes - tzTableMinOffset) / tzTableStep
+	if idx < 0 || idx >= tzTableSize {
+		return nil
+	}
+	return tzOffsetTable[idx]
+}
+
 // parseTZOffset parses a timezone offset like +05:30, -0800, +00:00, +00.
+// Uses a pre-built lookup table for common offsets to avoid allocation.
 func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 	if length < 3 {
 		return nil, false
@@ -411,34 +468,54 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 	}
 
 	totalSeconds := sign * (h*3600 + m*60)
+
+	// Fast path: look up pre-built Location from table.
+	if loc := lookupTZByOffset(totalSeconds); loc != nil {
+		return loc, true
+	}
+
+	// Slow path: uncommon offset, allocate via FixedZone.
 	name := s[off : off+length]
 	return time.FixedZone(name, totalSeconds), true
 }
 
+// Pre-built timezone abbreviation Locations — allocated once at init.
+var (
+	tzGMT = time.FixedZone("GMT", 0)
+	tzEST = time.FixedZone("EST", -5*3600)
+	tzEDT = time.FixedZone("EDT", -4*3600)
+	tzCST = time.FixedZone("CST", -6*3600)
+	tzCDT = time.FixedZone("CDT", -5*3600)
+	tzMST = time.FixedZone("MST", -7*3600)
+	tzMDT = time.FixedZone("MDT", -6*3600)
+	tzPST = time.FixedZone("PST", -8*3600)
+	tzPDT = time.FixedZone("PDT", -7*3600)
+)
+
 // lookupTZAbbr resolves a timezone abbreviation to a *time.Location.
-// Hardcoded: UTC, GMT, and US timezone abbreviations. Falls back to Go's timezone database.
+// Uses pre-built Locations for common abbreviations to avoid allocation.
 func lookupTZAbbr(name string) (*time.Location, bool) {
 	switch name {
 	case "UTC":
 		return time.UTC, true
 	case "GMT":
-		return time.FixedZone("GMT", 0), true
+		return tzGMT, true
 	case "EST":
-		return time.FixedZone("EST", -5*3600), true
+		return tzEST, true
 	case "EDT":
-		return time.FixedZone("EDT", -4*3600), true
+		return tzEDT, true
 	case "CST":
-		return time.FixedZone("CST", -6*3600), true
+		return tzCST, true
 	case "CDT":
-		return time.FixedZone("CDT", -5*3600), true
+		return tzCDT, true
 	case "MST":
-		return time.FixedZone("MST", -7*3600), true
+		return tzMST, true
 	case "MDT":
-		return time.FixedZone("MDT", -6*3600), true
+		return tzMDT, true
 	case "PST":
-		return time.FixedZone("PST", -8*3600), true
+		return tzPST, true
 	case "PDT":
-		return time.FixedZone("PDT", -7*3600), true
+		return tzPDT, true
 	default:
 		// Try Go's timezone database.
 		loc, err := time.LoadLocation(name)

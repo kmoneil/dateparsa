@@ -42,16 +42,21 @@ func Detect(s string, cfg Config) (Result, bool) {
 		return r, true
 	}
 
-	// Step 2: Try textual month formats if the string contains letters.
-	if hasLetter(s) {
+	// Step 2: Compute signature and walk the trie. The signature scan also
+	// detects whether the input contains letters (sig.HasLetter), eliminating
+	// the need for a separate hasLetter pass over the input.
+	sig := Scan(s)
+	entry := globalTrie.lookup(&sig)
+
+	// Step 2b: If the trie missed and the string contains letters, try textual month.
+	// This is ordered after the trie so that formats with timezone names (e.g.
+	// "2024-03-15 10:30:00 UTC") are matched by the trie first.
+	if entry == nil && sig.HasLetter {
 		if result, ok := detectTextualMonth(s, cfg); ok {
 			return result, true
 		}
 	}
 
-	// Step 3: Compute signature and walk the trie.
-	sig := Scan(s)
-	entry := globalTrie.lookup(&sig)
 	if entry == nil {
 		// Step 3b: Try ISO 8601 with variable-length fractional seconds.
 		if r, ok := detectISO8601Frac(s); ok {
@@ -61,23 +66,23 @@ func Detect(s string, cfg Config) (Result, bool) {
 		if r, ok := detectVariableNumeric(s, cfg); ok {
 			return r, true
 		}
-		// Step 3c: Try Go time.String() output and other complex formats.
+		// Step 3d: Try Go time.String() output and other complex formats.
 		if r, ok := detectGoTimeString(s); ok {
 			return r, true
 		}
-		// Step 3d: Try date + tz offset without time (e.g. 2020-07-20+08:00).
+		// Step 3e: Try date + tz offset without time (e.g. 2020-07-20+08:00).
 		if r, ok := detectDatePlusTZ(s); ok {
 			return r, true
 		}
 		return Result{}, false
 	}
 
-	// Step 3: Handle ambiguous formats.
+	// Step 4: Handle ambiguous formats.
 	if entry.ambig {
 		return resolveAmbiguous(s, entry, cfg)
 	}
 
-	// Step 4: Return the pre-built FormatDef (zero allocation for trie-matched formats).
+	// Step 5: Return the pre-built FormatDef (zero allocation for trie-matched formats).
 	if entry.def != nil {
 		return Result{Def: entry.def}, true
 	}
@@ -1022,32 +1027,51 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 	return fields
 }
 
-// English month names — fallback when no locale is specified.
-var defaultMonthNames = map[string]int{
-	"january": 1, "jan": 1,
-	"february": 2, "feb": 2,
-	"march": 3, "mar": 3,
-	"april": 4, "apr": 4,
-	"may": 5,
-	"june": 6, "jun": 6,
-	"july": 7, "jul": 7,
-	"august": 8, "aug": 8,
-	"september": 9, "sep": 9, "sept": 9,
-	"october": 10, "oct": 10,
-	"november": 11, "nov": 11,
-	"december": 12, "dec": 12,
+// monthEntry pairs a lowercase month name with its month number.
+type monthEntry struct {
+	name string
+	num  int
 }
 
-// findMonthName finds the first month name in the lowercase string,
-// searching both the default English names and any locale-specific names.
+// defaultMonthNames is sorted longest-first for greedy matching.
+// Using a slice instead of a map gives deterministic iteration order
+// and eliminates hash-table traversal overhead on the hot path.
+var defaultMonthNames = []monthEntry{
+	{"september", 9},
+	{"february", 2},
+	{"november", 11},
+	{"december", 12},
+	{"january", 1},
+	{"october", 10},
+	{"august", 8},
+	{"march", 3},
+	{"april", 4},
+	{"june", 6},
+	{"july", 7},
+	{"sept", 9},
+	{"jan", 1},
+	{"feb", 2},
+	{"mar", 3},
+	{"apr", 4},
+	{"may", 5},
+	{"jun", 6},
+	{"jul", 7},
+	{"aug", 8},
+	{"sep", 9},
+	{"oct", 10},
+	{"nov", 11},
+	{"dec", 12},
+}
+
+// findMonthNameCI finds the first month name in the string using
+// case-insensitive matching directly on the input (no lowered copy).
 // Returns (month number 1-12, start index, end index) or (0, 0, 0) if not found.
-// findMonthNameCI is like findMonthName but does case-insensitive matching
-// directly on the input string without allocating a lowered copy.
 func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
-	// Search English names (case-insensitive).
-	for name, num := range defaultMonthNames {
-		if idx, end, ok := matchWordCI(s, name); ok {
-			return num, idx, end
+	// Search English names (case-insensitive), longest first.
+	for i := range defaultMonthNames {
+		entry := &defaultMonthNames[i]
+		if idx, end, ok := matchWordCI(s, entry.name); ok {
+			return entry.num, idx, end
 		}
 	}
 	// Search locale-specific names.
@@ -1121,27 +1145,6 @@ func equalsFoldASCII(a, b string) bool {
 // (letters, including non-ASCII bytes which may be part of UTF-8 sequences).
 func isWordChar(c byte) bool {
 	return isLetter(c) || c >= 0x80
-}
-
-func hasLetter(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 0x80 {
-			// Non-ASCII byte — could be UTF-8 letter (Cyrillic, etc.)
-			return true
-		}
-		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
-			// Skip 'T' and 'Z' when they appear in ISO-like positions.
-			if c == 'T' && i > 0 && i < len(s)-1 && isDigit(s[i-1]) && isDigit(s[i+1]) {
-				continue
-			}
-			if c == 'Z' && (i == len(s)-1 || (i < len(s)-1 && (s[i+1] == '+' || s[i+1] == '-'))) {
-				continue
-			}
-			return true
-		}
-	}
-	return false
 }
 
 func isLetter(c byte) bool {

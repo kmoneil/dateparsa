@@ -19,8 +19,9 @@ const maxSigLen = 64
 // Signature is a stack-allocated buffer holding the character class sequence
 // for an input string. No heap allocation.
 type Signature struct {
-	buf [maxSigLen]CharClass
-	len int
+	buf       [maxSigLen]CharClass
+	len       int
+	HasLetter bool // true if any byte was classified as CLetter
 }
 
 // Len returns the number of character classes in the signature.
@@ -58,6 +59,7 @@ func Scan(s string) Signature {
 				sig.buf[i] = CSpecial
 			} else {
 				sig.buf[i] = CLetter
+				sig.HasLetter = true
 			}
 
 		case c == 'Z':
@@ -66,11 +68,13 @@ func Scan(s string) Signature {
 				sig.buf[i] = CSpecial
 			} else {
 				sig.buf[i] = CLetter
+				sig.HasLetter = true
 			}
 
 		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Y'):
 			// Letters (A-Y excluding T handled above, Z handled above)
 			sig.buf[i] = CLetter
+			sig.HasLetter = true
 
 		case c == '-' || c == '/':
 			// These could be separators OR timezone offset signs.
@@ -99,6 +103,7 @@ func Scan(s string) Signature {
 		default:
 			// Non-ASCII bytes, rare punctuation: treat as letter for now.
 			sig.buf[i] = CLetter
+			sig.HasLetter = true
 		}
 	}
 

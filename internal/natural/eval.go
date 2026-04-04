@@ -461,7 +461,7 @@ func evalCompoundNAgo(tokens []Token, base time.Time) *Result {
 	}
 
 	// Determine direction.
-	dir := DirFromNow
+	var dir Direction
 	if prefixIn {
 		dir = DirIn
 	} else {

@@ -109,7 +109,7 @@ func TestFindMonthName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		month, _, _ := findMonthName(tt.input, nil)
+		month, _, _ := findMonthNameCI(tt.input, nil)
 		if month != tt.month {
 			t.Errorf("findMonthName(%q) = %d, want %d", tt.input, month, tt.month)
 		}

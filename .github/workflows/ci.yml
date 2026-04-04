@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.23", "1.24", "stable"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Run tests
+        run: go test -race -count=1 -timeout=120s ./...
+      - name: Run vet
+        run: go vet ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Fuzz Parse
+        run: go test -fuzz=FuzzParse -fuzztime=30s -timeout=120s
+      - name: Fuzz Detect
+        run: go test -fuzz=FuzzDetect -fuzztime=30s -timeout=120s
+
+  alloc:
+    name: Zero-alloc check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Verify Layout.Parse is zero-alloc
+        run: go test -run=TestLayoutParseZeroAlloc -count=1 -timeout=30s
+
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Run benchmarks
+        run: go test -bench=. -benchmem -count=1 -timeout=300s | tee /tmp/bench.txt
+      - name: Check key benchmarks
+        run: |
+          echo "=== Key benchmark results ==="
+          grep -E 'BenchmarkParse_ISO8601-|BenchmarkLayout_Parse-|BenchmarkParser_Cached-' /tmp/bench.txt
+
+  binary-size:
+    name: Binary size check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build size test binary
+        run: |
+          mkdir -p /tmp/sizecheck
+          cat > /tmp/sizecheck/main.go << 'EOF'
+          package main
+          import (
+            "fmt"
+            "github.com/kmoneil/dateparsa"
+          )
+          func main() {
+            r, _ := dateparsa.Parse("2024-03-15")
+            fmt.Println(r.Time)
+          }
+          EOF
+          cd /tmp/sizecheck
+          go mod init sizecheck
+          go mod edit -replace github.com/kmoneil/dateparsa=$GITHUB_WORKSPACE
+          go mod tidy
+          go build -o test_bin .
+          SIZE=$(stat -c%s test_bin 2>/dev/null || stat -f%z test_bin)
+          echo "Binary size: $SIZE bytes ($(echo "scale=1; $SIZE/1048576" | bc)MB)"
+          # Fail if over 10MB
+          if [ "$SIZE" -gt 10485760 ]; then
+            echo "FAIL: binary too large"
+            exit 1
+          fi

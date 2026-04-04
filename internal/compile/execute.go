@@ -329,7 +329,7 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 		return nil, false
 	}
 
-	sign := 1
+	var sign int
 	switch s[off] {
 	case '+':
 		sign = 1

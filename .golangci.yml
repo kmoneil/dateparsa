@@ -1,0 +1,26 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: false
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - unused
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+
+issues:
+  exclude-dirs:
+    - _plans
+    - _tmp
+  max-issues-per-linter: 0
+  max-same-issues: 0

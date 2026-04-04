@@ -152,10 +152,6 @@ func detectGoTimeString(s string) (Result, bool) {
 		}
 	}
 
-	// Skip space and optional timezone name (UTC, MSK, etc.).
-	if pos < n && s[pos] == ' ' {
-		pos++
-	}
 	// Skip timezone name and any trailing content (e.g. "m=+0.000000001").
 	// We don't need to parse it — the offset is sufficient.
 
@@ -581,7 +577,7 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// Handle "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822)
 
 	fields := make([]compile.Field, 0, 6)
-	name := "TEXTUAL_MONTH"
+	var name string
 	goLayout := ""
 
 	// Month is already resolved.
@@ -943,35 +939,6 @@ var defaultMonthNames = map[string]int{
 // findMonthName finds the first month name in the lowercase string,
 // searching both the default English names and any locale-specific names.
 // Returns (month number 1-12, start index, end index) or (0, 0, 0) if not found.
-func findMonthName(lower string, locales []*locale.Data) (int, int, int) {
-	// Fast path: search default English names first (no allocation).
-	if num, start, end := searchMonthMap(lower, defaultMonthNames); num > 0 {
-		return num, start, end
-	}
-
-	// Search locale-specific names.
-	for _, loc := range locales {
-		for i := 0; i < 12; i++ {
-			wide := strings.ToLower(loc.MonthsWide[i])
-			if num, start, end := matchMonthWord(lower, wide, i+1); num > 0 {
-				return num, start, end
-			}
-			abbr := strings.ToLower(loc.MonthsAbbr[i])
-			if num, start, end := matchMonthWord(lower, abbr, i+1); num > 0 {
-				return num, start, end
-			}
-			// Try without trailing dot (e.g. "janv." -> "janv").
-			clean := strings.TrimRight(abbr, ".")
-			if clean != abbr {
-				if num, start, end := matchMonthWord(lower, clean, i+1); num > 0 {
-					return num, start, end
-				}
-			}
-		}
-	}
-	return 0, 0, 0
-}
-
 // findMonthNameCI is like findMonthName but does case-insensitive matching
 // directly on the input string without allocating a lowered copy.
 func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
@@ -1049,45 +1016,6 @@ func equalsFoldASCII(a, b string) bool {
 }
 
 // searchMonthMap scans for any month name from the map in the string.
-func searchMonthMap(lower string, names map[string]int) (int, int, int) {
-	for i := 0; i < len(lower); i++ {
-		if lower[i] < 0x41 {
-			continue
-		}
-		for name, num := range names {
-			if i+len(name) <= len(lower) && lower[i:i+len(name)] == name {
-				if (i == 0 || !isWordChar(lower[i-1])) &&
-					(i+len(name) == len(lower) || !isWordChar(lower[i+len(name)])) {
-					return num, i, i + len(name)
-				}
-			}
-		}
-	}
-	return 0, 0, 0
-}
-
-// matchMonthWord checks if the given month name appears as a whole word in lower.
-func matchMonthWord(lower, name string, monthNum int) (int, int, int) {
-	if name == "" {
-		return 0, 0, 0
-	}
-	idx := strings.Index(lower, name)
-	for idx >= 0 {
-		end := idx + len(name)
-		if (idx == 0 || !isWordChar(lower[idx-1])) &&
-			(end == len(lower) || !isWordChar(lower[end])) {
-			return monthNum, idx, end
-		}
-		// Try next occurrence.
-		next := strings.Index(lower[end:], name)
-		if next < 0 {
-			break
-		}
-		idx = end + next
-	}
-	return 0, 0, 0
-}
-
 // isWordChar returns true for characters that can be part of a word
 // (letters, including non-ASCII bytes which may be part of UTF-8 sequences).
 func isWordChar(c byte) bool {

@@ -5,6 +5,63 @@ import (
 	"time"
 )
 
+// parse2Bounded extracts a 2-digit field at s[off:off+2] and validates it is within [lo, hi].
+// Returns (value, true) on success, (0, false) on failure.
+// Kept minimal for inlining — callers handle error construction.
+func parse2Bounded(s string, off, slen, lo, hi int) (int, bool) {
+	if off+2 > slen {
+		return 0, false
+	}
+	v, ok := parse2Digits(s, off)
+	if !ok || v < lo || v > hi {
+		return 0, false
+	}
+	return v, true
+}
+
+// parse1or2Bounded extracts a 1-or-2-digit field at s[off:] and validates it is within [lo, hi].
+// Returns (value, true) on success, (0, false) on failure.
+func parse1or2Bounded(s string, off, slen, lo, hi int) (int, bool) {
+	if off >= slen {
+		return 0, false
+	}
+	d0 := s[off] - '0'
+	if d0 > 9 {
+		return 0, false
+	}
+	v := int(d0)
+	if off+1 < slen {
+		if d1 := s[off+1] - '0'; d1 <= 9 {
+			v = v*10 + int(d1)
+		}
+	}
+	if v < lo || v > hi {
+		return 0, false
+	}
+	return v, true
+}
+
+// applyAMPM converts a 12-hour clock value to 24-hour using the AM/PM flag.
+// ampm: 1=AM, -1=PM, 0=unset (no conversion).
+func applyAMPM(hour int, ampm int8) int {
+	if ampm == -1 && hour != 12 { // PM
+		return hour + 12
+	}
+	if ampm == 1 && hour == 12 { // AM
+		return 0
+	}
+	return hour
+}
+
+// NormalizeTwoDigitYear converts a 2-digit year to a 4-digit year.
+// Pivot: years >= 69 map to 1900s, years < 69 map to 2000s.
+func NormalizeTwoDigitYear(y int) int {
+	if y >= 69 {
+		return 1900 + y
+	}
+	return 2000 + y
+}
+
 func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	var (
 		year       = 0
@@ -41,104 +98,77 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			year = y
 
 		case OpYear2:
-			if off+2 > slen {
-				return time.Time{}, fieldError("year", off, slen)
-			}
-			y, ok := parse2Digits(s, off)
+			v, ok := parse2Bounded(s, off, slen, 0, 99)
 			if !ok {
 				return time.Time{}, fieldError("year", off, slen)
 			}
-			if y >= 69 {
-				year = 1900 + y
-			} else {
-				year = 2000 + y
-			}
+			year = NormalizeTwoDigitYear(v)
 
 		case OpMonth2:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 1, 12)
+			if !ok {
 				return time.Time{}, fieldError("month", off, slen)
 			}
-			m, ok := parse2Digits(s, off)
-			if !ok || m < 1 || m > 12 {
-				return time.Time{}, fieldError("month", off, slen)
-			}
-			month = time.Month(m)
+			month = time.Month(v)
 
 		case OpMonth1or2:
-			m, n, ok := parse1or2Digits(s, off, slen)
-			if !ok || m < 1 || m > 12 {
+			v, ok := parse1or2Bounded(s, off, slen, 1, 12)
+			if !ok {
 				return time.Time{}, fieldError("month", off, slen)
 			}
-			month = time.Month(m)
-			_ = n // consumed bytes — variable-width handled by compiler
+			month = time.Month(v)
 
 		case OpMonthName:
 			month = time.Month(inst.Aux)
 
 		case OpDay2:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 1, 31)
+			if !ok {
 				return time.Time{}, fieldError("day", off, slen)
 			}
-			d, ok := parse2Digits(s, off)
-			if !ok || d < 1 || d > 31 {
-				return time.Time{}, fieldError("day", off, slen)
-			}
-			day = d
+			day = v
 
 		case OpDay1or2:
-			d, n, ok := parse1or2Digits(s, off, slen)
-			if !ok || d < 1 || d > 31 {
+			v, ok := parse1or2Bounded(s, off, slen, 1, 31)
+			if !ok {
 				return time.Time{}, fieldError("day", off, slen)
 			}
-			day = d
-			_ = n
+			day = v
 
 		case OpHour24:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 0, 23)
+			if !ok {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
-			h, ok := parse2Digits(s, off)
-			if !ok || h > 23 {
-				return time.Time{}, fieldError("hour", off, slen)
-			}
-			hour = h
+			hour = v
 
 		case OpHour12:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 1, 12)
+			if !ok {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
-			h, ok := parse2Digits(s, off)
-			if !ok || h < 1 || h > 12 {
-				return time.Time{}, fieldError("hour", off, slen)
-			}
-			hour = h
+			hour = v
 
 		case OpHour1or2:
-			h, _, ok := parse1or2Digits(s, off, slen)
-			if !ok || h > 23 {
+			v, ok := parse1or2Bounded(s, off, slen, 0, 23)
+			if !ok {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
-			hour = h
+			hour = v
 
 		case OpMinute2:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 0, 59)
+			if !ok {
 				return time.Time{}, fieldError("minute", off, slen)
 			}
-			m, ok := parse2Digits(s, off)
-			if !ok || m > 59 {
-				return time.Time{}, fieldError("minute", off, slen)
-			}
-			minute = m
+			minute = v
 
 		case OpSecond2:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 0, 60) // 60 for leap second
+			if !ok {
 				return time.Time{}, fieldError("second", off, slen)
 			}
-			sec, ok := parse2Digits(s, off)
-			if !ok || sec > 60 { // 60 for leap second
-				return time.Time{}, fieldError("second", off, slen)
-			}
-			second = sec
+			second = v
 
 		case OpFracSec:
 			length := int(inst.Len)
@@ -192,14 +222,11 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			loc = tzLoc
 
 		case OpISOWeek:
-			if off+2 > slen {
+			v, ok := parse2Bounded(s, off, slen, 1, 53)
+			if !ok {
 				return time.Time{}, fieldError("iso week", off, slen)
 			}
-			w, ok := parse2Digits(s, off)
-			if !ok || w < 1 || w > 53 {
-				return time.Time{}, fieldError("iso week", off, slen)
-			}
-			isoWeek = w
+			isoWeek = v
 
 		case OpISOWeekDay:
 			if off >= slen {
@@ -235,15 +262,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	}
 
 	// Apply AM/PM conversion.
-	if ampm == -1 { // PM
-		if hour != 12 {
-			hour += 12
-		}
-	} else if ampm == 1 { // AM
-		if hour == 12 {
-			hour = 0
-		}
-	}
+	hour = applyAMPM(hour, ampm)
 
 	// ISO week date: convert year + week + weekday to calendar date.
 	if isoWeek > 0 {
@@ -258,8 +277,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 
 	// Ordinal day: convert year + day-of-year to calendar date.
 	if ordinalDay > 0 {
-		t := time.Date(year, 1, ordinalDay, hour, minute, second, nsec, loc)
-		return t, nil
+		return time.Date(year, 1, ordinalDay, hour, minute, second, nsec, loc), nil
 	}
 
 	return time.Date(year, month, day, hour, minute, second, nsec, loc), nil
@@ -285,25 +303,6 @@ func parse4Digits(s string, off int) (int, bool) {
 		return 0, false
 	}
 	return int(d0)*1000 + int(d1)*100 + int(d2)*10 + int(d3), true
-}
-
-// parse1or2Digits parses one or two ASCII decimal digits starting at s[off].
-// Returns the value, number of bytes consumed, and success.
-func parse1or2Digits(s string, off int, slen int) (int, int, bool) {
-	if off >= slen {
-		return 0, 0, false
-	}
-	d0 := s[off] - '0'
-	if d0 > 9 {
-		return 0, 0, false
-	}
-	if off+1 < slen {
-		d1 := s[off+1] - '0'
-		if d1 <= 9 {
-			return int(d0)*10 + int(d1), 2, true
-		}
-	}
-	return int(d0), 1, true
 }
 
 // parseFracSec parses fractional seconds and returns nanoseconds.
@@ -372,6 +371,7 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 }
 
 // lookupTZAbbr resolves a timezone abbreviation to a *time.Location.
+// Hardcoded: UTC, GMT, and US timezone abbreviations. Falls back to Go's timezone database.
 func lookupTZAbbr(name string) (*time.Location, bool) {
 	switch name {
 	case "UTC":

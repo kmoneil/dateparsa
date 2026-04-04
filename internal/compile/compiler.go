@@ -28,7 +28,36 @@ const (
 	FISOWeek     // ISO week number
 	FISOWeekDay  // ISO weekday (1=Mon)
 	FOrdinalDay  // Ordinal day of year (1-366)
+
+	numFieldKinds // sentinel — must be last
 )
+
+// fieldKindToOp maps each FieldKind to its corresponding OpCode.
+// Indexed by FieldKind; the FieldKind and OpCode enums are defined in parallel.
+var fieldKindToOp = [numFieldKinds]OpCode{
+	FYear4:     OpYear4,
+	FYear2:     OpYear2,
+	FMonth2:    OpMonth2,
+	FMonth1or2: OpMonth1or2,
+	FMonthName: OpMonthName,
+	FDay2:      OpDay2,
+	FDay1or2:   OpDay1or2,
+	FHour24:    OpHour24,
+	FHour12:    OpHour12,
+	FHour1or2:  OpHour1or2,
+	FMinute2:   OpMinute2,
+	FSecond2:   OpSecond2,
+	FFracSec:   OpFracSec,
+	FAMPM:      OpAMPM,
+	FTZZ:       OpTZZ,
+	FTZOffset:  OpTZOffset,
+	FTZName:    OpTZName,
+	FLiteral:   OpLiteral,
+	FSkip:      OpSkip,
+	FISOWeek:   OpISOWeek,
+	FISOWeekDay: OpISOWeekDay,
+	FOrdinalDay: OpOrdinalDay,
+}
 
 // Field describes one component in a format definition.
 type Field struct {
@@ -54,58 +83,12 @@ func Compile(def *FormatDef, tz *time.Location) Program {
 		if p.N >= MaxInstructions {
 			break
 		}
-		inst := Inst{
+		p.Insts[p.N] = Inst{
+			Op:     fieldKindToOp[f.Kind],
 			Offset: byte(f.Offset),
 			Len:    byte(f.Len),
 			Aux:    f.Aux,
 		}
-		switch f.Kind {
-		case FYear4:
-			inst.Op = OpYear4
-		case FYear2:
-			inst.Op = OpYear2
-		case FMonth2:
-			inst.Op = OpMonth2
-		case FMonth1or2:
-			inst.Op = OpMonth1or2
-		case FMonthName:
-			inst.Op = OpMonthName
-		case FDay2:
-			inst.Op = OpDay2
-		case FDay1or2:
-			inst.Op = OpDay1or2
-		case FHour24:
-			inst.Op = OpHour24
-		case FHour12:
-			inst.Op = OpHour12
-		case FHour1or2:
-			inst.Op = OpHour1or2
-		case FMinute2:
-			inst.Op = OpMinute2
-		case FSecond2:
-			inst.Op = OpSecond2
-		case FFracSec:
-			inst.Op = OpFracSec
-		case FAMPM:
-			inst.Op = OpAMPM
-		case FTZZ:
-			inst.Op = OpTZZ
-		case FTZOffset:
-			inst.Op = OpTZOffset
-		case FTZName:
-			inst.Op = OpTZName
-		case FLiteral:
-			inst.Op = OpLiteral
-		case FSkip:
-			inst.Op = OpSkip
-		case FISOWeek:
-			inst.Op = OpISOWeek
-		case FISOWeekDay:
-			inst.Op = OpISOWeekDay
-		case FOrdinalDay:
-			inst.Op = OpOrdinalDay
-		}
-		p.Insts[p.N] = inst
 		p.N++
 	}
 

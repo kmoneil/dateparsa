@@ -177,6 +177,18 @@ func Scan(s string) []Token {
 	return tokens
 }
 
+// convertAMPM adjusts a 12-hour clock value to 24-hour based on an AM/PM indicator.
+// ampm: 1=AM, 2=PM, 0=unset (no conversion).
+func convertAMPM(hour, ampm int) int {
+	if ampm == 2 && hour != 12 {
+		return hour + 12
+	}
+	if ampm == 1 && hour == 12 {
+		return 0
+	}
+	return hour
+}
+
 // scanNumber extracts a number token, handling suffixes like "pm", "am", "st", "nd", "rd", "th".
 func scanNumber(s string, start int) Token {
 	i := start
@@ -189,57 +201,14 @@ func scanNumber(s string, start int) Token {
 	numEnd := i
 
 	// Check for time pattern: digits followed by ":" and more digits (e.g., "14:00", "5:30").
-	if i < n && s[i] == ':' && i+1 < n && s[i+1] >= '0' && s[i+1] <= '9' {
-		hour := val
-		i++ // skip ':'
-		min := 0
-		minStart := i
-		for i < n && s[i] >= '0' && s[i] <= '9' {
-			min = min*10 + int(s[i]-'0')
-			i++
-		}
-		if i-minStart == 2 && hour <= 23 && min <= 59 {
-			ampm := 0
-			raw := s[start:i]
-			if i+2 <= n {
-				suffix := s[i : i+2]
-				if suffix == "am" {
-					ampm = 1
-					i += 2
-					raw = s[start:i]
-				} else if suffix == "pm" {
-					ampm = 2
-					i += 2
-					raw = s[start:i]
-				}
-			}
-			if ampm == 2 && hour != 12 {
-				hour += 12
-			} else if ampm == 1 && hour == 12 {
-				hour = 0
-			}
-			return Token{Kind: TokTime, Pos: start, Raw: raw, Hour: hour, Min: min, AMPM: ampm}
-		}
-		// Not a valid time — rewind and treat as just a number.
-		i = numEnd
+	if tok, ok := tryTimePattern(s, start, val, i, n); ok {
+		return tok
 	}
+	i = numEnd
 
 	// Check for AM/PM suffix directly after the number (e.g., "5pm", "10am").
-	if i+2 <= n {
-		suffix := s[i : i+2]
-		if suffix == "am" || suffix == "pm" {
-			hour := val
-			ampm := 1
-			if suffix == "pm" {
-				ampm = 2
-			}
-			if ampm == 2 && hour != 12 {
-				hour += 12
-			} else if ampm == 1 && hour == 12 {
-				hour = 0
-			}
-			return Token{Kind: TokTime, Pos: start, Raw: s[start : i+2], Hour: hour, Min: 0, AMPM: ampm}
-		}
+	if tok, ok := tryAMPMSuffix(s, start, val, i, n); ok {
+		return tok
 	}
 
 	// Skip ordinal suffixes: "st", "nd", "rd", "th".
@@ -251,6 +220,56 @@ func scanNumber(s string, start int) Token {
 	}
 
 	return Token{Kind: TokNumber, Pos: start, Raw: s[start:i], IntVal: val}
+}
+
+// tryTimePattern checks for HH:MM[am/pm] at position i and returns a TokTime token.
+func tryTimePattern(s string, start, hour, i, n int) (Token, bool) {
+	if i >= n || s[i] != ':' || i+1 >= n || s[i+1] < '0' || s[i+1] > '9' {
+		return Token{}, false
+	}
+	i++ // skip ':'
+	min := 0
+	minStart := i
+	for i < n && s[i] >= '0' && s[i] <= '9' {
+		min = min*10 + int(s[i]-'0')
+		i++
+	}
+	if i-minStart != 2 || hour > 23 || min > 59 {
+		return Token{}, false
+	}
+	ampm := 0
+	raw := s[start:i]
+	if i+2 <= n {
+		suffix := s[i : i+2]
+		if suffix == "am" {
+			ampm = 1
+			i += 2
+			raw = s[start:i]
+		} else if suffix == "pm" {
+			ampm = 2
+			i += 2
+			raw = s[start:i]
+		}
+	}
+	hour = convertAMPM(hour, ampm)
+	return Token{Kind: TokTime, Pos: start, Raw: raw, Hour: hour, Min: min, AMPM: ampm}, true
+}
+
+// tryAMPMSuffix checks for "am"/"pm" suffix directly after a number (e.g., "5pm").
+func tryAMPMSuffix(s string, start, val, i, n int) (Token, bool) {
+	if i+2 > n {
+		return Token{}, false
+	}
+	suffix := s[i : i+2]
+	if suffix != "am" && suffix != "pm" {
+		return Token{}, false
+	}
+	ampm := 1
+	if suffix == "pm" {
+		ampm = 2
+	}
+	hour := convertAMPM(val, ampm)
+	return Token{Kind: TokTime, Pos: start, Raw: s[start : i+2], Hour: hour, Min: 0, AMPM: ampm}, true
 }
 
 // classifyWord maps a lowercase word to its token kind.
@@ -425,19 +444,22 @@ func classifyWord(word string, pos int) Token {
 		tok.Kind = TokAnd
 
 	default:
-		// Check for "a" as a number (e.g., "a week ago" = "1 week ago").
-		if word == "a" || word == "an" {
-			tok.Kind = TokNumber
-			tok.IntVal = 1
-		} else if n, ok := wordToNumber(word); ok {
-			tok.Kind = TokNumber
-			tok.IntVal = n
-		} else {
-			tok.Kind = TokUnknown
-		}
+		return classifyFallback(word, pos)
 	}
 
 	return tok
+}
+
+// classifyFallback handles words not in the main switch: "a"/"an" as number 1,
+// written-out numbers ("two", "three", etc.), or unknown tokens.
+func classifyFallback(word string, pos int) Token {
+	if word == "a" || word == "an" {
+		return Token{Kind: TokNumber, Pos: pos, Raw: word, IntVal: 1}
+	}
+	if n, ok := wordToNumber(word); ok {
+		return Token{Kind: TokNumber, Pos: pos, Raw: word, IntVal: n}
+	}
+	return Token{Kind: TokUnknown, Pos: pos, Raw: word}
 }
 
 // wordToNumber maps written-out number words and special quantifiers to integers.

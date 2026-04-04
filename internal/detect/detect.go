@@ -69,10 +69,6 @@ func Detect(s string, cfg Config) (Result, bool) {
 		if r, ok := detectDatePlusTZ(s); ok {
 			return r, true
 		}
-		// Step 3e: Try CJK ideographic dates (e.g. 2014年04月08日).
-		if r, ok := detectCJKDate(s); ok {
-			return r, true
-		}
 		return Result{}, false
 	}
 
@@ -94,8 +90,6 @@ func Detect(s string, cfg Config) (Result, bool) {
 	return Result{Def: def}, true
 }
 
-// resolveAmbiguous handles DD/DD/DDDD type signatures where the format
-// could be MM/DD/YYYY or DD/MM/YYYY.
 // detectISO8601Frac handles ISO 8601/RFC 3339 with variable-length fractional seconds:
 // "2024-03-15T10:30:00.123Z", "2024-03-15T10:30:00.123456+05:30",
 // "2024-03-15 10:30:00.123456789Z", etc.
@@ -279,20 +273,8 @@ func detectCJKDate(s string) (Result, bool) {
 	dayStr := s[monthIdx+len("月") : dayIdx]
 
 	// Validate they're all digits.
-	for _, c := range []byte(yearStr) {
-		if !isDigit(c) {
-			return Result{}, false
-		}
-	}
-	for _, c := range []byte(monStr) {
-		if !isDigit(c) {
-			return Result{}, false
-		}
-	}
-	for _, c := range []byte(dayStr) {
-		if !isDigit(c) {
-			return Result{}, false
-		}
+	if !allDigits(yearStr) || !allDigits(monStr) || !allDigits(dayStr) {
+		return Result{}, false
 	}
 
 	// Build fields using byte offsets.
@@ -393,8 +375,16 @@ func detectVariableNumeric(s string, cfg Config) (Result, bool) {
 	return ambigResult, true
 }
 
-func resolveAmbiguous(s string, entry *formatEntry, cfg Config) (Result, bool) {
-	// Parse the first two numeric components.
+// datePart holds a parsed component of an ambiguous date string with its position.
+type datePart struct {
+	value  int
+	offset int
+	length int
+}
+
+// resolveAmbiguous handles DD/DD/DDDD type signatures where the format
+// could be MM/DD/YYYY or DD/MM/YYYY.
+func resolveAmbiguous(s string, _ *formatEntry, cfg Config) (Result, bool) {
 	sep := findSep(s)
 	if sep < 0 {
 		return Result{}, false
@@ -407,7 +397,6 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) (Result, bool) {
 	}
 
 	parts := splitOnSep(s, sepChar)
-
 	if len(parts) < 3 {
 		return Result{}, false
 	}
@@ -415,132 +404,18 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) (Result, bool) {
 	first := parseSmallInt(parts[0])
 	second := parseSmallInt(parts[1])
 	third := parseSmallInt(parts[2])
-
 	if first < 0 || second < 0 || third < 0 {
 		return Result{}, false
 	}
 
-	// Determine year position and value.
-	var year, v1, v2 int
-	var yearOffset, v1Offset, v2Offset int
-	var yearLen int
-
-	if third > 31 || len(parts[2]) == 4 {
-		// Year is last: ??/??/YYYY
-		year = third
-		v1, v2 = first, second
-		v1Offset = 0
-		v2Offset = len(parts[0]) + 1
-		yearOffset = len(parts[0]) + 1 + len(parts[1]) + 1
-		yearLen = len(parts[2])
-	} else if first > 31 || len(parts[0]) == 4 {
-		// Year is first: YYYY/??/??
-		year = first
-		v1, v2 = second, third
-		yearOffset = 0
-		yearLen = len(parts[0])
-		v1Offset = len(parts[0]) + 1
-		v2Offset = len(parts[0]) + 1 + len(parts[1]) + 1
-	} else {
-		// All small numbers, truly ambiguous with 2-digit year.
-		// Apply preference or default to MM/DD/YY.
-		year = third
-		if year < 69 {
-			year += 2000
-		} else {
-			year += 1900
-		}
-		v1, v2 = first, second
-		v1Offset = 0
-		v2Offset = len(parts[0]) + 1
-		yearOffset = len(parts[0]) + 1 + len(parts[1]) + 1
-		yearLen = len(parts[2])
-	}
-
-	// Resolve month vs day.
-	ambig := false
-	var monthVal, dayVal int
-	var monthOffset, dayOffset int
-	var monthLen, dayLen int
-
-	if v1 > 12 {
-		// First must be day.
-		dayVal, monthVal = v1, v2
-		dayOffset, monthOffset = v1Offset, v2Offset
-		dayLen, monthLen = len(parts[0]), len(parts[1])
-	} else if v2 > 12 {
-		// Second must be day.
-		monthVal, dayVal = v1, v2
-		monthOffset, dayOffset = v1Offset, v2Offset
-		monthLen, dayLen = len(parts[0]), len(parts[1])
-	} else {
-		// Genuinely ambiguous — both could be month or day.
-		ambig = true
-		if cfg.PreferDayFirst {
-			dayVal, monthVal = v1, v2
-			dayOffset, monthOffset = v1Offset, v2Offset
-			dayLen, monthLen = len(parts[0]), len(parts[1])
-		} else {
-			monthVal, dayVal = v1, v2
-			monthOffset, dayOffset = v1Offset, v2Offset
-			monthLen, dayLen = len(parts[0]), len(parts[1])
-		}
-	}
-
-	if monthVal < 1 || monthVal > 12 || dayVal < 1 || dayVal > 31 {
+	year, monthPart, dayPart, ambig, ok := resolveYearMonthDay(parts, first, second, third, cfg)
+	if !ok {
 		return Result{}, false
 	}
 
-	fields := make([]compile.Field, 0, 8)
+	_ = year // year value used for validation only; fields extract at runtime
+	fields := buildDatePartFields(parts, monthPart, dayPart)
 
-	// Build fields in input order.
-	type fieldInfo struct {
-		offset int
-		field  compile.Field
-	}
-	var infos [3]fieldInfo
-
-	yearFieldKind := compile.FYear4
-	if yearLen <= 2 {
-		yearFieldKind = compile.FYear2
-	}
-
-	monthFieldKind := compile.FMonth2
-	if monthLen == 1 {
-		monthFieldKind = compile.FMonth1or2
-	}
-
-	dayFieldKind := compile.FDay2
-	if dayLen == 1 {
-		dayFieldKind = compile.FDay1or2
-	}
-
-	infos[0] = fieldInfo{yearOffset, compile.Field{Kind: yearFieldKind, Offset: yearOffset, Len: yearLen}}
-	infos[1] = fieldInfo{monthOffset, compile.Field{Kind: monthFieldKind, Offset: monthOffset, Len: monthLen}}
-	infos[2] = fieldInfo{dayOffset, compile.Field{Kind: dayFieldKind, Offset: dayOffset, Len: dayLen}}
-
-	// Sort by offset.
-	for i := 0; i < 2; i++ {
-		for j := i + 1; j < 3; j++ {
-			if infos[j].offset < infos[i].offset {
-				infos[i], infos[j] = infos[j], infos[i]
-			}
-		}
-	}
-
-	// Insert literal separators between fields.
-	prevEnd := 0
-	for _, info := range infos {
-		if info.offset > prevEnd {
-			fields = append(fields, compile.Field{Kind: compile.FLiteral, Offset: prevEnd, Len: info.offset - prevEnd})
-		}
-		fields = append(fields, info.field)
-		prevEnd = info.offset + info.field.Len
-	}
-
-	_ = year // year value used for validation only; the field extracts it at runtime
-
-	goLayout := ""
 	name := "NUMERIC_AMBIG"
 	if !ambig {
 		if cfg.PreferDayFirst {
@@ -549,17 +424,157 @@ func resolveAmbiguous(s string, entry *formatEntry, cfg Config) (Result, bool) {
 			name = "NUMERIC_MDY"
 		}
 	}
-
-	def := &compile.FormatDef{
-		Name:     name,
-		GoLayout: goLayout,
-		Fields:   fields,
-	}
+	def := &compile.FormatDef{Name: name, Fields: fields}
 	return Result{Def: def, Ambig: ambig}, true
 }
 
-// detectTextualMonth handles formats like "March 15, 2024", "15 Mar 2024",
-// "Mar 15, 2024", "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822).
+// resolveYearMonthDay determines which parts are year, month, and day,
+// and whether the result is ambiguous.
+func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (year int, month, day datePart, ambig bool, ok bool) {
+	// Step 1: Identify year position.
+	var v1, v2 int
+	var v1Offset, v2Offset int
+
+	if third > 31 || len(parts[2]) == 4 {
+		// Year is last: ??/??/YYYY
+		year = third
+		v1, v2 = first, second
+		v1Offset = 0
+		v2Offset = len(parts[0]) + 1
+	} else if first > 31 || len(parts[0]) == 4 {
+		// Year is first: YYYY/??/??
+		year = first
+		v1, v2 = second, third
+		v1Offset = len(parts[0]) + 1
+		v2Offset = len(parts[0]) + 1 + len(parts[1]) + 1
+	} else {
+		// All small numbers, truly ambiguous with 2-digit year last.
+		year = compile.NormalizeTwoDigitYear(third)
+		v1, v2 = first, second
+		v1Offset = 0
+		v2Offset = len(parts[0]) + 1
+	}
+
+	// Step 2: Resolve month vs day from the two non-year parts.
+	p1 := datePart{v1, v1Offset, len(parts[partIndex(v1Offset, parts)])}
+	p2 := datePart{v2, v2Offset, len(parts[partIndex(v2Offset, parts)])}
+
+	if v1 > 12 {
+		// First must be day.
+		day, month = p1, p2
+	} else if v2 > 12 {
+		// Second must be day.
+		month, day = p1, p2
+	} else {
+		// Genuinely ambiguous — both could be month or day.
+		ambig = true
+		if cfg.PreferDayFirst {
+			day, month = p1, p2
+		} else {
+			month, day = p1, p2
+		}
+	}
+
+	if month.value < 1 || month.value > 12 || day.value < 1 || day.value > 31 {
+		return 0, datePart{}, datePart{}, false, false
+	}
+	return year, month, day, ambig, true
+}
+
+// partIndex returns which index (0, 1, or 2) a given byte offset corresponds to
+// in a 3-part date string split by separators.
+func partIndex(offset int, parts []string) int {
+	pos := 0
+	for i, p := range parts {
+		if pos == offset {
+			return i
+		}
+		pos += len(p) + 1 // +1 for separator
+	}
+	return 0
+}
+
+// buildDatePartFields constructs compile.Fields for a 3-part date, sorting by
+// input position and inserting literal separator fields between them.
+func buildDatePartFields(parts []string, month, day datePart) []compile.Field {
+	// Determine year part by elimination — whichever offset is not month or day.
+	yearOffset := 0
+	yearLen := len(parts[0])
+	p1End := len(parts[0]) + 1
+	p2End := p1End + len(parts[1]) + 1
+	if month.offset == 0 || day.offset == 0 {
+		if month.offset != 0 && day.offset != 0 {
+			yearOffset = 0
+			yearLen = len(parts[0])
+		} else if month.offset == 0 {
+			if day.offset == p1End {
+				yearOffset = p2End
+				yearLen = len(parts[2])
+			} else {
+				yearOffset = p1End
+				yearLen = len(parts[1])
+			}
+		} else {
+			if month.offset == p1End {
+				yearOffset = p2End
+				yearLen = len(parts[2])
+			} else {
+				yearOffset = p1End
+				yearLen = len(parts[1])
+			}
+		}
+	} else {
+		yearOffset = 0
+		yearLen = len(parts[0])
+	}
+
+	yearKind := compile.FYear4
+	if yearLen <= 2 {
+		yearKind = compile.FYear2
+	}
+	monthKind := compile.FMonth2
+	if month.length == 1 {
+		monthKind = compile.FMonth1or2
+	}
+	dayKind := compile.FDay2
+	if day.length == 1 {
+		dayKind = compile.FDay1or2
+	}
+
+	type posField struct {
+		offset int
+		field  compile.Field
+	}
+	infos := [3]posField{
+		{yearOffset, compile.Field{Kind: yearKind, Offset: yearOffset, Len: yearLen}},
+		{month.offset, compile.Field{Kind: monthKind, Offset: month.offset, Len: month.length}},
+		{day.offset, compile.Field{Kind: dayKind, Offset: day.offset, Len: day.length}},
+	}
+
+	// Sort 3 elements by offset (simple conditional swaps).
+	if infos[0].offset > infos[1].offset {
+		infos[0], infos[1] = infos[1], infos[0]
+	}
+	if infos[1].offset > infos[2].offset {
+		infos[1], infos[2] = infos[2], infos[1]
+	}
+	if infos[0].offset > infos[1].offset {
+		infos[0], infos[1] = infos[1], infos[0]
+	}
+
+	// Build fields with literal separators between them.
+	fields := make([]compile.Field, 0, 8)
+	prevEnd := 0
+	for _, info := range infos {
+		if info.offset > prevEnd {
+			fields = append(fields, compile.Field{Kind: compile.FLiteral, Offset: prevEnd, Len: info.offset - prevEnd})
+		}
+		fields = append(fields, info.field)
+		prevEnd = info.offset + info.field.Len
+	}
+	return fields
+}
+
 // detectISOWeekOrOrdinal detects ISO week dates (2024-W11-5) and ordinal dates (2024-074).
 func detectISOWeekOrOrdinal(s string) (Result, bool) {
 	n := len(s)
@@ -615,6 +630,26 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 	return Result{}, false
 }
 
+// trimAtSuffix strips the " at ..." portion from a string when it would
+// cause a bare time number to be misidentified as a year.
+// e.g. "25th at 5pm" → "25th" (no year present, trim to avoid confusion).
+// But "17, 2012 at 10:09am" → unchanged (4-digit year present, keep for parsing).
+func trimAtSuffix(s string) string {
+	atIdx := strings.Index(strings.ToLower(s), " at ")
+	if atIdx < 0 {
+		return s
+	}
+	textBeforeAt := s[:atIdx]
+	numsBeforeAt := extractNumbers(textBeforeAt)
+	if len(numsBeforeAt) <= 1 || !hasFourDigitYear(textBeforeAt) {
+		return textBeforeAt
+	}
+	return s
+}
+
+// detectTextualMonth handles formats with named months:
+// "March 15, 2024", "15 Mar 2024", "Mar 15, 2024",
+// "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822), "March 2024", "15 March".
 func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// Find month name using case-insensitive matching directly on the input.
 	// No strings.ToLower allocation needed.
@@ -655,18 +690,7 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// Parse numbers from before and after the month name.
 	beforeNums := extractNumbers(before)
 	afterStr := strings.TrimLeft(after, ", ")
-	// Stop at "at" only when it would misinterpret a bare time number as year.
-	// e.g. "25th at 5pm" → trim to "25th" (1 number, no year).
-	// But NOT "17, 2012 at 10:09am" → keep as "17, 2012 at 10:09am" (has year).
-	afterForNums := afterStr
-	if atIdx := strings.Index(strings.ToLower(afterStr), " at "); atIdx >= 0 {
-		textBeforeAt := afterStr[:atIdx]
-		numsBeforeAt := extractNumbers(textBeforeAt)
-		if len(numsBeforeAt) <= 1 || !hasFourDigitYear(textBeforeAt) {
-			afterForNums = afterStr[:atIdx]
-		}
-	}
-	afterNums := extractNumbers(afterForNums)
+	afterNums := extractNumbers(trimAtSuffix(afterStr))
 
 	var day, year int
 
@@ -710,11 +734,7 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	}
 
 	if year < 100 && year > 0 {
-		if year >= 69 {
-			year += 1900
-		} else {
-			year += 2000
-		}
+		year = compile.NormalizeTwoDigitYear(year)
 	}
 
 	// For textual month formats, we build a "virtual" program that uses
@@ -821,58 +841,67 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 		// Month name only — unusual but valid.
 
 	default:
-		// 3+ numbers — could include day, year, and time components.
-		// Check if nums look like "day time" (e.g. "15 10:30:00") or "day year time".
-		n0, n1 := nums[0], nums[1]
-
-		// Detect if nums[1:] form a time pattern (HH:MM or HH:MM:SS).
-		// Check if n1 is followed by a colon and another number — classic time.
-		isTimeAtN1 := n1.end < len(s) && s[n1.end] == ':' && len(nums) >= 3
-
-		if isTimeAtN1 && n0.value <= 31 && n1.value <= 23 {
-			// Pattern: "day time [year]", e.g. "Mar 15 10:30:00 2024"
-			fields = append(fields, dayField(n0))
-			timeFields := parseTimeComponent(s, n0.end)
-			fields = append(fields, timeFields...)
-
-			// Look for a trailing year after the time+tz fields.
-			// Scan remaining nums for a 4-digit number (year).
-			for _, num := range nums {
-				if num.start > n0.end && num.value >= 1000 && num.value <= 9999 {
-					// Check this number isn't already part of the time fields.
-					isTimeField := false
-					for _, tf := range timeFields {
-						if int(tf.Offset) == num.start {
-							isTimeField = true
-							break
-						}
-					}
-					if !isTimeField {
-						fields = append(fields, yearField(num))
-						break
-					}
-				}
-			}
-		} else {
-			if n1.value > 31 {
-				fields = append(fields, dayField(n0))
-				fields = append(fields, yearField(n1))
-			} else if n0.value > 31 {
-				fields = append(fields, yearField(n0))
-				fields = append(fields, dayField(n1))
-			} else {
-				fields = append(fields, dayField(n0))
-				fields = append(fields, yearField(n1))
-			}
-
-			// Remaining numbers are time components.
-			afterSecondNum := nums[1].end
-			timeFields := parseTimeComponent(s, afterSecondNum)
-			fields = append(fields, timeFields...)
-		}
+		fields = appendMultiNumFields(s, nums, fields)
 	}
 
 	return fields
+}
+
+// appendMultiNumFields handles the 3+ numeric tokens case in buildTextualFields.
+// Patterns: "day time [year]" (e.g., "Mar 15 10:30:00 2024") or "day year time".
+func appendMultiNumFields(s string, nums []numToken, fields []compile.Field) []compile.Field {
+	n0, n1 := nums[0], nums[1]
+
+	// Detect if nums[1:] form a time pattern (HH:MM or HH:MM:SS).
+	isTimeAtN1 := n1.end < len(s) && s[n1.end] == ':' && len(nums) >= 3
+
+	if isTimeAtN1 && n0.value <= 31 && n1.value <= 23 {
+		// Pattern: "day time [year]", e.g. "Mar 15 10:30:00 2024"
+		fields = append(fields, dayField(n0))
+		timeFields := parseTimeComponent(s, n0.end)
+		fields = append(fields, timeFields...)
+		if yr := findTrailingYear(nums, timeFields, n0.end); yr != nil {
+			fields = append(fields, yearField(*yr))
+		}
+		return fields
+	}
+
+	// Pattern: "day year time" or "year day time".
+	if n1.value > 31 {
+		fields = append(fields, dayField(n0))
+		fields = append(fields, yearField(n1))
+	} else if n0.value > 31 {
+		fields = append(fields, yearField(n0))
+		fields = append(fields, dayField(n1))
+	} else {
+		fields = append(fields, dayField(n0))
+		fields = append(fields, yearField(n1))
+	}
+	timeFields := parseTimeComponent(s, nums[1].end)
+	fields = append(fields, timeFields...)
+	return fields
+}
+
+// findTrailingYear scans for a 4-digit year among nums that is not already
+// claimed by timeFields (i.e., not at the same offset as a time field).
+func findTrailingYear(nums []numToken, timeFields []compile.Field, afterOffset int) *numToken {
+	for i := range nums {
+		num := &nums[i]
+		if num.start <= afterOffset || num.value < 1000 || num.value > 9999 {
+			continue
+		}
+		isTimeField := false
+		for _, tf := range timeFields {
+			if int(tf.Offset) == num.start {
+				isTimeField = true
+				break
+			}
+		}
+		if !isTimeField {
+			return num
+		}
+	}
+	return nil
 }
 
 func yearField(n numToken) compile.Field {
@@ -933,48 +962,11 @@ func parseTimeComponent(s string, from int) []compile.Field {
 			}
 		}
 
-		// Check for timezone.
+		// Skip trailing whitespace before AM/PM or timezone suffix.
 		for j < len(s) && s[j] == ' ' {
 			j++
 		}
-
-		// Check for AM/PM first (before timezone, since "AM"/"PM" would be
-		// misidentified as timezone abbreviations).
-		ampmHandled := false
-		if j+2 <= len(s) {
-			c0 := s[j] | 0x20
-			c1 := s[j+1] | 0x20
-			if (c0 == 'a' || c0 == 'p') && c1 == 'm' && (j+2 == len(s) || !isLetter(s[j+2])) {
-				if len(fields) > 0 && fields[0].Kind == compile.FHour24 {
-					fields[0].Kind = compile.FHour12
-				}
-				fields = append(fields, compile.Field{Kind: compile.FAMPM, Offset: j, Len: 2})
-				ampmHandled = true
-			}
-		}
-
-		if !ampmHandled && j < len(s) {
-			if s[j] == 'Z' && (j+1 == len(s) || !isLetter(s[j+1])) {
-				fields = append(fields, compile.Field{Kind: compile.FTZZ, Offset: j, Len: 1})
-			} else if s[j] == '+' || s[j] == '-' {
-				// Timezone offset.
-				remaining := len(s) - j
-				if remaining >= 5 {
-					tzLen := 5
-					if remaining >= 6 && s[j+3] == ':' {
-						tzLen = 6
-					}
-					fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: j, Len: tzLen})
-				}
-			} else if isLetter(s[j]) {
-				// Timezone abbreviation.
-				tzStart := j
-				for j < len(s) && isLetter(s[j]) {
-					j++
-				}
-				fields = append(fields, compile.Field{Kind: compile.FTZName, Offset: tzStart, Len: j - tzStart})
-			}
-		}
+		fields = appendTimeSuffix(s, j, fields)
 	}
 
 	return fields
@@ -984,6 +976,50 @@ type numToken struct {
 	value int
 	start int
 	end   int
+}
+
+// appendTimeSuffix checks for AM/PM or timezone suffix at position j in s,
+// and appends the appropriate field(s) to fields. If AM/PM is found, the first
+// field's Kind is changed from FHour24 to FHour12.
+func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
+	if j >= len(s) {
+		return fields
+	}
+
+	// Check AM/PM first — "AM"/"PM" would be misidentified as timezone abbreviations.
+	if j+2 <= len(s) {
+		c0 := s[j] | 0x20
+		c1 := s[j+1] | 0x20
+		if (c0 == 'a' || c0 == 'p') && c1 == 'm' && (j+2 == len(s) || !isLetter(s[j+2])) {
+			if len(fields) > 0 && fields[0].Kind == compile.FHour24 {
+				fields[0].Kind = compile.FHour12
+			}
+			return append(fields, compile.Field{Kind: compile.FAMPM, Offset: j, Len: 2})
+		}
+	}
+
+	// Timezone: Z, ±HHMM/±HH:MM, or abbreviation.
+	if s[j] == 'Z' && (j+1 == len(s) || !isLetter(s[j+1])) {
+		return append(fields, compile.Field{Kind: compile.FTZZ, Offset: j, Len: 1})
+	}
+	if s[j] == '+' || s[j] == '-' {
+		remaining := len(s) - j
+		if remaining >= 5 {
+			tzLen := 5
+			if remaining >= 6 && s[j+3] == ':' {
+				tzLen = 6
+			}
+			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: j, Len: tzLen})
+		}
+	}
+	if isLetter(s[j]) {
+		tzEnd := j
+		for tzEnd < len(s) && isLetter(s[tzEnd]) {
+			tzEnd++
+		}
+		return append(fields, compile.Field{Kind: compile.FTZName, Offset: j, Len: tzEnd - j})
+	}
+	return fields
 }
 
 // English month names — fallback when no locale is specified.
@@ -1081,7 +1117,6 @@ func equalsFoldASCII(a, b string) bool {
 	return true
 }
 
-// searchMonthMap scans for any month name from the map in the string.
 // isWordChar returns true for characters that can be part of a word
 // (letters, including non-ASCII bytes which may be part of UTF-8 sequences).
 func isWordChar(c byte) bool {

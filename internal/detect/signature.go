@@ -129,3 +129,16 @@ func isTZSignPosition(s string, i, n int) bool {
 func isDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
+
+// allDigits returns true if s is non-empty and every byte is an ASCII digit.
+func allDigits(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isDigit(s[i]) {
+			return false
+		}
+	}
+	return true
+}

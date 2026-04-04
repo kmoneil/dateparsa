@@ -2,7 +2,10 @@
 // Locale data is compiled into the binary — no runtime file loading.
 package locale
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Data holds all locale-specific data needed for date parsing.
 type Data struct {
@@ -74,12 +77,13 @@ func Lookup(tag string) *Data {
 	return nil
 }
 
-// Tags returns all registered locale tags, sorted.
+// Tags returns all registered locale tags, sorted alphabetically.
 func Tags() []string {
 	tags := make([]string, 0, len(registry))
 	for tag := range registry {
 		tags = append(tags, tag)
 	}
+	sort.Strings(tags)
 	return tags
 }
 

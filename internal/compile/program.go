@@ -21,8 +21,9 @@ func (p *Program) Execute(s string) (time.Time, error) {
 }
 
 // ExecuteBytes runs the program against a byte slice input.
+// Note: currently converts to string internally. A future optimization
+// could use unsafe.String or refactor executeInner to operate on []byte
+// natively to avoid the copy.
 func (p *Program) ExecuteBytes(b []byte) (time.Time, error) {
-	// Avoid string conversion — operate on the bytes directly via the same logic.
-	// unsafe conversion avoided; for Phase 1 we convert. Optimize in Phase 5.
 	return p.executeInner(string(b), len(b))
 }

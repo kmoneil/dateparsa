@@ -145,7 +145,7 @@ fmt.Println(result.Time) // 2024-02-01
 
 // Strict mode — reject ambiguous dates entirely
 _, err := dateparsa.ParseWith("01/02/2024",
-    dateparsa.WithStrictMode())
+    dateparsa.WithStrictMode(true))
 // err is *dateparsa.AmbiguousDateError with both interpretations
 ```
 
@@ -158,7 +158,7 @@ dateparsa.ParseWith(s,
     dateparsa.WithPreferDayFirst(true), // DD/MM/YYYY for ambiguous dates
     dateparsa.WithPreferYearFirst(true),// YYYY/MM/DD for ambiguous dates
     dateparsa.WithPreferFuture(true),   // "Tuesday" = next Tuesday
-    dateparsa.WithStrictMode(),         // Reject ambiguous dates
+    dateparsa.WithStrictMode(true),         // Reject ambiguous dates
 )
 ```
 
@@ -198,7 +198,7 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 2. **Separator heuristic** — dot separator (`.`) implies European DD.MM.YYYY
 3. **User preference** — `WithPreferDayFirst` / `WithPreferYearFirst`
 4. **Ambiguity flag** — `result.Ambiguous` tells you when the choice was a guess
-5. **Strict mode** — `WithStrictMode()` returns all interpretations as an error
+5. **Strict mode** — `WithStrictMode(true)` returns all interpretations as an error
 
 ## Performance
 

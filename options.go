@@ -33,7 +33,12 @@ func WithBaseTime(t time.Time) Option {
 // WithTimezone sets the assumed timezone when the input has no
 // timezone indicator. Default: time.UTC.
 func WithTimezone(loc *time.Location) Option {
-	return func(c *config) { c.timezone = loc }
+	return func(c *config) {
+		if loc == nil {
+			loc = time.UTC
+		}
+		c.timezone = loc
+	}
 }
 
 // WithPreferDayFirst treats ambiguous dates as DD/MM/YYYY.
@@ -54,8 +59,9 @@ func WithPreferFuture(b bool) Option {
 	return func(c *config) { c.preferFuture = b }
 }
 
-// WithStrictMode rejects ambiguous dates instead of applying
-// preference rules. Returns an *AmbiguousDateError.
-func WithStrictMode() Option {
-	return func(c *config) { c.strictMode = true }
+// WithStrictMode controls whether ambiguous dates are rejected.
+// When true, ambiguous dates return an *AmbiguousDateError instead
+// of applying preference rules.
+func WithStrictMode(b bool) Option {
+	return func(c *config) { c.strictMode = b }
 }

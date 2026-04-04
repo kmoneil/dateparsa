@@ -5,6 +5,10 @@ import "time"
 // Parser is a stateful parser optimized for parsing many dates
 // with the same (or similar) format. It caches the last successful
 // Layout and tries it first on subsequent calls.
+//
+// A Parser is not safe for concurrent use by multiple goroutines.
+// To parse concurrently, create a separate Parser per goroutine,
+// or use Layout.Parse directly for the concurrent hot path.
 type Parser struct {
 	cfg    config
 	layout *Layout
@@ -80,10 +84,13 @@ func (p *Parser) options() []Option {
 		opts = append(opts, WithPreferFuture(true))
 	}
 	if p.cfg.strictMode {
-		opts = append(opts, WithStrictMode())
+		opts = append(opts, WithStrictMode(true))
 	}
 	if p.cfg.timezone != nil {
 		opts = append(opts, WithTimezone(p.cfg.timezone))
+	}
+	if len(p.cfg.locales) > 0 {
+		opts = append(opts, WithLocales(p.cfg.locales...))
 	}
 	opts = append(opts, WithBaseTime(p.cfg.baseTime))
 	return opts

@@ -1,6 +1,7 @@
 package dateparsa
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -215,7 +216,7 @@ func TestParse_AmbiguousNumeric(t *testing.T) {
 }
 
 func TestParse_StrictMode(t *testing.T) {
-	_, err := ParseWith("01/02/2024", WithStrictMode())
+	_, err := ParseWith("01/02/2024", WithStrictMode(true))
 	if err == nil {
 		t.Fatal("expected error in strict mode for ambiguous date")
 	}
@@ -332,6 +333,36 @@ func TestParseTime(t *testing.T) {
 	}
 }
 
+func TestParse_FillsCurrentYear(t *testing.T) {
+	// Parse without options should fill in the current year for time-only inputs.
+	result, err := Parse("10:30")
+	if err != nil {
+		t.Fatalf("Parse(\"10:30\") error: %v", err)
+	}
+	if result.Time.Year() != time.Now().Year() {
+		t.Errorf("Parse(\"10:30\") year = %d, want %d", result.Time.Year(), time.Now().Year())
+	}
+}
+
+func TestLayout_Parse_ReturnsParseError(t *testing.T) {
+	// Detect a layout, then use it on invalid input.
+	result, err := Parse("2024-03-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = result.Layout.Parse("not-valid!")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("Layout.Parse error should be *ParseError, got %T: %v", err, err)
+	}
+	if pe.Input != "not-valid!" {
+		t.Errorf("ParseError.Input = %q, want %q", pe.Input, "not-valid!")
+	}
+}
+
 func TestParse_RFC3339Nano(t *testing.T) {
 	result, err := Parse("2024-03-15T10:30:00.123456789Z")
 	if err != nil {
@@ -340,5 +371,48 @@ func TestParse_RFC3339Nano(t *testing.T) {
 	expected := time.Date(2024, 3, 15, 10, 30, 0, 123456789, time.UTC)
 	if !result.Time.Equal(expected) {
 		t.Errorf("got %v, want %v", result.Time, expected)
+	}
+}
+
+func TestParse_EpochLayout(t *testing.T) {
+	result, err := Parse("1710504800")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Layout != LayoutEpoch {
+		t.Errorf("Layout = %v, want LayoutEpoch", result.Layout)
+	}
+	if result.Layout.String() != "UNIX_TIMESTAMP" {
+		t.Errorf("Layout.String() = %q, want UNIX_TIMESTAMP", result.Layout.String())
+	}
+	if _, ok := result.Layout.GoLayout(); ok {
+		t.Error("LayoutEpoch.GoLayout() should return false")
+	}
+	// Sentinel layout should return a clear error on re-parse.
+	_, err = result.Layout.Parse("1710504800")
+	if err == nil {
+		t.Fatal("LayoutEpoch.Parse should return error")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Errorf("expected *ParseError, got %T", err)
+	}
+}
+
+func TestParse_NLLayout(t *testing.T) {
+	result, err := ParseWith("3 days ago", WithBaseTime(time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Layout != LayoutNaturalLanguage {
+		t.Errorf("Layout = %v, want LayoutNaturalLanguage", result.Layout)
+	}
+	if result.Layout.String() != "NATURAL_LANGUAGE" {
+		t.Errorf("Layout.String() = %q, want NATURAL_LANGUAGE", result.Layout.String())
+	}
+	// Sentinel layout should return a clear error on re-parse.
+	_, err = result.Layout.Parse("3 days ago")
+	if err == nil {
+		t.Fatal("LayoutNaturalLanguage.Parse should return error")
 	}
 }

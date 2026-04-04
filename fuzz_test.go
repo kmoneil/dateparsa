@@ -31,9 +31,11 @@ func FuzzParse(f *testing.F) {
 			return
 		}
 
-		// If parsing succeeded and a Layout was returned, it must be reusable.
-		// Epoch timestamps don't return a Layout (nil is valid for them).
-		if result.Layout != nil {
+		// If parsing succeeded with a reusable layout, it must round-trip.
+		// Sentinel layouts (epoch, NL) are not reusable — skip them.
+		if result.Layout != nil &&
+			result.Layout != LayoutEpoch &&
+			result.Layout != LayoutNaturalLanguage {
 			_, err = result.Layout.Parse(input)
 			if err != nil {
 				t.Errorf("Layout.Parse(%q) failed after successful Parse: %v", input, err)

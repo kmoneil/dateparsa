@@ -27,8 +27,8 @@ func TestParse_NL_RelativeWords(t *testing.T) {
 			if result.Kind != tt.kind {
 				t.Errorf("Parse(%q) kind = %v, want %v", tt.input, result.Kind, tt.kind)
 			}
-			if result.Layout != nil {
-				t.Errorf("NL parse should have nil Layout")
+			if result.Layout != LayoutNaturalLanguage {
+				t.Errorf("NL parse should have LayoutNaturalLanguage, got %v", result.Layout)
 			}
 		})
 	}

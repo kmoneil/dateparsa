@@ -43,7 +43,7 @@ func Parse(s string) (ParseResult, error) {
 	if !ok {
 		// Try epoch timestamp.
 		if er := epoch.Detect(s); er != nil {
-			return ParseResult{Time: er.Time, Kind: KindAbsolute}, nil
+			return ParseResult{Time: er.Time, Kind: KindAbsolute, Layout: LayoutEpoch}, nil
 		}
 
 		// Try English NL.
@@ -53,16 +53,21 @@ func Parse(s string) (ParseResult, error) {
 			if nlr.Kind == natural.KindNow {
 				kind = KindNow
 			}
-			return ParseResult{Time: nlr.Time, Kind: kind}, nil
+			return ParseResult{Time: nlr.Time, Kind: kind, Layout: LayoutNaturalLanguage}, nil
 		}
 
-		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found"}
+		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
 	program := compile.Compile(result.Def, time.UTC)
 	t, err := program.Execute(s)
 	if err != nil {
-		return ParseResult{}, &ParseError{Input: s, Message: err.Error()}
+		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+	}
+
+	// If the detected format had no year, fill in the current year.
+	if t.Year() == 0 {
+		t = time.Date(time.Now().Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 	}
 
 	layout := &Layout{
@@ -96,8 +101,9 @@ func ParseWith(s string, opts ...Option) (ParseResult, error) {
 		// Try epoch timestamp.
 		if er := epoch.Detect(s); er != nil {
 			return ParseResult{
-				Time: er.Time,
-				Kind: KindAbsolute,
+				Time:   er.Time,
+				Kind:   KindAbsolute,
+				Layout: LayoutEpoch,
 			}, nil
 		}
 
@@ -117,12 +123,13 @@ func ParseWith(s string, opts ...Option) (ParseResult, error) {
 				kind = KindNow
 			}
 			return ParseResult{
-				Time: nlr.Time,
-				Kind: kind,
+				Time:   nlr.Time,
+				Kind:   kind,
+				Layout: LayoutNaturalLanguage,
 			}, nil
 		}
 
-		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found"}
+		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
 	if cfg.strictMode && result.Ambig {
@@ -132,7 +139,7 @@ func ParseWith(s string, opts ...Option) (ParseResult, error) {
 	program := compile.Compile(result.Def, cfg.timezone)
 	t, err := program.Execute(s)
 	if err != nil {
-		return ParseResult{}, &ParseError{Input: s, Message: err.Error()}
+		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
 	}
 
 	// If the detected format had no year, fill in the base year.
@@ -182,7 +189,7 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 
 	result, ok := detect.Detect(s, dcfg)
 	if !ok {
-		return nil, &ParseError{Input: s, Message: "no matching format found"}
+		return nil, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
 	program := compile.Compile(result.Def, cfg.timezone)
@@ -193,7 +200,7 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 	}, nil
 }
 
-func buildAmbiguousError(s string, result detect.Result, cfg config) *AmbiguousDateError {
+func buildAmbiguousError(s string, _ detect.Result, cfg config) error {
 	// Build both interpretations (MDY and DMY).
 	var interps []Interpretation
 
@@ -225,6 +232,13 @@ func buildAmbiguousError(s string, result detect.Result, cfg config) *AmbiguousD
 		}
 	}
 
+	if len(interps) == 0 {
+		return &ParseError{
+			Input:   s,
+			Message: "ambiguous date could not be interpreted",
+			Cause:   ErrAmbiguous,
+		}
+	}
 	return &AmbiguousDateError{
 		Input:           s,
 		Interpretations: interps,

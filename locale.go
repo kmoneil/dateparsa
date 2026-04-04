@@ -14,9 +14,10 @@ type Locale struct {
 }
 
 // String returns the BCP 47 tag for this locale (e.g. "fr", "de").
+// Returns "" for the zero-value Locale (no data loaded).
 func (l Locale) String() string {
 	if l.data == nil {
-		return "en"
+		return ""
 	}
 	return l.data.Tag
 }

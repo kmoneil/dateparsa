@@ -1,115 +1,166 @@
-name: CI
+name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
 
+env:
+  # go.mod pins a patch version, so a runner on an older 1.26 fetches the
+  # toolchain the module asks for. Every job uses this one value.
+  GO_VERSION: "1.26"
+
 jobs:
+  check:
+    name: format, vet, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Every tool below is installed at the version the Makefile declares.
+      # A floating formatter or linter can fail a pull request that changed
+      # nothing, and can fail a release, because this gate re-runs on a tag
+      # that cannot be moved.
+      - name: gofumpt
+        run: |
+          go install mvdan.cc/gofumpt@$(make -s print-GOFUMPT_VERSION)
+          make fmt-check
+      - name: vet
+        run: make vet
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
   test:
-    name: Test (Go ${{ matrix.go-version }}, ${{ matrix.os }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        go-version: ["1.23", "1.24", "stable"]
+        # Three operating systems and one Go version, which is the axis that
+        # actually finds things here. time.LoadLocation reads a zoneinfo
+        # database that Windows does not have in the same place, and the
+        # library reaches it whenever an input carries a timezone abbreviation
+        # outside the ten pre-built ones.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go-version }}
-      - name: Run tests
-        run: go test -race -count=1 -timeout=120s ./...
-      - name: Run vet
-        run: go vet ./...
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-
-  fuzz:
-    name: Fuzz
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-      - name: Fuzz Parse
-        run: go test -fuzz=FuzzParse -fuzztime=30s -timeout=120s
-      - name: Fuzz Detect
-        run: go test -fuzz=FuzzDetect -fuzztime=30s -timeout=120s
+          go-version: ${{ env.GO_VERSION }}
+      - name: test
+        run: go test -race -count=1 -timeout=180s ./...
 
   alloc:
-    name: Zero-alloc check
+    name: zero-alloc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: stable
-      - name: Verify Layout.Parse is zero-alloc
-        run: go test -run=TestLayoutParseZeroAlloc -count=1 -timeout=30s
+          go-version: ${{ env.GO_VERSION }}
+      # Its own job rather than a step in `test`, because it must run without
+      # -race: testing.AllocsPerRun counts the allocations the race detector
+      # itself makes, so the assertion is only meaningful in a build without
+      # it. This is the single number the library exists to hold.
+      - name: Layout.Parse allocates zero times
+        run: make alloc
 
-  benchmark:
-    name: Benchmark
+  vuln:
+    name: vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: stable
-      - name: Run benchmarks
-        run: go test -bench=. -benchmem -count=1 -timeout=300s | tee /tmp/bench.txt
-      - name: Check key benchmarks
+          go-version: ${{ env.GO_VERSION }}
+      # There are no dependencies, so everything this can find is in the
+      # standard library the module builds against. That is the reason to run
+      # it, not a reason to skip it.
+      - name: govulncheck
         run: |
-          echo "=== Key benchmark results ==="
-          grep -E 'BenchmarkParse_ISO8601-|BenchmarkLayout_Parse-|BenchmarkParser_Cached-' /tmp/bench.txt
+          go install golang.org/x/vuln/cmd/govulncheck@$(make -s print-GOVULNCHECK_VERSION)
+          make vuln
 
-  binary-size:
-    name: Binary size check
+  size:
+    name: size budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: stable
-      - name: Build size test binary
+          go-version: ${{ env.GO_VERSION }}
+      # Twenty locales of compiled data are most of the linked size, and every
+      # downstream binary pays for them whether it uses the locale or not.
+      - name: a binary importing this library stays under budget
+        run: make size
+
+  bench:
+    name: benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Informational and deliberately not a required check. A shared runner's
+      # timings are too noisy to gate a merge on, and a flaky red teaches
+      # people to press re-run. The numbers are here to be read in the log
+      # when a change claims something about performance; benchstat against
+      # benchmarks/baseline.txt on a real machine is what decides.
+      - name: run the benchmarks
+        run: go test -bench=. -benchmem -count=1 -timeout=600s | tee /tmp/bench.txt
+      - name: the numbers that matter
         run: |
-          mkdir -p /tmp/sizecheck
-          cat > /tmp/sizecheck/main.go << 'EOF'
-          package main
-          import (
-            "fmt"
-            "github.com/kmoneil/dateparsa"
-          )
-          func main() {
-            r, _ := dateparsa.Parse("2024-03-15")
-            fmt.Println(r.Time)
-          }
-          EOF
-          cd /tmp/sizecheck
-          go mod init sizecheck
-          go mod edit -replace github.com/kmoneil/dateparsa=$GITHUB_WORKSPACE
-          go mod tidy
-          go build -o test_bin .
-          SIZE=$(stat -c%s test_bin 2>/dev/null || stat -f%z test_bin)
-          echo "Binary size: $SIZE bytes ($(echo "scale=1; $SIZE/1048576" | bc)MB)"
-          # Fail if over 10MB
-          if [ "$SIZE" -gt 10485760 ]; then
-            echo "FAIL: binary too large"
-            exit 1
-          fi
+          echo "=== key results ==="
+          grep -E 'BenchmarkLayout_Parse-|BenchmarkParse_ISO8601-|BenchmarkParser_Cached-' /tmp/bench.txt
+
+  # The fuzz sweep does not run on a pull request.
+  #
+  # The regression half is already there, inside the `test` job: `go test`
+  # executes every seed and every crasher ever committed under testdata/fuzz,
+  # deterministically, with no fuzzing budget at all. That is what stops a
+  # fixed bug from coming back, and it is the half worth blocking a merge on.
+  #
+  # What is left is discovery, and discovery scales with cumulative CPU time
+  # against a corpus that persists, not with the length of any one run. A
+  # 30-second run against a corpus last night already explored re-derives what
+  # it derived then. It runs here after a merge, and properly in
+  # fuzz-nightly.yml.
+  fuzz:
+    name: fuzz
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: locate the fuzz cache
+        id: gocache
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+      # Go keeps the generated corpus in $GOCACHE/fuzz. Without this, every run
+      # starts from the seeds alone and spends its whole budget re-deriving the
+      # same shallow coverage. The key rotates per run so a run that finds new
+      # inputs saves them; restore-keys falls back to the most recent corpus,
+      # which is whatever the nightly left behind.
+      - name: restore the fuzz corpus
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.gocache.outputs.dir }}
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: sweep every target
+        run: make fuzz FUZZTIME=20s
+      - name: upload any crashers
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: crashers
+          path: "**/testdata/fuzz/"
+          if-no-files-found: warn

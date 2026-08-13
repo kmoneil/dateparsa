@@ -1,4 +1,11 @@
-name: Release
+# A tag is the release. For a Go module it is worse than irreversible: the
+# module proxy fetches the tag once and serves that content forever, so a bad
+# v0.3.0 cannot be replaced, only superseded by v0.3.1.
+#
+# So this re-runs the full gate on the tagged commit rather than trusting that
+# it was green on main. The commit that gets tagged is usually one somebody
+# tested; the commit that gets *published* is whatever the tag points at.
+name: release
 
 on:
   push:
@@ -8,22 +15,44 @@ on:
 permissions:
   contents: write
 
+env:
+  GO_VERSION: "1.26"
+
 jobs:
-  release:
-    name: Create release
+  gate:
+    name: the full gate, on the tagged commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: install the pinned tools
+        run: |
+          go install mvdan.cc/gofumpt@$(make -s print-GOFUMPT_VERSION)
+          go install golang.org/x/vuln/cmd/govulncheck@$(make -s print-GOVULNCHECK_VERSION)
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(make -s print-GOLANGCI_LINT_VERSION)
+      # Everything except the fuzz sweep, whose verdict is a matter of luck and
+      # timing and should not decide whether a release happens.
+      - name: gate
+        run: make fmt-check vet lint test alloc vuln size
+
+  release:
+    name: publish
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: stable
-      - name: Run tests
-        run: go test -race -count=1 -timeout=120s ./...
-      - name: Run benchmarks
-        run: go test -bench=. -benchmem -count=1 -timeout=300s > /tmp/benchmarks.txt
-      - name: Create GitHub release
+          go-version: ${{ env.GO_VERSION }}
+      # Attached to the release because the performance claim is the product
+      # here. A reader comparing two versions should not have to run them.
+      - name: benchmarks
+        run: go test -bench=. -benchmem -count=3 -timeout=600s > /tmp/benchmarks.txt
+      - name: create the GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

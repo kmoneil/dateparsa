@@ -1,0 +1,45 @@
+version: 2
+
+updates:
+  # There are no Go dependencies, and the invariant is that there are none.
+  # This is here as a tripwire rather than as maintenance: the day a require
+  # line appears, a pull request appears with it, and the decision to take on a
+  # dependency gets made in the open instead of noticed a year later by
+  # somebody reading a vulnerability report.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 4
+    commit-message:
+      # Conventional Commits, because the commit-msg hook checks the header
+      # shape and a pull request whose commit cannot land is one nobody can
+      # merge.
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+
+  # The workflows pin actions by major version, so this is what moves them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 4
+    commit-message:
+      prefix: "ci(deps)"
+    labels:
+      - dependencies
+      - ci
+    # Grouped, unlike gomod above, and for the reason gomod is not: these move
+    # together. Four pull requests for four actions that do the same thing in
+    # the same file means merging any one makes the other three out of date,
+    # because the ruleset requires a branch to be current before it merges.
+    #
+    # A module bump changes what ships and deserves its own review. An action
+    # bump changes what CI does, and CI either runs or it does not.
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Pre-commit gate. Install with: make hooks
+#
+# Never bypass this with --no-verify. If a check is wrong, fix the check.
+#
+# The order is cheapest-first, so a formatting slip fails in under a second
+# rather than after the suite. The last check is the one this library exists
+# for: an allocation added to Layout.Parse is the regression that matters, and
+# it can be introduced by an escape analysis change three packages away.
+set -e
+
+echo "pre-commit: gofumpt"
+unformatted=$(gofumpt -l . 2>/dev/null | grep -v '^_plans/\|^_tmp/\|^_reviews/' || true)
+if [ -n "$unformatted" ]; then
+	echo "not formatted:"
+	printf '%s\n' "$unformatted" | sed 's/^/  /'
+	echo "run: make fmt"
+	exit 1
+fi
+
+echo "pre-commit: go vet"
+go vet ./...
+
+echo "pre-commit: golangci-lint"
+golangci-lint run
+
+echo "pre-commit: go test"
+go test -count=1 -timeout=120s ./...
+
+# Run without -race on purpose. testing.AllocsPerRun counts allocations the
+# race detector itself makes, so this assertion is only meaningful in a build
+# that does not have it on.
+echo "pre-commit: Layout.Parse is zero-alloc"
+go test -run='^TestLayoutParseZeroAlloc$' -count=1 -timeout=30s .
+
+echo "pre-commit: ok"

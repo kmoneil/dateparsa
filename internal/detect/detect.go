@@ -502,9 +502,9 @@ func partIndex(offset int, parts []string) int {
 // buildDatePartFields constructs compile.Fields for a 3-part date, sorting by
 // input position and inserting literal separator fields between them.
 func buildDatePartFields(parts []string, month, day datePart) []compile.Field {
-	// Determine year part by elimination — whichever offset is not month or day.
-	yearOffset := 0
-	yearLen := len(parts[0])
+	// Determine year part by elimination: whichever offset is not month or day.
+	// Both are assigned on every path below, so neither carries an initializer.
+	var yearOffset, yearLen int
 	p1End := len(parts[0]) + 1
 	p2End := p1End + len(parts[1]) + 1
 	if month.offset == 0 || day.offset == 0 {

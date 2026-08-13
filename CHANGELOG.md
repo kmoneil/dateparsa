@@ -28,8 +28,8 @@ published tag will be `v0.1.0`.
   `CompileWithTimezone()` turn a Go reference layout such as `"2006-01-02"`
   into the same instruction-based executor detection produces
 - **`Layout.Parse()` and `Layout.ParseBytes()`**: zero-allocation parsing once
-  the format is known, at roughly 36 ns/op against 26 ns/op for `time.Parse`
-  with a known layout
+  the format is known, at roughly 37 ns/op against 27 ns/op for `time.Parse`
+  with a known layout, and 19 ns/op for a compact date
 - **Trie-based detection**: O(n) character-class signature matching over 33
   fixed-signature formats, with no backtracking, plus a cascade of special-case
   detectors for the variable-width and textual forms a fixed signature cannot

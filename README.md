@@ -12,13 +12,13 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 
 ## Why dateparsa
 
-**When you already know the format**, use `time.Parse`. It's 26 ns, zero allocs, stdlib. Nothing should replace it.
+**When you already know the format**, use `time.Parse`. It's about 27 ns, zero allocs, stdlib. Nothing should replace it.
 
 **When you don't know the format** — CSV imports, log ingestion, API responses from third parties, user-submitted data, multi-source pipelines — that's where dateparsa comes in.
 
 One `Parse()` call handles ISO 8601, RFC 3339, RFC 2822, RFC 850, ANSIC, SQL timestamps, syslog, Common Log Format, spreadsheet dates, compact formats, Unix timestamps, partial dates, and natural language expressions like "3 days ago" or "next friday at 2pm". In 20 languages.
 
-The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at 36 ns with zero allocations — within 1.4x of `time.Parse` with a known format.
+The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at about 37 ns with zero allocations, within 1.4x of `time.Parse` with a known format. A shorter format is faster than the stdlib outright: a compact date is 19 ns against 27.
 
 ### When to use dateparsa
 
@@ -57,7 +57,7 @@ fmt.Println(result.Ambiguous) // false
 result, _ := dateparsa.Parse("2024-03-15T10:30:00Z")
 layout := result.Layout
 
-// Parse millions — zero alloc, ~25 ns/op
+// Parse millions — zero alloc, ~37 ns/op for this format
 for _, row := range rows {
     t, err := layout.Parse(row)
     // ...
@@ -236,50 +236,53 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 
 ## Performance
 
-Measured on Apple M2 Max, Go 1.26.1, `darwin/arm64`.
+Measured on Apple M2 Max, Go 1.26.1, `darwin/arm64`. Every figure below is the
+median of the three runs in `benchmarks/baseline.txt`, which is the committed
+reference `make bench-compare` measures against. If you change one of these
+numbers, change the baseline in the same commit and say what produced it.
 
 ### Hot path (compiled Layout reuse)
 
 | Operation                       | ns/op | Allocs | vs `time.Parse` |
 | ------------------------------- | ----- | ------ | --------------- |
-| `Layout.Parse` (ISO date)       | 21    | 0      | 0.8x            |
-| `Layout.Parse` (ISO datetime+Z) | 36    | 0      | 1.4x            |
-| `Layout.Parse` (compact date)   | 19    | 0      | 0.7x            |
-| `Parser` (cached layout)        | 38    | 0      | 1.5x            |
-| `time.Parse` (stdlib baseline)  | 26    | 0      | 1.0x            |
+| `Layout.Parse` (compact date)   | 19.1  | 0      | 0.7x            |
+| `Layout.Parse` (ISO date)       | 21.7  | 0      | 0.8x            |
+| `time.Parse` (stdlib baseline)  | 26.7  | 0      | 1.0x            |
+| `Layout.Parse` (ISO datetime+Z) | 36.6  | 0      | 1.4x            |
+| `Parser` (cached layout)        | 38.7  | 0      | 1.4x            |
 
 ### Full detection + parse (first call)
 
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| ISO 8601 date        | 95    | 1      |
-| ISO 8601 datetime    | 143   | 1      |
-| SQL datetime         | 135   | 1      |
-| Compact date         | 87    | 1      |
-| SQL datetime + frac6 | 172   | 1      |
-| Unix timestamp       | 55    | 1      |
-| ISO week date        | 202   | 3      |
-| ISO ordinal          | 109   | 3      |
-| Textual month        | 603   | 6      |
-| Ambiguous slash      | 212   | 4      |
+| Unix timestamp       | 97    | 1      |
+| Compact date         | 101   | 1      |
+| ISO ordinal          | 103   | 3      |
+| ISO 8601 date        | 112   | 1      |
+| SQL datetime         | 157   | 1      |
+| ISO 8601 datetime    | 165   | 1      |
+| SQL datetime + frac6 | 189   | 1      |
+| ISO week date        | 195   | 3      |
+| Ambiguous slash      | 238   | 4      |
+| Textual month        | 679   | 6      |
 
 ### Bulk (10M rows, Apple M2 Max)
 
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
-| `Layout.Parse` 10M rows       | 354ms | 35 ns   |
-| `Parser.ParseColumn` 10M rows | 410ms | 41 ns   |
+| `Layout.Parse` 10M rows       | 366ms | 36.6 ns |
+| `Parser.ParseColumn` 10M rows | 403ms | 40.3 ns |
 
 ### Natural language
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| "yesterday"          | 634   | 3      |
-| "3 days ago"         | 686   | 3      |
-| "next friday"        | 769   | 3      |
-| "in 10 minutes"      | 800   | 3      |
-| "yesterday at 5pm"   | 1,005 | 3      |
-| "beginning of month" | 1,015 | 3      |
+| "yesterday"          | 714   | 4      |
+| "3 days ago"         | 803   | 4      |
+| "next friday"        | 834   | 4      |
+| "in 10 minutes"      | 936   | 4      |
+| "beginning of month" | 1,101 | 4      |
+| "yesterday at 5pm"   | 1,111 | 4      |
 
 ### Regression tracking
 

@@ -34,7 +34,7 @@ The key insight: **detect the format once, parse millions of rows at native spee
 go get github.com/kmoneil/dateparsa
 ```
 
-Requires Go 1.23+. Zero runtime dependencies.
+Requires Go 1.26+. Zero runtime dependencies.
 
 ## Usage
 
@@ -323,4 +323,7 @@ Subsequent:     input → execute (same instructions) → time.Time
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Locale data is derived from the Unicode Common Locale Data Repository (CLDR) and
+carries the Unicode License v3, reproduced in `NOTICE`.

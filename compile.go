@@ -12,8 +12,16 @@ import (
 // (month/day names like "Jan", "January", "Mon" require auto-detection
 // via Parse).
 //
-// The returned Layout is safe for concurrent use and produces identical
-// results to time.Parse(layout, value) for all valid inputs.
+// The returned Layout is safe for concurrent use. Where an input is what the
+// layout literally describes, it agrees with time.Parse(layout, value).
+//
+// It is stricter in one respect, deliberately. A compiled layout reads fields
+// at fixed byte offsets, which is what lets it run without allocating, so a
+// numeric element written narrower than the layout declares is refused here:
+// Compile("2006-01-02T15:04:05Z07:00") rejects "2024-03-15T9:30:00Z", while
+// time.Parse accepts it by falling back from its strict RFC 3339 parser to the
+// general layout parser, where 15 takes one digit or two. RFC 3339 requires
+// two. Use Parse if you want the width detected rather than declared.
 func Compile(layout string) (*Layout, error) {
 	return CompileWithTimezone(layout, time.UTC)
 }

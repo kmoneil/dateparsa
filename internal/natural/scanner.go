@@ -17,23 +17,23 @@ type TokenKind byte
 
 const (
 	TokNumber    TokenKind = iota // An integer: "3", "10"
-	TokUnit                      // A time unit: "day", "days", "week", "month", "year", "hour", "minute", "second"
+	TokUnit                       // A time unit: "day", "days", "week", "month", "year", "hour", "minute", "second"
 	TokDirection                  // A direction: "ago", "from now", "in" (prefix)
-	TokRelWord                   // A relative keyword: "yesterday", "today", "tomorrow", "now"
-	TokSelector                  // "last", "next", "this"
-	TokWeekday                   // "monday" .. "sunday"
-	TokMonth                     // "january" .. "december"
-	TokBoundary                  // "beginning", "start", "end"
-	TokOf                        // "of"
-	TokAt                        // "at"
-	TokNoon                      // "noon"
-	TokMidnight                  // "midnight"
-	TokAMPM                      // "am", "pm"
-	TokTime                      // Inline time: "5pm", "14:00", "5:30pm"
-	TokHalf                      // "half" (halves the next unit)
-	TokTimeOfDay                 // "morning", "afternoon", "evening", "night"
-	TokAnd                       // "and" (for compound durations)
-	TokUnknown                   // Anything else
+	TokRelWord                    // A relative keyword: "yesterday", "today", "tomorrow", "now"
+	TokSelector                   // "last", "next", "this"
+	TokWeekday                    // "monday" .. "sunday"
+	TokMonth                      // "january" .. "december"
+	TokBoundary                   // "beginning", "start", "end"
+	TokOf                         // "of"
+	TokAt                         // "at"
+	TokNoon                       // "noon"
+	TokMidnight                   // "midnight"
+	TokAMPM                       // "am", "pm"
+	TokTime                       // Inline time: "5pm", "14:00", "5:30pm"
+	TokHalf                       // "half" (halves the next unit)
+	TokTimeOfDay                  // "morning", "afternoon", "evening", "night"
+	TokAnd                        // "and" (for compound durations)
+	TokUnknown                    // Anything else
 )
 
 // Token is a single token from a natural language date expression.
@@ -60,7 +60,7 @@ type Token struct {
 type RelWord byte
 
 const (
-	RelNow       RelWord = iota
+	RelNow RelWord = iota
 	RelToday
 	RelYesterday
 	RelTomorrow
@@ -84,9 +84,9 @@ const (
 type Direction byte
 
 const (
-	DirAgo    Direction = iota // past
-	DirFromNow                // future
-	DirIn                     // future (prefix: "in 3 days")
+	DirAgo     Direction = iota // past
+	DirFromNow                  // future
+	DirIn                       // future (prefix: "in 3 days")
 )
 
 // Selector represents last/next/this.

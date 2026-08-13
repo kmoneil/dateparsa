@@ -9,10 +9,10 @@ import (
 
 // formatSpec defines a date format for round-trip testing.
 type formatSpec struct {
-	name     string
-	goFmt   string                  // Go format string for rendering
-	render  func(t time.Time) string // Custom renderer (overrides goFmt)
-	opts    []Option                 // Parse options needed
+	name    string
+	goFmt   string                             // Go format string for rendering
+	render  func(t time.Time) string           // Custom renderer (overrides goFmt)
+	opts    []Option                           // Parse options needed
 	checkFn func(orig, parsed time.Time) error // Custom comparison (default: full match)
 }
 
@@ -78,7 +78,8 @@ var roundTripFormats = []formatSpec{
 	// === Compact ===
 	{name: "COMPACT_DATE", goFmt: "20060102", checkFn: dateOnly},
 	{name: "COMPACT_DATETIME", goFmt: "20060102T150405", checkFn: dateAndTime},
-	{name: "COMPACT_DATETIME_Z",
+	{
+		name:    "COMPACT_DATETIME_Z",
 		render:  func(t time.Time) string { return t.UTC().Format("20060102T150405") + "Z" },
 		checkFn: dateAndTime,
 	},
@@ -87,8 +88,10 @@ var roundTripFormats = []formatSpec{
 	{name: "US_SLASH", goFmt: "01/02/2006", checkFn: dateOnly},
 
 	// === European ===
-	{name: "EUROPEAN_DOT", goFmt: "02.01.2006",
-		opts: []Option{WithPreferDayFirst(true)}, checkFn: dateOnly},
+	{
+		name: "EUROPEAN_DOT", goFmt: "02.01.2006",
+		opts: []Option{WithPreferDayFirst(true)}, checkFn: dateOnly,
+	},
 
 	// === Textual month ===
 	{name: "MONTH_DAY_YEAR", goFmt: "January 2, 2006", checkFn: dateOnly},
@@ -99,13 +102,15 @@ var roundTripFormats = []formatSpec{
 	{name: "RFC2822", goFmt: "Mon, 02 Jan 2006 15:04:05 -0700", checkFn: dateAndTime},
 
 	// === RFC 1123 ===
-	{name: "RFC1123_UTC",
+	{
+		name:    "RFC1123_UTC",
 		render:  func(t time.Time) string { return t.UTC().Format("Mon, 02 Jan 2006 15:04:05") + " UTC" },
 		checkFn: dateAndTime,
 	},
 
 	// === ANSIC ===
-	{name: "ANSIC",
+	{
+		name:    "ANSIC",
 		render:  func(t time.Time) string { return t.UTC().Format("Mon Jan _2 15:04:05 2006") },
 		checkFn: dateAndTime,
 	},
@@ -119,7 +124,8 @@ var roundTripFormats = []formatSpec{
 		return nil
 	}},
 	{name: "TIME_HMS", goFmt: "15:04:05", checkFn: timeOnly},
-	{name: "TIME_12H",
+	{
+		name: "TIME_12H",
 		render: func(t time.Time) string {
 			h := t.Hour()
 			suffix := "AM"
@@ -144,17 +150,20 @@ var roundTripFormats = []formatSpec{
 	},
 
 	// === EXIF ===
-	{name: "EXIF_DATE",
+	{
+		name:    "EXIF_DATE",
 		render:  func(t time.Time) string { return t.Format("2006:01:02") },
 		checkFn: dateOnly,
 	},
-	{name: "EXIF_DATETIME",
+	{
+		name:    "EXIF_DATETIME",
 		render:  func(t time.Time) string { return t.Format("2006:01:02 15:04:05") },
 		checkFn: dateAndTime,
 	},
 
 	// === Comma fractional (Java/log4j) ===
-	{name: "COMMA_FRAC",
+	{
+		name: "COMMA_FRAC",
 		render: func(t time.Time) string {
 			ms := t.Nanosecond() / 1e6
 			return t.Format("2006-01-02 15:04:05") + fmt.Sprintf(",%03d", ms)
@@ -163,7 +172,8 @@ var roundTripFormats = []formatSpec{
 	},
 
 	// === ISO partial ===
-	{name: "YEAR_MONTH", goFmt: "2006-01",
+	{
+		name: "YEAR_MONTH", goFmt: "2006-01",
 		checkFn: func(orig, parsed time.Time) error {
 			if parsed.Year() != orig.Year() || parsed.Month() != orig.Month() {
 				return fmt.Errorf("year-month mismatch: got %d-%02d, want %d-%02d",
@@ -174,7 +184,8 @@ var roundTripFormats = []formatSpec{
 	},
 
 	// === SQL datetime + AM/PM ===
-	{name: "SQL_AMPM",
+	{
+		name: "SQL_AMPM",
 		render: func(t time.Time) string {
 			h := t.Hour()
 			suffix := "AM"
@@ -193,13 +204,15 @@ var roundTripFormats = []formatSpec{
 	},
 
 	// === SQL datetime + TZ name ===
-	{name: "SQL_TZ_NAME",
+	{
+		name:    "SQL_TZ_NAME",
 		render:  func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") + " UTC" },
 		checkFn: dateAndTime,
 	},
 
 	// === Common Log Format ===
-	{name: "CLF",
+	{
+		name:    "CLF",
 		render:  func(t time.Time) string { return t.UTC().Format("02/Jan/2006:15:04:05") + " +0000" },
 		checkFn: dateAndTime,
 	},
@@ -207,13 +220,13 @@ var roundTripFormats = []formatSpec{
 
 // randomTime generates a random time between 1970 and 2099.
 func randomTime(rng *rand.Rand) time.Time {
-	year := 1970 + rng.Intn(130)  // 1970-2099
-	month := 1 + rng.Intn(12)     // 1-12
-	day := 1 + rng.Intn(28)       // 1-28 (safe for all months)
-	hour := rng.Intn(24)          // 0-23
-	minute := rng.Intn(60)        // 0-59
-	second := rng.Intn(60)        // 0-59
-	ms := rng.Intn(1000)          // 0-999 milliseconds
+	year := 1970 + rng.Intn(130) // 1970-2099
+	month := 1 + rng.Intn(12)    // 1-12
+	day := 1 + rng.Intn(28)      // 1-28 (safe for all months)
+	hour := rng.Intn(24)         // 0-23
+	minute := rng.Intn(60)       // 0-59
+	second := rng.Intn(60)       // 0-59
+	ms := rng.Intn(1000)         // 0-999 milliseconds
 	return time.Date(year, time.Month(month), day, hour, minute, second, ms*1e6, time.UTC)
 }
 
@@ -272,8 +285,8 @@ func TestRoundTrip_LayoutReuse(t *testing.T) {
 	rng := rand.New(rand.NewSource(99))
 
 	formats := []struct {
-		name   string
-		goFmt  string
+		name    string
+		goFmt   string
 		checkFn func(orig, parsed time.Time) error
 	}{
 		{"ISO_DATE", "2006-01-02", dateOnly},
@@ -329,7 +342,7 @@ func TestRoundTrip_LayoutReuse(t *testing.T) {
 func FuzzRoundTrip_ISO(f *testing.F) {
 	f.Add(int64(0), int64(0))
 	f.Add(int64(1710504800), int64(123000000))
-	f.Add(int64(946684800), int64(0))   // 2000-01-01
+	f.Add(int64(946684800), int64(0))    // 2000-01-01
 	f.Add(int64(-62135596800), int64(0)) // year 1
 
 	f.Fuzz(func(t *testing.T, sec, nsec int64) {

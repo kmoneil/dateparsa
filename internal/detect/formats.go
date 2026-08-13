@@ -9,7 +9,7 @@ type formatEntry struct {
 	goLayout string
 	sig      []CharClass // Expected signature pattern
 	fields   []compile.Field
-	ambig    bool // True if this signature is ambiguous (DD/MM vs MM/DD)
+	ambig    bool               // True if this signature is ambiguous (DD/MM vs MM/DD)
 	def      *compile.FormatDef // Pre-built, set at init time
 }
 
@@ -182,7 +182,6 @@ func phase1Formats() []formatEntry {
 // Phase 2 format definitions.
 func phase2Formats() []formatEntry {
 	return []formatEntry{
-
 		// === Compact Formats ===
 
 		// 20240315 (YYYYMMDD — 8 digits)
@@ -401,8 +400,8 @@ func phase2Formats() []formatEntry {
 
 		// 2024-03-15T10:30:00.123+05:30 (29 chars)
 		{
-			name:     "RFC3339_FRAC3_TZ",
-			sig:      sig("DDDDSDDSDDXDDCDDCDDSDDDXDDCDD"),
+			name: "RFC3339_FRAC3_TZ",
+			sig:  sig("DDDDSDDSDDXDDCDDCDDSDDDXDDCDD"),
 			fields: []compile.Field{
 				{Kind: compile.FYear4, Offset: 0, Len: 4},
 				{Kind: compile.FLiteral, Offset: 4, Len: 1},

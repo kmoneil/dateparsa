@@ -7,9 +7,9 @@ import (
 
 func TestFormatCoverage(t *testing.T) {
 	type testCase struct {
-		input      string
-		dayFirst   bool
-		desc       string
+		input    string
+		dayFirst bool
+		desc     string
 	}
 
 	tests := []testCase{

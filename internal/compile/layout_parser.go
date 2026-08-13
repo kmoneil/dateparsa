@@ -59,8 +59,8 @@ var goTokens = []goToken{
 	{"_2", FDay1or2, 2, 0}, // space-padded day — consumes 2 layout bytes, 1-2 input bytes
 
 	// Single-character tokens
-	{"3", FHour1or2, 0, 0}, // variable width
-	{"2", FDay1or2, 0, 0},  // variable width
+	{"3", FHour1or2, 0, 0},  // variable width
+	{"2", FDay1or2, 0, 0},   // variable width
 	{"1", FMonth1or2, 0, 0}, // variable width
 }
 

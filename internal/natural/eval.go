@@ -9,8 +9,8 @@ type ResultKind int
 
 const (
 	KindNone     ResultKind = iota
-	KindNow                        // "now", "today"
-	KindRelative                   // "3 days ago", "yesterday"
+	KindNow                 // "now", "today"
+	KindRelative            // "3 days ago", "yesterday"
 )
 
 // Result holds the outcome of a natural language parse.

@@ -12,12 +12,12 @@ import (
 type Kind int
 
 const (
-	KindNone   Kind = iota
-	KindSec         // 10-digit: seconds since epoch
-	KindMilli       // 13-digit: milliseconds
-	KindMicro       // 16-digit: microseconds
-	KindNano        // 19-digit: nanoseconds
-	KindFrac        // Fractional: 1710500000.123
+	KindNone  Kind = iota
+	KindSec        // 10-digit: seconds since epoch
+	KindMilli      // 13-digit: milliseconds
+	KindMicro      // 16-digit: microseconds
+	KindNano       // 19-digit: nanoseconds
+	KindFrac       // Fractional: 1710500000.123
 )
 
 // Result holds a detected epoch timestamp.

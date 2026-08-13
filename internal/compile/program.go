@@ -11,7 +11,7 @@ const MaxInstructions = 24
 // without indirection or heap allocation.
 type Program struct {
 	Insts [MaxInstructions]Inst
-	N     int    // Number of valid instructions
+	N     int            // Number of valid instructions
 	Tz    *time.Location // Default timezone for this program (set at compile time)
 }
 

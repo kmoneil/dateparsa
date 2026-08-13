@@ -385,7 +385,7 @@ const (
 	tzTableMinOffset = -720 // -12:00 in minutes
 	tzTableMaxOffset = 840  // +14:00 in minutes
 	tzTableStep      = 15   // 15-minute granularity
-	tzTableSize = (tzTableMaxOffset-tzTableMinOffset)/tzTableStep + 1
+	tzTableSize      = (tzTableMaxOffset-tzTableMinOffset)/tzTableStep + 1
 )
 
 var tzOffsetTable [tzTableSize]*time.Location

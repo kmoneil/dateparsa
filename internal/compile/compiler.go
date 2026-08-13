@@ -6,7 +6,7 @@ import "time"
 type FieldKind byte
 
 const (
-	FYear4     FieldKind = iota
+	FYear4 FieldKind = iota
 	FYear2
 	FMonth2
 	FMonth1or2
@@ -20,8 +20,8 @@ const (
 	FSecond2
 	FFracSec
 	FAMPM
-	FTZZ      // Literal 'Z'
-	FTZOffset // ±HH:MM or ±HHMM
+	FTZZ         // Literal 'Z'
+	FTZOffset    // ±HH:MM or ±HHMM
 	FTZName      // Timezone abbreviation
 	FLiteral     // A literal character to skip
 	FSkip        // Skip N bytes
@@ -36,27 +36,27 @@ const (
 // fieldKindToOp maps each FieldKind to its corresponding OpCode.
 // Indexed by FieldKind; the FieldKind and OpCode enums are defined in parallel.
 var fieldKindToOp = [numFieldKinds]OpCode{
-	FYear4:     OpYear4,
-	FYear2:     OpYear2,
-	FMonth2:    OpMonth2,
-	FMonth1or2: OpMonth1or2,
-	FMonthName: OpMonthName,
-	FDay2:      OpDay2,
-	FDay1or2:   OpDay1or2,
-	FHour24:    OpHour24,
-	FHour12:    OpHour12,
-	FHour1or2:  OpHour1or2,
-	FMinute2:   OpMinute2,
-	FSecond2:   OpSecond2,
-	FFracSec:   OpFracSec,
-	FAMPM:      OpAMPM,
-	FTZZ:       OpTZZ,
-	FTZOffset:  OpTZOffset,
-	FTZName:    OpTZName,
-	FLiteral:   OpLiteral,
-	FSkip:      OpSkip,
-	FISOWeek:   OpISOWeek,
-	FISOWeekDay: OpISOWeekDay,
+	FYear4:       OpYear4,
+	FYear2:       OpYear2,
+	FMonth2:      OpMonth2,
+	FMonth1or2:   OpMonth1or2,
+	FMonthName:   OpMonthName,
+	FDay2:        OpDay2,
+	FDay1or2:     OpDay1or2,
+	FHour24:      OpHour24,
+	FHour12:      OpHour12,
+	FHour1or2:    OpHour1or2,
+	FMinute2:     OpMinute2,
+	FSecond2:     OpSecond2,
+	FFracSec:     OpFracSec,
+	FAMPM:        OpAMPM,
+	FTZZ:         OpTZZ,
+	FTZOffset:    OpTZOffset,
+	FTZName:      OpTZName,
+	FLiteral:     OpLiteral,
+	FSkip:        OpSkip,
+	FISOWeek:     OpISOWeek,
+	FISOWeekDay:  OpISOWeekDay,
 	FOrdinalDay:  OpOrdinalDay,
 	FTZZOrOffset: OpTZZOrOffset,
 }
@@ -71,8 +71,8 @@ type Field struct {
 
 // FormatDef defines a date format as a sequence of fields.
 type FormatDef struct {
-	Name     string   // e.g. "ISO8601_DATE"
-	GoLayout string   // Go time layout equivalent, if any
+	Name     string // e.g. "ISO8601_DATE"
+	GoLayout string // Go time layout equivalent, if any
 	Fields   []Field
 }
 

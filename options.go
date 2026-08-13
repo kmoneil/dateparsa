@@ -4,9 +4,9 @@ import "time"
 
 // config holds the parsed options for a parse call.
 type config struct {
-	baseTime       time.Time
-	timezone       *time.Location
-	preferDayFirst bool
+	baseTime        time.Time
+	timezone        *time.Location
+	preferDayFirst  bool
 	preferYearFirst bool
 	preferFuture    bool
 	strictMode      bool

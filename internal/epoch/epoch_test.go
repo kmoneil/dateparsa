@@ -81,8 +81,8 @@ func TestDetect_Negative(t *testing.T) {
 func TestDetect_NotTimestamp(t *testing.T) {
 	rejects := []string{
 		"",
-		"2024",       // Too short, not in timestamp range
-		"20240315",   // 8 digits — compact date, not timestamp
+		"2024",     // Too short, not in timestamp range
+		"20240315", // 8 digits — compact date, not timestamp
 		"abc",
 		"12:30:00",
 		"2024-03-15",

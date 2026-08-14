@@ -241,10 +241,16 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 
 ## Performance
 
-Measured on Apple M2 Max, Go 1.26.1, `darwin/arm64`. Every figure below is the
+**ns/op** is measured on Apple M2 Max, Go 1.26.1, `darwin/arm64`, and is the
 median of the three runs in `benchmarks/baseline.txt`, which is the committed
 reference `make bench-compare` measures against. If you change one of these
 numbers, change the baseline in the same commit and say what produced it.
+
+**Allocs** is re-measured on `linux/arm64`, Go 1.26.4, at `e61660a`, because
+seven of these counts had drifted from the baseline and an allocation count does
+not depend on the machine: it is a property of the code. The ns column has not
+been re-run on the M2 Max since, and it is stale by an unknown amount on any row
+whose allocation count moved. Do not read the two columns as one measurement.
 
 ### Hot path (compiled Layout reuse)
 
@@ -269,7 +275,7 @@ numbers, change the baseline in the same commit and say what produced it.
 | SQL datetime + frac6 | 189   | 1      |
 | ISO week date        | 195   | 3      |
 | Ambiguous slash      | 238   | 4      |
-| Textual month        | 679   | 6      |
+| Textual month        | 679   | 4      |
 
 ### Bulk (10M rows, Apple M2 Max)
 
@@ -282,12 +288,12 @@ numbers, change the baseline in the same commit and say what produced it.
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| "yesterday"          | 714   | 4      |
-| "3 days ago"         | 803   | 4      |
-| "next friday"        | 834   | 4      |
-| "in 10 minutes"      | 936   | 4      |
-| "beginning of month" | 1,101 | 4      |
-| "yesterday at 5pm"   | 1,111 | 4      |
+| "yesterday"          | 714   | 3      |
+| "3 days ago"         | 803   | 3      |
+| "next friday"        | 834   | 3      |
+| "in 10 minutes"      | 936   | 3      |
+| "beginning of month" | 1,101 | 3      |
+| "yesterday at 5pm"   | 1,111 | 3      |
 
 ### Regression tracking
 

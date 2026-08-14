@@ -752,3 +752,56 @@ func TestNumericPartWiderThanItsFieldIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestSkippedRunWithADigitIsRefused covers the one thing exact byte coverage
+// does not settle: which bytes a skip is allowed to cover.
+//
+// A skip fixes a run's width and reads nothing, on the reasoning that the
+// detector scanned past those bytes because they held no value. What told the
+// detector they held no value is that they were not digits, and that half was
+// never carried into the program. Parse("MAY A1") builds a month name, a skip
+// of width 2 over " A", and a 1-or-2 digit day:
+//
+//	"MAY 15"  the skip takes " 1" and the day reads "5"      → May 5th
+//	"MAY1010" the skip takes "10" and the day widens to "10" → May 10th
+//
+// Detection reads those as May 15th and as the year 1010. The second case is
+// why counting bytes cannot catch this on its own: the skip takes two bytes it
+// was not given, the day takes one more than it declared, and 3 + 2 + 2 is
+// still the length of the input.
+func TestSkippedRunWithADigitIsRefused(t *testing.T) {
+	cached, err := Parse("MAY A1")
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", "MAY A1", err)
+	}
+
+	for _, in := range []string{
+		"MAY 15",  // digit inside the skip, day stays one byte
+		"MAY1010", // digit inside the skip, day widens to two
+		"MAY101",  // digit inside the skip, detection refuses this one outright
+	} {
+		if got, err := cached.Layout.Parse(in); err == nil {
+			t.Errorf("Layout(%v).Parse(%q) = %v, want an error", cached.Layout, in, got)
+		}
+	}
+
+	// A run of the same width that still holds no digit is the case the skip
+	// exists to serve, and it has to keep working.
+	got, err := cached.Layout.Parse("MAY B2")
+	if err != nil {
+		t.Fatalf("Layout(%v).Parse(%q): %v", cached.Layout, "MAY B2", err)
+	}
+	if d := got.Day(); d != 2 {
+		t.Errorf("Layout(%v).Parse(%q) day = %d, want 2", cached.Layout, "MAY B2", d)
+	}
+
+	// The weekday name is the skip that carries its weight, and reuse across
+	// two different names is what a column of RFC 1123 dates needs.
+	rfc, err := Parse("Fri Jul 03 2015 18:04:07 GMT+0100")
+	if err != nil {
+		t.Fatalf("Parse of the RFC 1123 sample: %v", err)
+	}
+	if _, err := rfc.Layout.Parse("Mon Jul 06 2015 18:04:07 GMT+0100"); err != nil {
+		t.Errorf("layout refused a different weekday of the same width: %v", err)
+	}
+}

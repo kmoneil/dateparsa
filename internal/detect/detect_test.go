@@ -297,6 +297,54 @@ func TestEveryFieldDeclaresTheWidthItsOpReads(t *testing.T) {
 	}
 }
 
+// TestNoSkipCoversADigit is the detection half of the rule OpSkip enforces at
+// run time: a skip may not contain a digit.
+//
+// The executor's check is what stops a reused layout hiding a numeric token
+// inside a run it does not read. This one says detection never asks it to: a
+// format that emitted a skip over a digit would be refusing the very input it
+// was detected from, which is a detector bug and not a reuse question.
+//
+// The numeric corpus is here because C11 named it as the family to check rather
+// than assume. buildDatePartFields separates its parts with literals, so no
+// skip should appear between them at all.
+func TestNoSkipCoversADigit(t *testing.T) {
+	corpus := []string{
+		// Textual, which is where the skips are: weekday names, punctuation,
+		// ordinal suffixes, " at ", and the name half of "GMT+0100".
+		"March 15, 2024", "15 Mar 2024", "sept. 1, 2020", "March 2024",
+		"December 23rd", "September 17, 2012 at 10:09am", "March 1st, 2024",
+		"Fri Jul 03 2015 18:04:07 GMT+0100", "Thu, 4 Jan 2018 17:53:36 +0000",
+		"Mon Jan 2 15:04:05 2006", "Sat, 03 Feb 2024 11:45:00 GMT",
+		"MAY A1", "MAY B2", "1MAY",
+
+		// Numeric, where there should be no skip to check.
+		"2024-03-15", "2024/03/15", "20240315", "3/15/2024", "15.03.2024",
+		"01/02/2024", "2024-03-15T10:30:00Z", "2024-03-15 10:30:00 UTC",
+		"2015-02-08 03:02:00 +0300 MSK", "2024-W11-5", "2024-074",
+		"2014年04月08日", "10:30:00.123", "10:30 PM",
+	}
+
+	for _, in := range corpus {
+		r, ok := Detect(in, Config{})
+		if !ok || r.Def == nil {
+			continue // refusing is always allowed
+		}
+		for _, f := range r.Def.Fields {
+			if f.Kind != compile.FSkip {
+				continue
+			}
+			for i := f.Offset; i < f.Offset+f.Len && i < len(in); i++ {
+				if in[i] >= '0' && in[i] <= '9' {
+					t.Errorf("Detect(%q) [%s]: skip at %d len %d covers the digit %q at %d",
+						in, r.Def.Name, f.Offset, f.Len, in[i:i+1], i)
+					break
+				}
+			}
+		}
+	}
+}
+
 // TestEveryInputByteIsDescribedExactlyOnce asserts what the executor's coverage
 // check assumes: every byte of an input a format claims belongs to exactly one
 // field, no byte to none and no byte to two.

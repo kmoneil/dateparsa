@@ -126,6 +126,14 @@ func FuzzLayoutReuse(f *testing.F) {
 		// the '-' between them, so it accepted a compact eight-digit date and
 		// read its "0101" as day-of-year 101.
 		{"0000-001", "00000101"},
+
+		// A skip fixed a run's width and read nothing, so a digit could sit in
+		// it. The first pair widens the day as well, and 3 + 2 + 2 balances
+		// exactly, which is why counting bytes could not see it; the second
+		// needs no widening at all and reads May 5th where detection reads the
+		// 15th.
+		{"MAY A1", "MAY1010"},
+		{"MAY A1", "MAY 15"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

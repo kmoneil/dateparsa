@@ -365,7 +365,36 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 
 		case OpSkip:
-			// Nothing to extract — skip N bytes.
+			// Nothing to extract, but the run is not unconstrained either: it
+			// may not contain a digit.
+			//
+			// A skip covers bytes the detector scanned past — a weekday name,
+			// punctuation, an ordinal suffix. What made them skippable is that
+			// they held no value, and what told the detector they held no value
+			// is that they were not digits. Every textual detector dispatches
+			// on the numeric tokens it finds: how many there are, how wide they
+			// are, and whether each is over 31. A digit inside a skip is a
+			// token detection would have seen and this program does not model,
+			// so the two read the same input differently.
+			//
+			// Parse("MAY A1") builds a month name, a skip of width 2 over " A",
+			// and a 1-or-2 digit day. Against "MAY 15" the skip swallows " 1"
+			// and the day reads "5", for May 5th; detection reads May 15th.
+			// Against "MAY1010" the skip swallows "10", the day widens to "10",
+			// and 3 + 2 + 2 still equals 7, so the coverage check in this
+			// function cannot see it. Both now fail here instead.
+			//
+			// The bound is needed because this reads the bytes. It refuses
+			// nothing the coverage check below would have allowed: a skip
+			// running past the end leaves end > slen.
+			if off+w > slen {
+				return time.Time{}, fieldError("skipped run", off, slen)
+			}
+			for j := off; j < off+w; j++ {
+				if s[j] >= '0' && s[j] <= '9' {
+					return time.Time{}, fieldError("skipped run", j, slen)
+				}
+			}
 
 		case OpTail:
 			// The remainder of the input is deliberately ignored. Emitted only

@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kmoneil/dateparsa/internal/compile"
@@ -294,6 +295,57 @@ func TestEveryFieldDeclaresTheWidthItsOpReads(t *testing.T) {
 					in, i, f.Kind, f.Len, want)
 			}
 		}
+	}
+}
+
+// TestMaybeLetterCoversScan checks the direction maybeLetter has to hold in:
+// every byte Scan can classify as CLetter must answer true, so that a letter
+// past the signature buffer is never missed. The reverse is allowed to fail,
+// and does for 'Z', which Scan makes CSpecial at the end of a string.
+func TestMaybeLetterCoversScan(t *testing.T) {
+	for c := 0; c < 256; c++ {
+		b := byte(c)
+		// Put the byte between two spaces so no context rule can fire, which
+		// is the classification maybeLetter is answering about.
+		sig := Scan(" " + string(b) + " ")
+		if sig.HasLetter && !maybeLetter(b) {
+			t.Errorf("Scan classifies %q as a letter, maybeLetter says no", b)
+		}
+	}
+
+	// The bytes that must not count, or a numeric date behind a long separator
+	// run would start reaching the textual detector.
+	for _, b := range []byte("0123456789-/. \t:+,") {
+		if maybeLetter(b) {
+			t.Errorf("maybeLetter(%q) = true, want false", b)
+		}
+	}
+}
+
+// TestLetterPastTheSignatureIsFound covers C13 at the detection layer. A date
+// behind 64 bytes of anything but letters was never offered to the textual
+// detector, because the condition was computed from a pass that stops at
+// maxSigLen.
+func TestLetterPastTheSignatureIsFound(t *testing.T) {
+	for _, pad := range []int{0, maxSigLen - 1, maxSigLen, maxSigLen + 1, 100} {
+		in := strings.Repeat(" ", pad) + "March 15, 2024"
+		r, ok := Detect(in, Config{})
+		if !ok || r.Def == nil {
+			t.Errorf("Detect with %d bytes of padding found no format", pad)
+			continue
+		}
+		if r.Def.Name != "MONTH_DAY_YEAR" {
+			t.Errorf("Detect with %d bytes of padding = %s, want MONTH_DAY_YEAR", pad, r.Def.Name)
+		}
+	}
+
+	// hasLetterPastSignature must not look at bytes Scan already covered, or it
+	// is doing the work twice on every input that misses the trie.
+	if hasLetterPastSignature("March 15, 2024") {
+		t.Error("hasLetterPastSignature looked inside the signature buffer")
+	}
+	if !hasLetterPastSignature(strings.Repeat(" ", maxSigLen) + "M") {
+		t.Error("hasLetterPastSignature missed the first byte past the buffer")
 	}
 }
 

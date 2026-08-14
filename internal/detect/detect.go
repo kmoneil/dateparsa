@@ -64,7 +64,15 @@ func Detect(s string, cfg Config) (Result, bool) {
 	// Step 2b: If the trie missed and the string contains letters, try textual month.
 	// This is ordered after the trie so that formats with timezone names (e.g.
 	// "2024-03-15 10:30:00 UTC") are matched by the trie first.
-	if entry == nil && sig.HasLetter {
+	//
+	// sig.HasLetter alone was the condition, and it is computed from a pass that
+	// stops at maxSigLen, so it means "has a letter in the first 64 bytes". A
+	// date behind 64 bytes of anything else never reached this detector at all:
+	// Parse(strings.Repeat(" ", 64) + "March 15, 2024") fell through to natural
+	// language, which read "March 15" and answered with the base year rather
+	// than the 2024 in front of it. See hasLetterPastSignature for why the
+	// second look lives here and not in Scan.
+	if entry == nil && (sig.HasLetter || hasLetterPastSignature(s)) {
 		if result, ok := detectTextualMonth(s, cfg); ok {
 			return result, true
 		}

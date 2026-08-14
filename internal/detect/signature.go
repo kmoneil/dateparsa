@@ -136,6 +136,50 @@ func isDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
 
+// maybeLetter reports whether Scan could classify c as CLetter, for use past
+// the bytes Scan actually classified.
+//
+// It lists the arms of Scan's switch that produce something other than CLetter
+// and calls everything else a letter, which includes the default arm: non-ASCII
+// bytes and rare punctuation are CLetter there too.
+//
+// 'T' and 'Z' are counted as letters here even though Scan makes them CSpecial
+// in the middle of a timestamp, because that classification depends on their
+// neighbours and this predicate does not look at them. Over-reporting is the
+// safe direction: the only thing the answer gates is whether a fallback
+// detector gets to look at the input, and that detector can refuse.
+// TestMaybeLetterCoversScan checks the direction holds for all 256 bytes.
+func maybeLetter(c byte) bool {
+	switch c {
+	case '-', '/', '.', ' ', '\t', ':', '+', ',':
+		return false
+	}
+	return !isDigit(c)
+}
+
+// hasLetterPastSignature reports whether a letter sits past the bytes Scan
+// classified. It returns false for anything Scan saw in full.
+//
+// Signature.HasLetter comes from a pass that stops at maxSigLen, so on its own
+// it answers "has a letter in the first 64 bytes". Detect gated the whole
+// textual family on it, and a date with 64 bytes of anything but letters in
+// front of it was handed to natural language instead, which read "March 15" and
+// answered with the base year for an input carrying 2024.
+//
+// This is deliberately not folded into Scan. Scan runs on every structured
+// parse and does a fixed amount of work whatever the input length, which
+// SECURITY.md states as a property. Asking the question here instead keeps the
+// scan linear only on the path that already failed the trie, and that path
+// falls through to natural language, which is linear and uncapped anyway.
+func hasLetterPastSignature(s string) bool {
+	for i := maxSigLen; i < len(s); i++ {
+		if maybeLetter(s[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // allDigits returns true if s is non-empty and every byte is an ASCII digit.
 func allDigits(s string) bool {
 	if len(s) == 0 {

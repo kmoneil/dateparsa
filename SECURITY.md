@@ -89,8 +89,17 @@ Work is bounded, and the bounds are constants you can read.
 
 **The signature buffer is 64 bytes.** `detect.Scan` classifies at most
 `maxSigLen = 64` bytes into a stack-allocated array. Input longer than that is
-truncated for signature purposes. Structured detection therefore does a fixed
-amount of work regardless of input size, and allocates nothing.
+truncated for signature purposes. The signature scan and the trie lookup on it
+therefore do a fixed amount of work regardless of input size, and allocate
+nothing.
+
+The fallback detectors behind the trie are linear in input length, and always
+were: `detectTextualMonth` scans the whole string for numeric tokens. Since
+`91e9f7a`'s successor, one byte scan past the signature buffer decides whether
+that detector is offered the input at all, on the path where the trie already
+missed. Everything on that path was linear before and still is. Nothing on it
+allocates per byte, and a program still cannot address past byte 255, so a long
+input is refused rather than parsed slowly.
 
 **A program is at most 24 instructions.** `compile.MaxInstructions` is 24 and
 the compiler **refuses** a format needing more, rather than stopping there.

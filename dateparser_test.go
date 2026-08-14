@@ -807,6 +807,67 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 	}
 }
 
+// TestPaddedTextualDateKeepsItsYear covers C13, which is what a fixed-width
+// column meets: a date behind enough padding was never offered to the textual
+// detector, because the condition was "has a letter in the first 64 bytes"
+// wearing the name HasLetter. Parse fell through to natural language, which
+// read "March 15" and answered with the base year.
+//
+// The failure had no error and no Ambiguous flag on it. The only signal a
+// caller got was Kind, and a caller reading Kind on every row is a caller who
+// already suspects something.
+func TestPaddedTextualDateKeepsItsYear(t *testing.T) {
+	for _, pad := range []int{0, 1, 63, 64, 65, 100, 200} {
+		in := strings.Repeat(" ", pad) + "March 15, 2024"
+		got, err := Parse(in)
+		if err != nil {
+			t.Errorf("Parse with %d bytes of padding: %v", pad, err)
+			continue
+		}
+		if s := got.Time.UTC().Format("2006-01-02"); s != "2024-03-15" {
+			t.Errorf("Parse with %d bytes of padding = %s, want 2024-03-15 (layout %v, kind %v)",
+				pad, s, got.Layout, got.Kind)
+		}
+		if got.Kind != KindAbsolute {
+			t.Errorf("Parse with %d bytes of padding: Kind = %v, want absolute", pad, got.Kind)
+		}
+	}
+
+	// Other shapes in the same family, which were refused outright rather than
+	// answered wrongly, and should now parse.
+	for _, tt := range []struct{ in, want string }{
+		{strings.Repeat(" ", 70) + "15 Mar 2024", "2024-03-15"},
+		{strings.Repeat(" ", 70) + "Fri, 15 Mar 2024 10:30:00 +0000", "2024-03-15"},
+		{strings.Repeat("\t", 70) + "March 15, 2024", "2024-03-15"},
+	} {
+		got, err := Parse(tt.in)
+		if err != nil {
+			t.Errorf("Parse(%q...): %v", tt.in[:6], err)
+			continue
+		}
+		if s := got.Time.UTC().Format("2006-01-02"); s != tt.want {
+			t.Errorf("Parse(...%q) = %s, want %s", tt.in[len(tt.in)-14:], s, tt.want)
+		}
+	}
+
+	// Past what a program can address, the C4 guard takes over. Refusing is the
+	// right answer there and this pins that it is a refusal and not a wrong
+	// offset.
+	if got, err := Parse(strings.Repeat(" ", 300) + "March 15, 2024"); err == nil {
+		t.Errorf("Parse with 300 bytes of padding = %v, want an error", got.Time)
+	}
+
+	// A genuinely relative string is still natural language. The fix moves
+	// inputs from NL to structured detection, and it must not move these.
+	rel, err := Parse("3 days ago")
+	if err != nil {
+		t.Fatalf(`Parse("3 days ago"): %v`, err)
+	}
+	if rel.Kind != KindRelative {
+		t.Errorf(`Parse("3 days ago") Kind = %v, want relative`, rel.Kind)
+	}
+}
+
 // TestCompileRefusesALayoutItCannotRepresent covers C4, which was a wrong time
 // when it was filed and had already decayed into a confusing error by the time
 // it was worked.

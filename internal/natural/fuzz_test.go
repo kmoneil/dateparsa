@@ -97,15 +97,15 @@ func FuzzNaturalRejectsATrailingToken(f *testing.F) {
 // of this assertion believed the comment and failed on "\xc30A" in seconds,
 // with a token at Pos 4 of a 3-byte input.
 //
-// Raw is the same kind of lie in the same function: a matched locale phrase
-// carries the dictionary spelling, so ScanLocale("hace 3 dias", es) returns a
-// token whose Raw is "días" for four bytes of input that read "dias". Pos plus
-// len(Raw) is therefore not a span, which is why this checks only that a token
-// starts inside what was walked and that the positions advance.
+// Raw was the same kind of lie in the same function until W11: a matched locale
+// phrase carried the dictionary spelling, so ScanLocale("hace 3 dias", es)
+// returned a token whose Raw was "días", five bytes for four bytes of input.
+// It is the matched text now, so Pos and Raw together are a real span of the
+// walked string, and that is what this checks.
 //
-// Nothing outside the scanners reads either field today, so the comments are
-// wrong rather than the code broken, and the assertion here is the true
-// invariant. W11 is the card for making the comments true.
+// Pos still indexes the walked string rather than the input, which is what
+// Token's comment now says. Mapping back would cost an allocation per locale
+// parse for a field nothing outside these two functions reads.
 func FuzzNaturalScanLocale(f *testing.F) {
 	seeds := []string{
 		"hace 3 dias", "il y a 2 heures", "vor 5 Minuten", "gestern",
@@ -137,9 +137,13 @@ func FuzzNaturalScanLocale(f *testing.F) {
 			walked := foldAccents(strings.ToLower(s))
 			prev := -1
 			for _, tok := range ScanLocale(s, loc) {
-				if tok.Pos < 0 || tok.Pos >= len(walked) {
-					t.Fatalf("ScanLocale(%q, %s): token %q starts at Pos %d, outside the %d bytes it walked",
+				if tok.Pos < 0 || tok.Pos+len(tok.Raw) > len(walked) {
+					t.Fatalf("ScanLocale(%q, %s): token %q at Pos %d spans past the %d bytes it walked",
 						s, loc.Tag, tok.Raw, tok.Pos, len(walked))
+				}
+				if got := walked[tok.Pos : tok.Pos+len(tok.Raw)]; got != tok.Raw {
+					t.Fatalf("ScanLocale(%q, %s): token Raw is %q, the bytes at Pos %d are %q",
+						s, loc.Tag, tok.Raw, tok.Pos, got)
 				}
 				if tok.Pos <= prev {
 					t.Fatalf("ScanLocale(%q, %s): token %q at Pos %d does not advance past %d",

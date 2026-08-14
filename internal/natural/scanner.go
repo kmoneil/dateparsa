@@ -39,8 +39,24 @@ const (
 // Token is a single token from a natural language date expression.
 type Token struct {
 	Kind TokenKind
-	Pos  int    // Byte offset in the original string
-	Raw  string // The original text of the token
+
+	// Pos is the byte offset of the token in the string the scanner walked,
+	// and Raw is that token's text.
+	//
+	// For Scan that string is the input: lowerASCII maps each byte to one byte,
+	// so the offsets carry across. For ScanLocale it is not. That scanner runs
+	// strings.ToLower and then foldAccents first, and both change lengths: a
+	// two-byte "é" folds to a one-byte "e", and ToLower turns an incomplete
+	// UTF-8 sequence into a three-byte U+FFFD. ScanLocale("\xc30A", ar) returns
+	// a token at Pos 4 for three bytes of input.
+	//
+	// Mapping back would mean folding with an index, an allocation per locale
+	// parse, and nothing outside these two functions reads Pos. So the comment
+	// is what changed, not the code. If a caller ever needs to report which
+	// part of an input a parse used, that is the moment to build the index; see
+	// W11 in the backlog.
+	Pos int
+	Raw string
 
 	// Semantic values (set by kind):
 	IntVal  int // TokNumber: the parsed integer
@@ -652,8 +668,14 @@ func ScanLocale(s string, loc *locale.Data) []Token {
 				// Check word boundary.
 				if (i+wlen == n || !isUnicodeWord(lower, i+wlen)) &&
 					(i == 0 || !isUnicodeWord(lower, prevCharPos(lower, i))) {
+					// Raw is the text that matched, not the phrase from the
+					// table. Those differ once accents are folded: matching
+					// "dias" against the Spanish table used to hand back a
+					// token whose Raw was "días", five bytes for four bytes of
+					// input, so Pos plus len(Raw) was not a span.
 					tok := w.tok
 					tok.Pos = i
+					tok.Raw = lower[i : i+wlen]
 					tokens = append(tokens, tok)
 					i += wlen
 					matched = true

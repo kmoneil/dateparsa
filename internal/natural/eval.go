@@ -17,6 +17,13 @@ const (
 type Result struct {
 	Time time.Time
 	Kind ResultKind
+
+	// Consumed is how many tokens the pattern accounted for. Eval refuses a
+	// result that does not account for all of them, so an evaluator that
+	// forgets to set this refuses everything rather than accepting everything.
+	// That is the safe direction for a field whose whole job is to stop input
+	// being ignored.
+	Consumed int
 }
 
 // Eval evaluates a token stream against a base time.
@@ -41,48 +48,72 @@ func Eval(tokens []Token, base time.Time, preferFuture bool) *Result {
 	// When "a"/"an" (IntVal=1) precedes another number, drop the "a"/"an".
 	tokens = collapseNumbers(tokens)
 
-	// Try each pattern in priority order.
-	if r := evalRelWord(tokens, base); r != nil {
+	// Try each pattern in priority order, and take the first that accounts for
+	// every token.
+	//
+	// "Accounts for every token" is the part that is new, and it is the rule
+	// the instruction executor has had since c4851ae: an input a program does
+	// not fully describe is refused. This path never had it. It matched a
+	// prefix, evaluated it, and returned without looking at the rest, so
+	// "3 days ago 2024-01-01" came back as three days before now, with a nil
+	// error, for a string naming an absolute date.
+	//
+	// A pattern that matches a prefix no longer blocks the ones after it. That
+	// makes the list "the first pattern that explains the whole input" rather
+	// than "the first pattern that starts to match", which is what the
+	// priority order was always trying to express: evalRelWord runs before
+	// evalNAgo so that "yesterday at 5pm" is one pattern rather than two.
+	n := len(tokens)
+	if r := whole(evalRelWord(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalTimeOfDay(tokens, base); r != nil {
+	if r := whole(evalTimeOfDay(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalHalf(tokens, base); r != nil {
+	if r := whole(evalHalf(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalCompoundNAgo(tokens, base); r != nil {
+	if r := whole(evalCompoundNAgo(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalNAgo(tokens, base); r != nil {
+	if r := whole(evalNAgo(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalPrefixAgo(tokens, base); r != nil {
+	if r := whole(evalPrefixAgo(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalInN(tokens, base); r != nil {
+	if r := whole(evalInN(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalSelectorWeekday(tokens, base, preferFuture); r != nil {
+	if r := whole(evalSelectorWeekday(tokens, base, preferFuture), n); r != nil {
 		return r
 	}
-	if r := evalMonthDay(tokens, base); r != nil {
+	if r := whole(evalMonthDay(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalSelectorMonth(tokens, base, preferFuture); r != nil {
+	if r := whole(evalSelectorMonth(tokens, base, preferFuture), n); r != nil {
 		return r
 	}
-	if r := evalSelectorUnit(tokens, base, preferFuture); r != nil {
+	if r := whole(evalSelectorUnit(tokens, base, preferFuture), n); r != nil {
 		return r
 	}
-	if r := evalBoundary(tokens, base); r != nil {
+	if r := whole(evalBoundary(tokens, base), n); r != nil {
 		return r
 	}
-	if r := evalBareWeekday(tokens, base, preferFuture); r != nil {
+	if r := whole(evalBareWeekday(tokens, base, preferFuture), n); r != nil {
 		return r
 	}
 
 	return nil
+}
+
+// whole passes a result through only if it accounts for every token. A nil
+// result, or one that read a prefix and left the rest, is not an answer.
+func whole(r *Result, n int) *Result {
+	if r == nil || r.Consumed != n {
+		return nil
+	}
+	return r
 }
 
 // evalRelWord handles "now", "today", "yesterday", "tomorrow",
@@ -114,9 +145,9 @@ func evalRelWord(tokens []Token, base time.Time) *Result {
 	}
 
 	// Check for "at <time>" suffix.
-	t = applyTimeSuffix(tokens[1:], t)
+	t, n := applyTimeSuffix(tokens[1:], t)
 
-	return &Result{Time: t, Kind: kind}
+	return &Result{Time: t, Kind: kind, Consumed: 1 + n}
 }
 
 // evalNAgo handles "N units ago" and "N units from now".
@@ -140,9 +171,9 @@ func evalNAgo(tokens []Token, base time.Time) *Result {
 	t := addUnit(base, n, unit)
 
 	// Check for "at <time>" suffix.
-	t = applyTimeSuffix(tokens[3:], t)
+	t, k := applyTimeSuffix(tokens[3:], t)
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 3 + k}
 }
 
 // evalInN handles "in N units".
@@ -162,9 +193,9 @@ func evalInN(tokens []Token, base time.Time) *Result {
 	unit := tokens[2].UnitVal
 	t := addUnit(base, n, unit)
 
-	t = applyTimeSuffix(tokens[3:], t)
+	t, k := applyTimeSuffix(tokens[3:], t)
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 3 + k}
 }
 
 // evalSelectorWeekday handles "last friday", "next tuesday", "this monday".
@@ -180,9 +211,9 @@ func evalSelectorWeekday(tokens []Token, base time.Time, preferFuture bool) *Res
 	targetWday := time.Weekday(tokens[1].WdayVal)
 	t := resolveWeekday(base, targetWday, sel, preferFuture)
 
-	t = applyTimeSuffix(tokens[2:], t)
+	t, k := applyTimeSuffix(tokens[2:], t)
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 2 + k}
 }
 
 // evalSelectorMonth handles "last january", "next march".
@@ -198,7 +229,7 @@ func evalSelectorMonth(tokens []Token, base time.Time, preferFuture bool) *Resul
 	targetMonth := time.Month(tokens[1].MonVal)
 	t := resolveMonth(base, targetMonth, sel, preferFuture)
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 2}
 }
 
 // evalSelectorUnit handles "last week", "next month", "last year".
@@ -246,7 +277,7 @@ func evalSelectorUnit(tokens []Token, base time.Time, preferFuture bool) *Result
 		return nil
 	}
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 2}
 }
 
 // evalBoundary handles "beginning of month", "end of year", "start of day".
@@ -292,14 +323,19 @@ func evalBoundary(tokens []Token, base time.Time) *Result {
 		return nil
 	}
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 3}
 }
 
 // applyTimeSuffix looks for "at <time>", "at noon", "at midnight",
-// or a bare TokTime in the remaining tokens, and applies it.
-func applyTimeSuffix(tokens []Token, t time.Time) time.Time {
+// or a bare TokTime in the remaining tokens, and applies it. It returns how
+// many tokens it read, which is 0 when it recognised nothing.
+//
+// A bare "at" with nothing after it reads as nothing, so "yesterday at" leaves
+// a token unaccounted for and Eval refuses it. It used to answer with
+// yesterday's midnight, which is a reading of an expression that was cut off.
+func applyTimeSuffix(tokens []Token, t time.Time) (time.Time, int) {
 	if len(tokens) == 0 {
-		return t
+		return t, 0
 	}
 
 	// Truncate to day before applying time.
@@ -310,25 +346,22 @@ func applyTimeSuffix(tokens []Token, t time.Time) time.Time {
 	if tokens[0].Kind == TokAt {
 		idx++
 		if idx >= len(tokens) {
-			return t
+			return t, 0
 		}
-	}
-
-	if idx >= len(tokens) {
-		return t
 	}
 
 	switch tokens[idx].Kind {
 	case TokTime:
-		return base.Add(time.Duration(tokens[idx].Hour)*time.Hour + time.Duration(tokens[idx].Min)*time.Minute)
+		return base.Add(time.Duration(tokens[idx].Hour)*time.Hour + time.Duration(tokens[idx].Min)*time.Minute), idx + 1
 	case TokNoon:
-		return base.Add(12 * time.Hour)
+		return base.Add(12 * time.Hour), idx + 1
 	case TokMidnight:
-		return base
+		return base, idx + 1
 	case TokNumber:
 		// Bare number after "at": treat as hour. e.g., "yesterday at 5"
 		h := tokens[idx].IntVal
 		if h >= 0 && h <= 23 {
+			n := idx + 1
 			// Check for AM/PM following.
 			if idx+1 < len(tokens) && tokens[idx+1].Kind == TokAMPM {
 				if tokens[idx+1].AMPM == 2 && h != 12 {
@@ -336,12 +369,13 @@ func applyTimeSuffix(tokens []Token, t time.Time) time.Time {
 				} else if tokens[idx+1].AMPM == 1 && h == 12 {
 					h = 0
 				}
+				n++
 			}
-			return base.Add(time.Duration(h) * time.Hour)
+			return base.Add(time.Duration(h) * time.Hour), n
 		}
 	}
 
-	return t
+	return t, 0
 }
 
 // evalTimeOfDay handles "this morning", "this afternoon", "this evening",
@@ -355,14 +389,14 @@ func evalTimeOfDay(tokens []Token, base time.Time) *Result {
 			day = day.AddDate(0, 0, -1)
 		}
 		t := day.Add(time.Duration(hour) * time.Hour)
-		return &Result{Time: t, Kind: KindRelative}
+		return &Result{Time: t, Kind: KindRelative, Consumed: 2}
 	}
 
 	// Bare time-of-day word alone (unlikely in tests but for completeness).
 	if len(tokens) == 1 && tokens[0].Kind == TokTimeOfDay {
 		day := truncateDay(base)
 		t := day.Add(time.Duration(tokens[0].Hour) * time.Hour)
-		return &Result{Time: t, Kind: KindRelative}
+		return &Result{Time: t, Kind: KindRelative, Consumed: 1}
 	}
 
 	return nil
@@ -409,7 +443,8 @@ func evalHalf(tokens []Token, base time.Time) *Result {
 		d = -d
 	}
 
-	return &Result{Time: base.Add(d), Kind: KindRelative}
+	// idx points at the direction token, which is the last one this reads.
+	return &Result{Time: base.Add(d), Kind: KindRelative, Consumed: idx + 1}
 }
 
 // evalCompoundNAgo handles compound durations like "1 hour and 3 minutes ago".
@@ -481,7 +516,15 @@ func evalCompoundNAgo(tokens []Token, base time.Time) *Result {
 		t = addUnit(t, n, p.unit)
 	}
 
-	return &Result{Time: t, Kind: KindRelative}
+	// i indexes into remaining, which starts at startIdx. The trailing
+	// direction token is one more, except in the prefix form where the
+	// direction was the token startIdx skipped.
+	consumed := startIdx + i
+	if !prefixIn {
+		consumed++
+	}
+
+	return &Result{Time: t, Kind: KindRelative, Consumed: consumed}
 }
 
 // evalPrefixAgo handles prefix-ago patterns used in French/Spanish/German:
@@ -500,7 +543,7 @@ func evalPrefixAgo(tokens []Token, base time.Time) *Result {
 	n := -tokens[1].IntVal
 	unit := tokens[2].UnitVal
 	t := addUnit(base, n, unit)
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 3}
 }
 
 // evalMonthDay handles "december 25th", "november 1st", optionally with "at TIME".
@@ -520,9 +563,9 @@ func evalMonthDay(tokens []Token, base time.Time) *Result {
 	}
 
 	t := time.Date(base.Year(), month, day, 0, 0, 0, 0, base.Location())
-	t = applyTimeSuffix(tokens[2:], t)
+	t, n := applyTimeSuffix(tokens[2:], t)
 
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 2 + n}
 }
 
 // evalBareWeekday handles a bare weekday name like "sunday" with no selector.
@@ -539,7 +582,7 @@ func evalBareWeekday(tokens []Token, base time.Time, preferFuture bool) *Result 
 
 	targetWday := time.Weekday(tokens[0].WdayVal)
 	t := resolveWeekday(base, targetWday, sel, preferFuture)
-	return &Result{Time: t, Kind: KindRelative}
+	return &Result{Time: t, Kind: KindRelative, Consumed: 1}
 }
 
 // collapseNumbers removes redundant "a"/"an" (IntVal=1) tokens when

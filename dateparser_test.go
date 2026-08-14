@@ -807,6 +807,72 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 	}
 }
 
+// TestNaturalLanguageReadsTheWholeInput covers C14. Every eval* pattern matched
+// a prefix of the token stream and returned without looking at the rest, so an
+// input naming an absolute date came back as a time derived from the clock:
+//
+//	Parse("3 days ago 2024-01-01")  was three days before now
+//
+// This is the rule c4851ae gave the instruction executor, reaching the one path
+// that never had it.
+func TestNaturalLanguageReadsTheWholeInput(t *testing.T) {
+	base := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	opts := []Option{WithBaseTime(base)}
+
+	for _, tt := range []struct{ in, why string }{
+		{"3 days ago 2024-01-01", "an ISO date the pattern never read"},
+		{"yesterday 2024", "a year"},
+		{"next friday 1999", "a year"},
+		{"tomorrow at 5pm zzzz", "trailing bytes"},
+		{"yesterday at", "an expression cut off after at"},
+		{"3 days ago and then some", "a trailing clause"},
+	} {
+		if got, err := ParseWith(tt.in, opts...); err == nil {
+			t.Errorf("ParseWith(%q) = %v, want an error: %s",
+				tt.in, got.Time.UTC().Format("2006-01-02 15:04"), tt.why)
+		}
+	}
+
+	// Everything the patterns do read has to keep working, including the
+	// composed ones. CLAUDE.md: evalRelWord runs before evalNAgo so that
+	// "yesterday at 5pm" is one pattern and not a pattern plus trailing text.
+	// Requiring full consumption is the same hazard from the other direction.
+	for _, tt := range []struct{ in, want string }{
+		{"yesterday", "2026-08-13 00:00"},
+		{"3 days ago", "2026-08-11 12:00"},
+		{"yesterday at 5pm", "2026-08-13 17:00"},
+		{"yesterday at 5", "2026-08-13 05:00"},
+		{"yesterday at noon", "2026-08-13 12:00"},
+		{"tomorrow at midnight", "2026-08-15 00:00"},
+		{"next friday at 2pm", "2026-08-21 14:00"},
+		{"in 10 minutes", "2026-08-14 12:10"},
+		{"beginning of month", "2026-08-01 00:00"},
+		{"a few days ago", "2026-08-11 12:00"},
+		{"half an hour ago", "2026-08-14 11:30"},
+		{"2 weeks and 3 days ago", "2026-07-28 12:00"},
+		{"1 hour and 3 minutes ago", "2026-08-14 10:57"},
+		{"last monday", "2026-08-10 00:00"},
+		{"march 15", "2026-03-15 00:00"},
+		{"december 25th", "2026-12-25 00:00"},
+		{"this morning", "2026-08-14 08:00"},
+		{"last night", "2026-08-13 21:00"},
+		{"next week", "2026-08-17 00:00"},
+		{"end of year", "2026-12-31 23:59"},
+		{"sunday", "2026-08-09 00:00"},
+		{"3 days ago.", "2026-08-11 12:00"}, // the scanner drops punctuation
+		{"  tomorrow  ", "2026-08-15 00:00"},
+	} {
+		got, err := ParseWith(tt.in, opts...)
+		if err != nil {
+			t.Errorf("ParseWith(%q): %v", tt.in, err)
+			continue
+		}
+		if s := got.Time.UTC().Format("2006-01-02 15:04"); s != tt.want {
+			t.Errorf("ParseWith(%q) = %s, want %s", tt.in, s, tt.want)
+		}
+	}
+}
+
 // TestPaddedTextualDateKeepsItsYear covers C13, which is what a fixed-width
 // column meets: a date behind enough padding was never offered to the textual
 // detector, because the condition was "has a letter in the first 64 bytes"

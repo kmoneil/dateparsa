@@ -100,7 +100,7 @@ func Detect(s string, cfg Config) (Result, bool) {
 
 	// Step 4: Handle ambiguous formats.
 	if entry.ambig {
-		return resolveAmbiguous(s, entry, cfg)
+		return resolveAmbiguous(s, cfg)
 	}
 
 	// Step 5: Return the pre-built FormatDef (zero allocation for trie-matched formats).
@@ -459,7 +459,7 @@ func detectVariableNumeric(s string, cfg Config) (Result, bool) {
 	}
 
 	// Build the result using resolveAmbiguous on the date portion.
-	ambigResult, ok := resolveAmbiguous(datePart, nil, cfg)
+	ambigResult, ok := resolveAmbiguous(datePart, cfg)
 	if !ok {
 		return Result{}, false
 	}
@@ -490,7 +490,7 @@ type datePart struct {
 
 // resolveAmbiguous handles DD/DD/DDDD type signatures where the format
 // could be MM/DD/YYYY or DD/MM/YYYY.
-func resolveAmbiguous(s string, _ *formatEntry, cfg Config) (Result, bool) {
+func resolveAmbiguous(s string, cfg Config) (Result, bool) {
 	sep := findSep(s)
 	if sep < 0 {
 		return Result{}, false
@@ -514,12 +514,11 @@ func resolveAmbiguous(s string, _ *formatEntry, cfg Config) (Result, bool) {
 		return Result{}, false
 	}
 
-	year, monthPart, dayPart, ambig, ok := resolveYearMonthDay(parts, first, second, third, cfg)
+	monthPart, dayPart, ambig, ok := resolveYearMonthDay(parts, first, second, third, cfg)
 	if !ok {
 		return Result{}, false
 	}
 
-	_ = year // year value used for validation only; fields extract at runtime
 	fields, ok := buildDatePartFields(parts, monthPart, dayPart)
 	if !ok {
 		return Result{}, false
@@ -539,26 +538,32 @@ func resolveAmbiguous(s string, _ *formatEntry, cfg Config) (Result, bool) {
 
 // resolveYearMonthDay determines which parts are year, month, and day,
 // and whether the result is ambiguous.
-func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (year int, month, day datePart, ambig bool, ok bool) {
+// resolveYearMonthDay decides which of three numeric parts is the month and
+// which is the day, given where the year sits.
+//
+// It used to return the year as well, and the only caller wrote
+// "_ = year // year value used for validation only" and dropped it. Nothing
+// validated it, here or anywhere: the fields the caller builds read the year
+// out of the input at run time, which is the whole design. The year is still
+// identified, because that is what leaves two parts to choose between, but it
+// is identified rather than computed.
+func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (month, day datePart, ambig bool, ok bool) {
 	// Step 1: Identify year position.
 	var v1, v2 int
 	var v1Offset, v2Offset int
 
 	if third > 31 || len(parts[2]) == 4 {
 		// Year is last: ??/??/YYYY
-		year = third
 		v1, v2 = first, second
 		v1Offset = 0
 		v2Offset = len(parts[0]) + 1
 	} else if first > 31 || len(parts[0]) == 4 {
 		// Year is first: YYYY/??/??
-		year = first
 		v1, v2 = second, third
 		v1Offset = len(parts[0]) + 1
 		v2Offset = len(parts[0]) + 1 + len(parts[1]) + 1
 	} else {
 		// All small numbers, truly ambiguous with 2-digit year last.
-		year = compile.NormalizeTwoDigitYear(third)
 		v1, v2 = first, second
 		v1Offset = 0
 		v2Offset = len(parts[0]) + 1
@@ -585,7 +590,7 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 	}
 
 	if month.value < 1 || month.value > 12 || day.value < 1 || day.value > 31 {
-		return 0, datePart{}, datePart{}, false, false
+		return datePart{}, datePart{}, false, false
 	}
 
 	// A day or a month is written with one digit or two, never three. The
@@ -595,9 +600,9 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 	// first two bytes, and Parse("020/01/2024") came back as the second of
 	// January having validated the twentieth.
 	if month.length > 2 || day.length > 2 {
-		return 0, datePart{}, datePart{}, false, false
+		return datePart{}, datePart{}, false, false
 	}
-	return year, month, day, ambig, true
+	return month, day, ambig, true
 }
 
 // partIndex returns which index (0, 1, or 2) a given byte offset corresponds to
@@ -959,14 +964,19 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 			fields = appendDay(fields, s, n0)
 			fields = append(fields, yearField(n1))
 		} else {
-			// Both small — first before month is day, after month is year, or vice versa.
-			if n0.start < monthStart {
-				fields = appendDay(fields, s, n0)
-				fields = append(fields, yearField(n1))
-			} else {
-				fields = appendDay(fields, s, n0)
-				fields = append(fields, yearField(n1))
-			}
+			// Both small, and the first number is the day wherever it sits.
+			//
+			// This was an if/else on n0.start < monthStart with two identical
+			// arms, under a comment promising "or vice versa". Both arms are
+			// reachable: "15 MAY 20" takes the first and "MAY15 20" the second,
+			// the difference being whether a number precedes the name or abuts
+			// it. Neither wants the year first, because the branch above this
+			// one has already claimed every case where n0 sits past the end of
+			// the month name, which is the only way a year leads two small
+			// numbers here. So the position does not decide anything and the
+			// vice versa never happens.
+			fields = appendDay(fields, s, n0)
+			fields = append(fields, yearField(n1))
 		}
 
 		// Check for time component after the date.

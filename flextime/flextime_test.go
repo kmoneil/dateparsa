@@ -52,6 +52,24 @@ func TestEqual(t *testing.T) {
 	if New(t1).Equal(New(t3)) {
 		t.Error("different times should not be Equal")
 	}
+
+	// Validity is half the value. Equal compared only the instant, so a SQL
+	// NULL was equal to a real zero time, which is the comparison a caller
+	// scanning a nullable column is most likely to write.
+	var null FlexTime
+	zero := New(time.Time{})
+	if null.Equal(zero) {
+		t.Error("an invalid FlexTime is Equal to a valid zero time")
+	}
+	if zero.Equal(null) {
+		t.Error("Equal is not symmetric across validity")
+	}
+	if !null.Equal(FlexTime{}) {
+		t.Error("two invalid FlexTimes should be Equal")
+	}
+	if !zero.Equal(New(time.Time{})) {
+		t.Error("two valid zero times should be Equal")
+	}
 }
 
 func TestString(t *testing.T) {

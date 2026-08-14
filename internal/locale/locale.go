@@ -57,6 +57,12 @@ type RelativeKeywords struct {
 var registry = map[string]*Data{}
 
 // Register adds a locale to the global registry.
+//
+// Init-time only, and not safe to call concurrently with Lookup, Tags, or
+// another Register. The map has no lock because the only callers are the
+// init() functions in internal/locale/data, which the runtime serialises, and
+// every read happens afterwards. Nothing enforces that, and this function is
+// exported from the package, so it is written here rather than assumed.
 func Register(d *Data) {
 	tag := strings.ToLower(d.Tag)
 	registry[tag] = d

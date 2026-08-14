@@ -1,6 +1,7 @@
 package flextime
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/kmoneil/dateparsa"
@@ -109,7 +110,15 @@ func (s *Scanner) scanString(ft *FlexTime, str string) error {
 	parseOpts := s.opts.parseOpts()
 	result, err := dateparsa.ParseWith(str, parseOpts...)
 	if err != nil {
-		return ft.Scan(str) // fallback to default Scan for error message
+		// Report the configured parse's own failure. This used to call
+		// ft.Scan(str), which re-parses with default options "for error
+		// message": if the default parse ever succeeded where the configured
+		// one failed, a configured Scanner returned a default-configured
+		// result and no error. No input reaches that today, because
+		// PreferDayFirst and Timezone change what Parse returns rather than
+		// what it refuses, so this is the shape being closed and not a bug
+		// being fixed.
+		return fmt.Errorf("flextime: cannot scan %q: %w", str, err)
 	}
 	ft.t = result.Time
 	ft.valid = true

@@ -55,10 +55,30 @@ func TestUnmarshalText(t *testing.T) {
 	}
 }
 
+// TestUnmarshalTextEmpty covers the inverse of MarshalText, which writes no
+// bytes for an invalid value. Empty text used to be an error, which meant an
+// invalid FlexTime did not survive a text round trip: marshalling produced ""
+// and unmarshalling that "" refused it.
 func TestUnmarshalTextEmpty(t *testing.T) {
 	var ft FlexTime
-	err := ft.UnmarshalText([]byte(""))
-	if err == nil {
-		t.Error("expected error for empty text, got nil")
+	if err := ft.UnmarshalText([]byte("")); err != nil {
+		t.Fatalf("UnmarshalText(\"\"): %v", err)
+	}
+	if ft.Valid() {
+		t.Error("empty text produced a valid FlexTime, want invalid")
+	}
+
+	// The round trip both directions, which is the point of the change.
+	var null FlexTime
+	b, err := null.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText: %v", err)
+	}
+	var back FlexTime
+	if err := back.UnmarshalText(b); err != nil {
+		t.Fatalf("UnmarshalText(MarshalText(invalid)): %v", err)
+	}
+	if !back.Equal(null) {
+		t.Errorf("an invalid FlexTime did not survive a text round trip")
 	}
 }

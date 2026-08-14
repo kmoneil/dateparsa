@@ -61,6 +61,16 @@ func (p *Parser) Parse(s string) (ParseResult, error) {
 
 // ParseColumn parses a slice of date strings, auto-detecting the
 // format on the first non-empty entry and applying it to the rest.
+//
+// An empty cell is skipped: its time is the zero time.Time and its error is
+// nil, which is the same pair a row holding a successfully parsed zero time
+// produces. **A caller who needs to tell those apart has to check the input
+// slice**, because this signature cannot express the difference. Reading
+// times[i] alone will not do it, and neither will errs[i].
+//
+// The alternative, a sentinel error for an empty cell, would make every caller
+// filter an error that is not one. _plans/two-pass-column.md proposes a
+// ColumnReport carrying explicit per-row status, which is where this belongs.
 func (p *Parser) ParseColumn(values []string) ([]time.Time, []error) {
 	times := make([]time.Time, len(values))
 	errs := make([]error, len(values))

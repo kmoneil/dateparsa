@@ -53,6 +53,12 @@ func (ft FlexTime) IsZero() bool {
 
 // Equal reports whether ft and other represent the same time instant.
 func (ft FlexTime) Equal(other FlexTime) bool {
+	if ft.valid != other.valid {
+		return false
+	}
+	if !ft.valid {
+		return true // two NULLs are the same value here, unlike in SQL
+	}
 	return ft.t.Equal(other.t)
 }
 
@@ -79,7 +85,13 @@ func (ft FlexTime) MarshalText() ([]byte, error) {
 func (ft *FlexTime) UnmarshalText(data []byte) error {
 	s := string(data)
 	if s == "" {
-		return fmt.Errorf("flextime: cannot parse empty text")
+		// The inverse of MarshalText, which writes no bytes for an invalid
+		// value. It used to be an error, so an invalid FlexTime did not
+		// survive a text round trip: marshalling gave "" and unmarshalling
+		// that "" refused it.
+		ft.t = time.Time{}
+		ft.valid = false
+		return nil
 	}
 	result, err := dateparsa.Parse(s)
 	if err != nil {

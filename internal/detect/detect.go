@@ -1136,10 +1136,16 @@ func dayField(n numToken) compile.Field {
 }
 
 // parseTimeComponent looks for HH:MM or HH:MM:SS or HH:MM:SS.fff patterns
-// starting from offset `from` in the string.
+// starting from offset `from` in the string, and returns nil where there is no
+// time to describe.
+//
+// The slice is built after the HH:MM test and not before it. Most of what
+// reaches here carries no time at all: "March 15, 2024" is the benchmarked
+// textual input and every textual detection runs this once, so the eight fields
+// it used to reserve up front were 256 bytes allocated, never written, and
+// returned empty. Every caller either checks the length or appends the result,
+// and appending a nil slice appends nothing.
 func parseTimeComponent(s string, from int) []compile.Field {
-	fields := make([]compile.Field, 0, 8)
-
 	// Skip whitespace, punctuation, and colons to find time start.
 	// Colons appear as time separators in CLF: "2024:10:30:00".
 	i := from
@@ -1154,6 +1160,7 @@ func parseTimeComponent(s string, from int) []compile.Field {
 
 	// Find HH:MM pattern.
 	if i+5 <= len(s) && isDigit(s[i]) && isDigit(s[i+1]) && s[i+2] == ':' && isDigit(s[i+3]) && isDigit(s[i+4]) {
+		fields := make([]compile.Field, 0, 8)
 		fields = append(fields, compile.Field{Kind: compile.FHour24, Offset: i, Len: 2})
 		fields = append(fields, compile.Field{Kind: compile.FMinute2, Offset: i + 3, Len: 2})
 
@@ -1181,10 +1188,10 @@ func parseTimeComponent(s string, from int) []compile.Field {
 		for j < len(s) && s[j] == ' ' {
 			j++
 		}
-		fields = appendTimeSuffix(s, j, fields)
+		return appendTimeSuffix(s, j, fields)
 	}
 
-	return fields
+	return nil
 }
 
 type numToken struct {

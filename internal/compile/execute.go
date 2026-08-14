@@ -465,18 +465,42 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	hour = applyAMPM(hour, ampm)
 
 	// ISO week date: convert year + week + weekday to calendar date.
+	//
+	// The instruction range-checks the week at 1..53, which is a constant, and
+	// most years have 52. time.Date normalises rather than refusing, so week 53
+	// of a 52-week year used to roll into the next one: "2023-W53" came back as
+	// 2024-01-01 and "2024-W53" as 2024-12-30, which is really 2025-W01-1.
+	//
+	// The check has to be here rather than in the detector, because this is the
+	// one place that has the week and the year together.
 	if isoWeek > 0 {
+		week1Monday, weeks := isoWeek1(year)
+		if isoWeek > weeks {
+			return time.Time{}, fmt.Errorf(
+				"dateparsa: ISO week %d does not exist in %d, which has %d weeks",
+				isoWeek, year, weeks)
+		}
 		wd := time.Monday
 		if isoWeekDay > 0 {
 			// ISO weekday: 1=Mon, 7=Sun. Go: time.Monday=1, time.Sunday=0.
 			wd = time.Weekday(isoWeekDay % 7) // 1->1(Mon), 7->0(Sun)
 		}
-		t := isoWeekToDate(year, isoWeek, wd)
+		t := isoWeekToDate(week1Monday, isoWeek, wd)
 		return time.Date(t.Year(), t.Month(), t.Day(), hour, minute, second, nsec, loc), nil
 	}
 
 	// Ordinal day: convert year + day-of-year to calendar date.
+	//
+	// Same defect, same shape: the instruction checks 1..366 against a constant,
+	// so "2023-366" returned 2024-01-01 with a nil error where time.Parse
+	// refuses it by name. "1900-366" returned 1901-01-01, which is the case
+	// that needs the full leap rule and not just a test for divisibility by 4.
 	if ordinalDay > 0 {
+		if ordinalDay > daysInYear(year) {
+			return time.Time{}, fmt.Errorf(
+				"dateparsa: day-of-year %d does not exist in %d, which has %d days",
+				ordinalDay, year, daysInYear(year))
+		}
 		return time.Date(year, 1, ordinalDay, hour, minute, second, nsec, loc), nil
 	}
 
@@ -681,17 +705,53 @@ func lookupTZAbbr(name string) (*time.Location, bool) {
 	}
 }
 
-// isoWeekToDate converts an ISO year, week number, and weekday to a calendar date.
-func isoWeekToDate(isoYear, isoWeek int, weekday time.Weekday) time.Time {
-	// Jan 4 is always in ISO week 1.
+// isLeap is the full Gregorian rule. Testing only for divisibility by 4 gets
+// 1900 and 2100 wrong, and 1900 is inside the range this library parses.
+func isLeap(y int) bool {
+	return y%4 == 0 && (y%100 != 0 || y%400 == 0)
+}
+
+func daysInYear(y int) int {
+	if isLeap(y) {
+		return 366
+	}
+	return 365
+}
+
+// isoWeek1 returns the Monday of ISO week 1 of isoYear, and how many ISO weeks
+// that year has.
+//
+// Both answers come from the weekday of 4 January, which is why they are
+// computed together: 4 January is always in ISO week 1, and 1 January is three
+// days before it. Building a second time.Date to ask about 1 January measured
+// +10.67% on Parse_ISOWeekDate for an answer already in hand.
+//
+// A year has 53 weeks when 1 January is a Thursday, or when it is a leap year
+// and 1 January is a Wednesday. Those are the two cases where the year holds
+// 53 Thursdays, and ISO week 1 is the week containing the first Thursday.
+// Every other year has 52. Being a leap year is not on its own enough, which
+// is why "2024-W53" used to come back as 2024-12-30.
+func isoWeek1(isoYear int) (time.Time, int) {
 	jan4 := time.Date(isoYear, 1, 4, 0, 0, 0, 0, time.UTC)
-	// Find the Monday of ISO week 1.
-	offset := int(time.Monday - jan4.Weekday())
+	jan4wd := jan4.Weekday()
+
+	offset := int(time.Monday - jan4wd)
 	if offset > 0 {
 		offset -= 7
 	}
-	week1Monday := jan4.AddDate(0, 0, offset)
-	// Advance to the target week and weekday.
+
+	jan1wd := time.Weekday((int(jan4wd) + 4) % 7) // three days earlier
+	weeks := 52
+	if jan1wd == time.Thursday || (isLeap(isoYear) && jan1wd == time.Wednesday) {
+		weeks = 53
+	}
+
+	return jan4.AddDate(0, 0, offset), weeks
+}
+
+// isoWeekToDate advances from the Monday of ISO week 1 to the requested week
+// and weekday.
+func isoWeekToDate(week1Monday time.Time, isoWeek int, weekday time.Weekday) time.Time {
 	daysFromMonday := int(weekday - time.Monday)
 	if daysFromMonday < 0 {
 		daysFromMonday += 7

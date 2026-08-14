@@ -14,6 +14,14 @@ type formatSpec struct {
 	render  func(t time.Time) string           // Custom renderer (overrides goFmt)
 	opts    []Option                           // Parse options needed
 	checkFn func(orig, parsed time.Time) error // Custom comparison (default: full match)
+
+	// cases are run before the random ones, for boundaries the generator
+	// cannot reach. randomTime picks a day between 1 and 28 of a month between
+	// 1 and 12, which never renders day-of-year 365 or 366, never renders ISO
+	// week 53, and never renders a week 1 that begins in the previous calendar
+	// year. Those are exactly where the arithmetic these formats need is
+	// wrong, so a spec without them checks the easy half.
+	cases []time.Time
 }
 
 // dateOnly compares year/month/day only.
@@ -216,6 +224,91 @@ var roundTripFormats = []formatSpec{
 		render:  func(t time.Time) string { return t.UTC().Format("02/Jan/2006:15:04:05") + " +0000" },
 		checkFn: dateAndTime,
 	},
+
+	// === ISO week and ordinal ===
+	//
+	// These three had no spec at all until 2026-08-14, which is why the range
+	// checks behind them were never exercised against anything but a value
+	// they happened to accept. Detect tries them first, ahead of every other
+	// format, so nothing about them was obscure. Nothing checked them.
+	{
+		name:    "ISO_ORDINAL",
+		render:  func(t time.Time) string { return t.UTC().Format("2006-002") },
+		checkFn: dateOnly,
+		cases: []time.Time{
+			day(2023, 1, 1),   // 001
+			day(2024, 2, 29),  // 060, the leap day itself
+			day(2023, 12, 31), // 365, the last day of a common year
+			day(2024, 12, 30), // 365 of a leap year, which is not its last day
+			day(2024, 12, 31), // 366, the only day-of-year that depends on the year
+			day(1900, 12, 31), // 365: 1900 is divisible by 100 and not by 400
+			day(2000, 12, 31), // 366: 2000 is divisible by 400
+		},
+	},
+	{
+		name:    "ISO_WEEK",
+		render:  renderISOWeek,
+		checkFn: weekStart,
+		cases:   isoWeekBoundaryCases,
+	},
+	{
+		name:    "ISO_WEEK_DATE",
+		render:  renderISOWeekDate,
+		checkFn: dateOnly,
+		cases:   isoWeekBoundaryCases,
+	},
+}
+
+// day is a UTC midnight, for the explicit case lists.
+func day(y int, m time.Month, d int) time.Time {
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// isoWeekBoundaryCases are the dates where the ISO week-numbering year and the
+// calendar year disagree, which is the arithmetic isoWeekToDate has to get
+// right and the generator never produces.
+var isoWeekBoundaryCases = []time.Time{
+	day(2021, 1, 4),   // 2021-W01-1, week 1 beginning in its own calendar year
+	day(2015, 1, 1),   // 2015-W01-4, a Thursday, so 2015 has 53 weeks
+	day(2014, 12, 29), // 2015-W01-1: ISO year 2015, calendar year 2014
+	day(2019, 12, 30), // 2020-W01-1, the same one year later
+	day(2020, 12, 28), // 2020-W53-1: 2020 began on a Wednesday and is a leap year
+	day(2021, 1, 3),   // 2020-W53-7: ISO year 2020, calendar year 2021
+	day(2024, 12, 29), // 2024-W52-7, the last day of the last week of a 52-week year
+	day(2024, 12, 30), // 2025-W01-1
+}
+
+// isoWeekday is the ISO numbering, Monday 1 through Sunday 7. Go's Weekday
+// puts Sunday at 0.
+func isoWeekday(t time.Time) int {
+	if wd := int(t.Weekday()); wd != 0 {
+		return wd
+	}
+	return 7
+}
+
+// mondayOf returns the Monday of t's ISO week, which is the instant a
+// week-without-a-day names.
+func mondayOf(t time.Time) time.Time {
+	return t.AddDate(0, 0, -(isoWeekday(t) - 1))
+}
+
+// renderISOWeek writes the ISO week-numbering year, which is not always the
+// calendar year: 2014-12-29 is 2015-W01.
+func renderISOWeek(t time.Time) string {
+	y, w := t.UTC().ISOWeek()
+	return fmt.Sprintf("%04d-W%02d", y, w)
+}
+
+func renderISOWeekDate(t time.Time) string {
+	y, w := t.UTC().ISOWeek()
+	return fmt.Sprintf("%04d-W%02d-%d", y, w, isoWeekday(t.UTC()))
+}
+
+// weekStart compares against the Monday of the original's ISO week, because a
+// week number with no weekday names that Monday and nothing finer.
+func weekStart(orig, parsed time.Time) error {
+	return dateOnly(mondayOf(orig), parsed)
 }
 
 // randomTime generates a random time between 1970 and 2099.
@@ -240,10 +333,12 @@ func TestRoundTrip_Semantic(t *testing.T) {
 	for _, spec := range roundTripFormats {
 		t.Run(spec.name, func(t *testing.T) {
 			failures := 0
-			for i := 0; i < iterations; i++ {
-				orig := randomTime(rng)
 
-				// Render to string.
+			// One round trip: render orig, parse it back, compare. label
+			// distinguishes an explicit boundary case from a generated one,
+			// because a failing boundary is a different report from a failing
+			// iteration and the two want different follow-up.
+			trip := func(label string, orig time.Time) {
 				var input string
 				if spec.render != nil {
 					input = spec.render(orig)
@@ -251,28 +346,30 @@ func TestRoundTrip_Semantic(t *testing.T) {
 					input = orig.Format(spec.goFmt)
 				}
 
-				// Parse back.
 				result, err := ParseWith(input, spec.opts...)
 				if err != nil {
-					t.Errorf("iter %d: Parse(%q) error: %v", i, input, err)
+					t.Errorf("%s: Parse(%q) error: %v", label, input, err)
 					failures++
 					if failures >= 5 {
 						t.Fatalf("too many failures for %s, stopping", spec.name)
 					}
-					continue
+					return
 				}
 
-				// Compare.
-				check := spec.checkFn
-				parsed := result.Time.UTC()
-				origUTC := orig.UTC()
-				if err := check(origUTC, parsed); err != nil {
-					t.Errorf("iter %d: input=%q\n  %v", i, input, err)
+				if err := spec.checkFn(orig.UTC(), result.Time.UTC()); err != nil {
+					t.Errorf("%s: input=%q\n  %v", label, input, err)
 					failures++
 					if failures >= 5 {
 						t.Fatalf("too many failures for %s, stopping", spec.name)
 					}
 				}
+			}
+
+			for _, c := range spec.cases {
+				trip("case "+c.UTC().Format("2006-01-02"), c)
+			}
+			for i := 0; i < iterations; i++ {
+				trip(fmt.Sprintf("iter %d", i), randomTime(rng))
 			}
 		})
 	}

@@ -3,6 +3,7 @@ package dateparsa
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestFormatCoverage(t *testing.T) {
@@ -120,4 +121,113 @@ func TestFormatCoverage(t *testing.T) {
 	}
 
 	t.Logf("\n=== SUMMARY: %d passed, %d failed out of %d total ===", passed, failed, passed+failed)
+}
+
+// TestFormatCoverage_Refusals is the half of coverage that the table above
+// cannot express: inputs that match a format's shape and name a date that does
+// not exist.
+//
+// It is the assertion that catches C5, and the round-trip specs are not. A
+// round trip renders a real time and parses it back, so it only ever produces
+// a day-of-year and a week number that exist. Both directions are valid and
+// both agree. The bug is on the inputs a generator never generates.
+func TestFormatCoverage_Refusals(t *testing.T) {
+	tests := []struct {
+		input string
+		why   string
+	}{
+		// Day-of-year against the year. 366 exists only in a leap year, and
+		// the leap rule is the full one: divisible by 4, except centuries,
+		// except centuries divisible by 400.
+		{"2023-366", "2023 has 365 days"},
+		{"2100-366", "2100 is divisible by 100 and not by 400"},
+		{"1900-366", "1900 likewise"},
+		{"2023-367", "beyond any year"},
+		{"2023-000", "day zero"},
+
+		// Week number against the year. A year has 53 ISO weeks only when
+		// 1 January falls on a Thursday, or it is a leap year and 1 January
+		// falls on a Wednesday. Every other year has 52.
+		{"2023-W53", "2023 began on a Sunday, so it has 52 weeks"},
+		{"2021-W53", "2021 began on a Friday"},
+		{"2024-W53", "2024 began on a Monday; a leap year is not enough"},
+		{"2023-W53-7", "the same week, with a weekday"},
+		{"2024-W53-1", "likewise"},
+		{"2024-W54", "beyond any year"},
+		{"2024-W00", "week zero"},
+		{"2024-W11-0", "weekday zero"},
+		{"2024-W11-8", "beyond Sunday"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := Parse(tt.input)
+			if err == nil {
+				t.Errorf("Parse(%q) = %v, want an error: %s",
+					tt.input, got.Time.UTC().Format("2006-01-02"), tt.why)
+			}
+		})
+	}
+
+	// The neighbours have to keep parsing, or the fix is a blunt refusal
+	// rather than a range check.
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{"2024-366", "2024-12-31"}, // a leap year does reach 366
+		{"2000-366", "2000-12-31"}, // and so does a century divisible by 400
+		{"2023-365", "2023-12-31"},
+		{"2024-001", "2024-01-01"},
+		{"2020-W53", "2020-12-28"}, // 2020 began on a Wednesday and is a leap year
+		{"2015-W01", "2014-12-29"}, // ISO week 1 beginning in the previous calendar year
+		{"2020-W53-7", "2021-01-03"},
+		{"2024-W11-5", "2024-03-15"},
+		{"2024-W11", "2024-03-11"},
+	} {
+		t.Run(tt.input+"_stays", func(t *testing.T) {
+			got, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.input, err)
+			}
+			if s := got.Time.UTC().Format("2006-01-02"); s != tt.want {
+				t.Errorf("Parse(%q) = %s, want %s", tt.input, s, tt.want)
+			}
+		})
+	}
+}
+
+// TestOrdinalAndWeekBoundsAgreeWithTheStdlib checks the two predicates behind
+// the refusals above against oracles that share no code with them, over every
+// year the library is likely to see.
+//
+// 28 December is always in the last ISO week of its ISO year, so Go's own
+// ISOWeek answers how many weeks a year has. time.Parse answers whether a
+// day-of-year exists. A hand-written case list would have agreed with a
+// hand-written leap rule; these do not.
+func TestOrdinalAndWeekBoundsAgreeWithTheStdlib(t *testing.T) {
+	for y := 1900; y <= 2100; y++ {
+		_, weeks := time.Date(y, 12, 28, 0, 0, 0, 0, time.UTC).ISOWeek()
+
+		last := fmt.Sprintf("%04d-W%02d", y, weeks)
+		if _, err := Parse(last); err != nil {
+			t.Fatalf("Parse(%q) refused the last week of %d: %v", last, y, err)
+		}
+		if weeks < 53 {
+			over := fmt.Sprintf("%04d-W%02d", y, weeks+1)
+			if got, err := Parse(over); err == nil {
+				t.Fatalf("Parse(%q) = %s, but %d has %d weeks",
+					over, got.Time.UTC().Format("2006-01-02"), y, weeks)
+			}
+		}
+
+		for _, d := range []int{365, 366} {
+			in := fmt.Sprintf("%04d-%03d", y, d)
+			_, stdErr := time.Parse("2006-002", in)
+			_, ourErr := Parse(in)
+			if (stdErr == nil) != (ourErr == nil) {
+				t.Fatalf("Parse(%q) err=%v, time.Parse err=%v", in, ourErr, stdErr)
+			}
+		}
+	}
 }

@@ -27,6 +27,7 @@ const (
 	OpISOWeekDay                // Extract ISO weekday (1-7, Mon=1) at offset
 	OpOrdinalDay                // Extract ordinal day of year (001-366) at offset
 	OpTZZOrOffset               // 'Z' → UTC, or parse ±offset of Len bytes
+	OpTail                      // Consume the rest of the input without reading it
 )
 
 // Inst is a single parse instruction.

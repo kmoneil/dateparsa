@@ -147,10 +147,16 @@ func detectISO8601Frac(s string) (Result, bool) {
 			} else {
 				return Result{}, false // complex tz — let other handlers deal with it
 			}
-		} else if s[pos] != ' ' {
-			return Result{}, false // unexpected character after frac
+		} else {
+			// Anything else after the fraction, a space included, is not this
+			// format. A space means a Go time.String or a SQL value with a
+			// separated zone, and detectGoTimeString reads the offset those
+			// carry. Returning a def covering only the prefix here read
+			// "2012-08-03 18:31:59.257000000 +0300 MSK" as UTC, three hours
+			// off, and did it only when a fraction was present: the same value
+			// without one reached detectGoTimeString and came out right.
+			return Result{}, false
 		}
-		// Space after frac = Go time.String or SQL+tz — fall through to other handlers.
 	}
 
 	def := &compile.FormatDef{Name: "ISO8601_FRAC", Fields: fields}
@@ -217,8 +223,13 @@ func detectGoTimeString(s string) (Result, bool) {
 		}
 	}
 
-	// Skip timezone name and any trailing content (e.g. "m=+0.000000001").
-	// We don't need to parse it — the offset is sufficient.
+	// The timezone name and any trailing content ("m=+0.000000001") are
+	// ignored: the offset above already fixes the instant. FTail records that
+	// as a decision the program carries, rather than leaving it to the
+	// executor not to check.
+	if pos < n {
+		fields = append(fields, compile.Field{Kind: compile.FTail, Offset: pos})
+	}
 
 	def := &compile.FormatDef{Name: "GO_TIME_STRING", Fields: fields}
 	return Result{Def: def}, true
@@ -287,6 +298,7 @@ func detectCJKDate(s string) (Result, bool) {
 		{Kind: compile.FYear4, Offset: 0, Len: len(yearStr)},
 		{Kind: compile.FMonth1or2, Offset: yearIdx + len("年"), Len: len(monStr)},
 		{Kind: compile.FDay1or2, Offset: monthIdx + len("月"), Len: len(dayStr)},
+		{Kind: compile.FSkip, Offset: dayIdx, Len: len("日")},
 	}
 	def := &compile.FormatDef{Name: "CJK_DATE", Fields: fields}
 	return Result{Def: def}, true
@@ -786,17 +798,17 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 		if n0.value > 31 || (n1.value <= 31 && n0.start > monthEnd) {
 			// n0 is year, n1 is day — unlikely but handle it
 			fields = append(fields, yearField(n0))
-			fields = append(fields, dayField(n1))
+			fields = appendDay(fields, s, n1)
 		} else if n1.value > 31 {
-			fields = append(fields, dayField(n0))
+			fields = appendDay(fields, s, n0)
 			fields = append(fields, yearField(n1))
 		} else {
 			// Both small — first before month is day, after month is year, or vice versa.
 			if n0.start < monthStart {
-				fields = append(fields, dayField(n0))
+				fields = appendDay(fields, s, n0)
 				fields = append(fields, yearField(n1))
 			} else {
-				fields = append(fields, dayField(n0))
+				fields = appendDay(fields, s, n0)
 				fields = append(fields, yearField(n1))
 			}
 		}
@@ -811,7 +823,7 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 		if n.value > 31 {
 			fields = append(fields, yearField(n))
 		} else {
-			fields = append(fields, dayField(n))
+			fields = appendDay(fields, s, n)
 		}
 		// Check for time component after the number.
 		timeFields := parseTimeComponent(s, n.end)
@@ -837,7 +849,7 @@ func appendMultiNumFields(s string, nums []numToken, fields []compile.Field) []c
 
 	if isTimeAtN1 && n0.value <= 31 && n1.value <= 23 {
 		// Pattern: "day time [year]", e.g. "Mar 15 10:30:00 2024"
-		fields = append(fields, dayField(n0))
+		fields = appendDay(fields, s, n0)
 		timeFields := parseTimeComponent(s, n0.end)
 		fields = append(fields, timeFields...)
 		if yr := findTrailingYear(nums, timeFields, n0.end); yr != nil {
@@ -848,13 +860,13 @@ func appendMultiNumFields(s string, nums []numToken, fields []compile.Field) []c
 
 	// Pattern: "day year time" or "year day time".
 	if n1.value > 31 {
-		fields = append(fields, dayField(n0))
+		fields = appendDay(fields, s, n0)
 		fields = append(fields, yearField(n1))
 	} else if n0.value > 31 {
 		fields = append(fields, yearField(n0))
-		fields = append(fields, dayField(n1))
+		fields = appendDay(fields, s, n1)
 	} else {
-		fields = append(fields, dayField(n0))
+		fields = appendDay(fields, s, n0)
 		fields = append(fields, yearField(n1))
 	}
 	timeFields := parseTimeComponent(s, nums[1].end)
@@ -890,6 +902,46 @@ func yearField(n numToken) compile.Field {
 		kind = compile.FYear2
 	}
 	return compile.Field{Kind: kind, Offset: n.start, Len: n.end - n.start}
+}
+
+// ordinalSuffixLen returns 2 when an English ordinal suffix follows a day
+// number at position at, and 0 otherwise. The suffix carries no value, but it
+// is part of the input and a program has to account for every byte it accepts.
+func ordinalSuffixLen(s string, at int) int {
+	if at+2 > len(s) {
+		return 0
+	}
+	c0 := s[at] | 0x20
+	c1 := s[at+1] | 0x20
+	if c1 != 't' && c1 != 'd' && c1 != 'h' {
+		return 0
+	}
+	switch {
+	case c0 == 's' && c1 == 't', // 1st
+		c0 == 'n' && c1 == 'd', // 2nd
+		c0 == 'r' && c1 == 'd', // 3rd
+		c0 == 't' && c1 == 'h': // 4th
+		// Only when the suffix is not the start of a longer word.
+		return boundaryAfter(s, at+2)
+	}
+	return 0
+}
+
+func boundaryAfter(s string, at int) int {
+	if at == len(s) || !isLetter(s[at]) {
+		return 2
+	}
+	return 0
+}
+
+// appendDay appends the day field for n, plus a skip covering any ordinal
+// suffix that follows it.
+func appendDay(fields []compile.Field, s string, n numToken) []compile.Field {
+	fields = append(fields, dayField(n))
+	if w := ordinalSuffixLen(s, n.end); w > 0 {
+		fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: n.end, Len: w})
+	}
+	return fields
 }
 
 func dayField(n numToken) compile.Field {
@@ -996,6 +1048,17 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 		tzEnd := j
 		for tzEnd < len(s) && isLetter(s[tzEnd]) {
 			tzEnd++
+		}
+		// "GMT+0100" (JS Date.toString) is the name and the offset together,
+		// and the offset is what decides the instant. Reading only the name
+		// gave UTC for a value an hour ahead of it.
+		if rem := len(s) - tzEnd; rem >= 5 && (s[tzEnd] == '+' || s[tzEnd] == '-') {
+			tzLen := 5
+			if rem >= 6 && s[tzEnd+3] == ':' {
+				tzLen = 6
+			}
+			fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: j, Len: tzEnd - j})
+			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: tzEnd, Len: tzLen})
 		}
 		return append(fields, compile.Field{Kind: compile.FTZName, Offset: j, Len: tzEnd - j})
 	}

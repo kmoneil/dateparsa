@@ -29,12 +29,22 @@ const (
 	FISOWeekDay  // ISO weekday (1=Mon)
 	FOrdinalDay  // Ordinal day of year (1-366)
 	FTZZOrOffset // 'Z' → UTC, or ±HH:MM/±HHMM offset (conditional)
+	FTail        // Everything from Offset to the end of the input is ignored
 
 	numFieldKinds // sentinel — must be last
 )
 
 // fieldKindToOp maps each FieldKind to its corresponding OpCode.
-// Indexed by FieldKind; the FieldKind and OpCode enums are defined in parallel.
+//
+// The two enums are NOT parallel and must not be treated as such. FieldKind 3
+// is FMonth1or2 while OpCode 3 is OpMonthName, and they diverge again at 4, 5,
+// 16, and 17. Replacing this table with OpCode(f.Kind) compiles, vets, lints,
+// and turns every month into a day. This table is the only correspondence
+// between them, and TestFieldKindToOpIsComplete is what checks it stays one.
+//
+// A FieldKind added without an entry here gets the array's zero value, which is
+// OpYear4, and silently parses a year at that field's offset. The same test
+// catches that.
 var fieldKindToOp = [numFieldKinds]OpCode{
 	FYear4:       OpYear4,
 	FYear2:       OpYear2,
@@ -59,6 +69,7 @@ var fieldKindToOp = [numFieldKinds]OpCode{
 	FISOWeekDay:  OpISOWeekDay,
 	FOrdinalDay:  OpOrdinalDay,
 	FTZZOrOffset: OpTZZOrOffset,
+	FTail:        OpTail,
 }
 
 // Field describes one component in a format definition.

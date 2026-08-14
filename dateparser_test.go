@@ -416,3 +416,92 @@ func TestParse_NLLayout(t *testing.T) {
 		t.Fatal("LayoutNaturalLanguage.Parse should return error")
 	}
 }
+
+// TestLayoutRefusesTrailingInput pins the property Parser depends on: a layout
+// describes a whole input or refuses it. Without this, a cached ISO8601_DATE
+// accepted "2024-03-16T10:30:00Z" and returned midnight with no error, so one
+// date-only row at the top of a CSV column silently stripped the time of day
+// and the timezone from every row under it.
+func TestLayoutRefusesTrailingInput(t *testing.T) {
+	base, err := Parse("2024-03-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{
+		"2024-03-15T10:30:00Z",
+		"2024-03-15 10:30:00",
+		"2024-03-15 is when it happened",
+		"2024-03-1500000",
+	} {
+		if got, err := base.Layout.Parse(in); err == nil {
+			t.Errorf("ISO8601_DATE.Parse(%q) = %v, want an error", in, got)
+		}
+	}
+
+	// And the column that motivated it: every row agrees with fresh detection.
+	p := NewParser()
+	col := []string{"2024-03-15", "2024-03-16T10:30:00Z", "2024-03-17T23:59:59+05:30"}
+	times, errs := p.ParseColumn(col)
+	for i, in := range col {
+		if errs[i] != nil {
+			t.Fatalf("row %d %q: %v", i, in, errs[i])
+		}
+		fresh, err := Parse(in)
+		if err != nil {
+			t.Fatalf("row %d %q: %v", i, in, err)
+		}
+		if !times[i].Equal(fresh.Time) {
+			t.Errorf("row %d %q: cached layout gave %v, detection gives %v", i, in, times[i], fresh.Time)
+		}
+	}
+}
+
+// TestZoneOffsetIsNotDropped covers two formats that carried an offset the
+// detector read past, each returning an instant in the wrong timezone with no
+// error. Neither is visible to a test that checks only the wall-clock fields,
+// which is why both survived: the hour is right in both, and the instant is
+// not.
+func TestZoneOffsetIsNotDropped(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  time.Time
+	}{
+		{
+			// Go's own time.Time.String() for a non-UTC zone. The fractional
+			// variant went to ISO8601_FRAC, which stopped at the fraction and
+			// left the value reading as UTC, three hours off. The same value
+			// without a fraction reached detectGoTimeString and came out right,
+			// so adding a fractional second changed the answer by three hours.
+			name:  "Go time.String with fraction and offset",
+			input: "2012-08-03 18:31:59.257000000 +0300 MSK",
+			want:  time.Date(2012, 8, 3, 18, 31, 59, 257000000, time.FixedZone("MSK", 3*3600)),
+		},
+		{
+			name:  "Go time.String without fraction",
+			input: "2015-02-08 03:02:00 +0300 MSK",
+			want:  time.Date(2015, 2, 8, 3, 2, 0, 0, time.FixedZone("MSK", 3*3600)),
+		},
+		{
+			// JavaScript Date.toString(). The zone is a name and an offset
+			// together; reading only the name gave UTC for a value an hour
+			// ahead of it.
+			name:  "JS Date.toString GMT+0100",
+			input: "Fri Jul 03 2015 18:04:07 GMT+0100",
+			want:  time.Date(2015, 7, 3, 18, 4, 7, 0, time.FixedZone("", 3600)),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.input, err)
+			}
+			if !got.Time.Equal(tt.want) {
+				t.Errorf("Parse(%q) = %v (unix %d), want %v (unix %d), off by %v",
+					tt.input, got.Time, got.Time.Unix(), tt.want, tt.want.Unix(),
+					got.Time.Sub(tt.want))
+			}
+		})
+	}
+}

@@ -225,3 +225,27 @@ func TestCompile(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// TestFieldKindToOpIsComplete guards the fieldKindToOp table.
+//
+// The FieldKind and OpCode enums are not parallel, and a reader who believes
+// they are can replace the table with OpCode(f.Kind). That compiles, vets,
+// lints, and turns every month into a day. A FieldKind added without an entry
+// is worse: the array's zero value is OpYear4, so the field silently parses a
+// year at its own offset. Both are invisible without this test.
+func TestFieldKindToOpIsComplete(t *testing.T) {
+	for k := FieldKind(0); k < numFieldKinds; k++ {
+		if k == FYear4 {
+			continue // the only kind whose op is legitimately the zero value
+		}
+		if fieldKindToOp[k] == OpYear4 {
+			t.Errorf("FieldKind %d has no fieldKindToOp entry: it falls through to OpYear4", k)
+		}
+	}
+
+	// The enums genuinely diverge. If this ever stops being true, the table is
+	// still the contract, but the comment above it needs rewriting.
+	if OpCode(FMonthName) == OpMonthName && OpCode(FDay2) == OpDay2 {
+		t.Error("FieldKind and OpCode now agree at 4 and 5; re-check the comment on fieldKindToOp")
+	}
+}

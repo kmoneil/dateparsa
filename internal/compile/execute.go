@@ -100,9 +100,21 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	// For fixed-width programs (detection path), delta stays 0 — zero cost.
 	var delta int
 
+	// end is one past the last byte any instruction read. The check after the
+	// loop is what stops a layout matching a mere prefix of a longer input,
+	// which is how a cached ISO8601_DATE layout used to accept
+	// "2024-03-16T10:30:00Z" and return midnight with no error.
+	//
+	// It is a high-water mark, not a coverage map: a byte between two fields
+	// is not required to belong to one, because most formats leave their
+	// separators unmodelled. Only the tail is checked, which is the half that
+	// silently loses a time of day and a timezone.
+	end := 0
+
 	for i := 0; i < p.N; i++ {
 		inst := &p.Insts[i]
 		off := int(inst.Offset) + delta
+		w := int(inst.Len)
 
 		switch inst.Op {
 
@@ -118,6 +130,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 			year = y
 			yearSet = true
+			w = 4
 
 		case OpYear2:
 			v, ok := parse2Bounded(s, off, slen, 0, 99)
@@ -126,6 +139,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 			year = NormalizeTwoDigitYear(v)
 			yearSet = true
+			w = 2
 
 		case OpMonth2:
 			v, ok := parse2Bounded(s, off, slen, 1, 12)
@@ -133,6 +147,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("month", off, slen)
 			}
 			month = time.Month(v)
+			w = 2
 
 		case OpMonth1or2:
 			v, ok := parse1or2Bounded(s, off, slen, 1, 12)
@@ -140,7 +155,8 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("month", off, slen)
 			}
 			month = time.Month(v)
-			delta += consumed1or2(s, off, slen) - int(inst.Len)
+			w = consumed1or2(s, off, slen)
+			delta += w - int(inst.Len)
 
 		case OpMonthName:
 			month = time.Month(inst.Aux)
@@ -151,6 +167,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("day", off, slen)
 			}
 			day = v
+			w = 2
 
 		case OpDay1or2:
 			v, ok := parse1or2Bounded(s, off, slen, 1, 31)
@@ -158,7 +175,8 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("day", off, slen)
 			}
 			day = v
-			delta += consumed1or2(s, off, slen) - int(inst.Len)
+			w = consumed1or2(s, off, slen)
+			delta += w - int(inst.Len)
 
 		// ── Time fields ───────────────────────────────────────────��──
 
@@ -168,6 +186,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
+			w = 2
 
 		case OpHour12:
 			v, ok := parse2Bounded(s, off, slen, 1, 12)
@@ -175,6 +194,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
+			w = 2
 
 		case OpHour1or2:
 			v, ok := parse1or2Bounded(s, off, slen, 0, 23)
@@ -182,7 +202,8 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
-			delta += consumed1or2(s, off, slen) - int(inst.Len)
+			w = consumed1or2(s, off, slen)
+			delta += w - int(inst.Len)
 
 		case OpMinute2:
 			v, ok := parse2Bounded(s, off, slen, 0, 59)
@@ -190,6 +211,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("minute", off, slen)
 			}
 			minute = v
+			w = 2
 
 		case OpSecond2:
 			v, ok := parse2Bounded(s, off, slen, 0, 60) // 60 for leap second
@@ -197,6 +219,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("second", off, slen)
 			}
 			second = v
+			w = 2
 
 		case OpFracSec:
 			length := int(inst.Len)
@@ -222,11 +245,13 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			} else {
 				return time.Time{}, fieldError("am/pm", off, slen)
 			}
+			w = 2
 
 		// ── Timezone fields ───────────────────────────────────────��──
 
 		case OpTZZ:
 			loc = time.UTC
+			w = 1
 
 		case OpTZOffset:
 			length := int(inst.Len)
@@ -257,6 +282,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			}
 			if s[off] == 'Z' {
 				loc = time.UTC
+				w = 1
 			} else {
 				length := int(inst.Len)
 				if off+length > slen {
@@ -277,6 +303,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("iso week", off, slen)
 			}
 			isoWeek = v
+			w = 2
 
 		case OpISOWeekDay:
 			if off >= slen {
@@ -287,6 +314,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("iso weekday", off, slen)
 			}
 			isoWeekDay = int(d)
+			w = 1
 
 		case OpOrdinalDay:
 			length := int(inst.Len)
@@ -319,7 +347,24 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 
 		case OpSkip:
 			// Nothing to extract — skip N bytes.
+
+		case OpTail:
+			// The remainder of the input is deliberately ignored. Emitted only
+			// by GO_TIME_STRING, whose trailing zone name and monotonic clock
+			// suffix ("m=+0.000000001") no fixed-width program can describe.
+			// Everything that decides the instant has already been read.
+			w = slen - off
 		}
+
+		if e := off + w; e > end {
+			end = e
+		}
+	}
+
+	// A program that read less than the whole input did not describe it.
+	if end != slen {
+		return time.Time{}, fmt.Errorf(
+			"dateparsa: layout describes %d of %d bytes", end, slen)
 	}
 
 	// A format with no year field at all takes the program's base year, so

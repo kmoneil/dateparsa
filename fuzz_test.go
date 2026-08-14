@@ -134,6 +134,13 @@ func FuzzLayoutReuse(f *testing.F) {
 		// 15th.
 		{"MAY A1", "MAY1010"},
 		{"MAY A1", "MAY 15"},
+
+		// The same rule at the other unread instruction. A trie format's
+		// literals name no byte, because the entry matches a signature class
+		// and one entry serves every byte in it, so TIME_HMS declared ':' at 2
+		// and at 5 and accepted eight digits.
+		{"00:00:00", "00000101"},
+		{"10:30", "1030"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

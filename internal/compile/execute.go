@@ -356,11 +356,48 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		// ── Structural fields ────────────────────────────────────────
 
 		case OpLiteral:
-			// When Aux is set (compiled layouts), validate the literal character.
-			// Detection-path programs leave Aux=0 since the detector already validated.
+			// Aux carries the byte where one detector settled on one byte:
+			// ParseGoLayout, and the separators lit() emits. Those are checked
+			// exactly.
+			//
+			// The trie entries in formats.go cannot be, because they match on a
+			// signature of character classes and one entry serves every byte in
+			// the class. ISO8601_DATE reads "2024-03-15", "2024/03/15" and
+			// "2024.03.15", all three CSep at offsets 4 and 7, so an entry that
+			// named '-' would refuse two inputs detection accepts.
+			//
+			// What no class at a literal position contains is a digit, and that
+			// is the half worth enforcing, for the reason OpSkip gives above: a
+			// digit is a numeric token, and which token is where is what picks
+			// the format. TIME_HMS declares ':' at 2 and 5 and read "00000101"
+			// as one second past midnight, where detection reads COMPACT_DATE
+			// and the first of January in the year 0.
+			//
+			// The first byte is handled without a loop because this is the most
+			// common instruction in the trie formats and nearly all of them
+			// declare one byte. Only buildDatePartFields emits a wider literal,
+			// one spanning the whole run between two date parts.
+			if off >= slen {
+				return time.Time{}, fieldError("literal", off, slen)
+			}
+			c := s[off]
 			if inst.Aux != 0 {
-				if off >= slen || s[off] != byte(inst.Aux) {
+				if c != byte(inst.Aux) {
 					return time.Time{}, fieldError("literal", off, slen)
+				}
+				break
+			}
+			if c >= '0' && c <= '9' {
+				return time.Time{}, fieldError("literal", off, slen)
+			}
+			if w > 1 {
+				if off+w > slen {
+					return time.Time{}, fieldError("literal", off, slen)
+				}
+				for j := off + 1; j < off+w; j++ {
+					if s[j] >= '0' && s[j] <= '9' {
+						return time.Time{}, fieldError("literal", j, slen)
+					}
 				}
 			}
 

@@ -805,3 +805,53 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 		t.Errorf("layout refused a different weekday of the same width: %v", err)
 	}
 }
+
+// TestLiteralHoldingADigitIsRefused is the same rule as
+// TestSkippedRunWithADigitIsRefused reaching the other instruction that does
+// not read what it covers.
+//
+// A trie format cannot name the byte at a literal, because it matches on a
+// signature of character classes and one entry serves the whole class:
+// ISO8601_DATE reads "2024-03-15", "2024/03/15" and "2024.03.15". No class at a
+// literal position holds a digit, though, and a digit is what changes which
+// format an input is.
+func TestLiteralHoldingADigitIsRefused(t *testing.T) {
+	for _, tt := range []struct {
+		detectFrom string
+		applyTo    string
+		why        string
+	}{
+		// Read one second past midnight where detection reads the first of
+		// January in the year 0.
+		{"00:00:00", "00000101", "TIME_HMS against a compact date"},
+		{"10:30", "1030", "TIME_HM against a bare year"},
+		{"10:30", "10300", "TIME_HM against digits detection refuses"},
+		{"2024-03-15", "20240315", "ISO8601_DATE against a compact date"},
+	} {
+		if got, err := Parse(tt.detectFrom); err == nil {
+			if ts, err := got.Layout.Parse(tt.applyTo); err == nil {
+				t.Errorf("%s: Layout(%v).Parse(%q) = %v, want an error",
+					tt.why, got.Layout, tt.applyTo, ts)
+			}
+		} else {
+			t.Fatalf("Parse(%q): %v", tt.detectFrom, err)
+		}
+	}
+
+	// The separator variants a signature class admits all still reuse, which is
+	// why the byte itself cannot be the check.
+	iso, err := Parse("2024-03-15")
+	if err != nil {
+		t.Fatalf("Parse of the ISO sample: %v", err)
+	}
+	for _, in := range []string{"2024-03-15", "2024/03/15", "2024.03.15"} {
+		got, err := iso.Layout.Parse(in)
+		if err != nil {
+			t.Errorf("Layout(%v).Parse(%q): %v", iso.Layout, in, err)
+			continue
+		}
+		if s := got.UTC().Format("2006-01-02"); s != "2024-03-15" {
+			t.Errorf("Layout(%v).Parse(%q) = %s, want 2024-03-15", iso.Layout, in, s)
+		}
+	}
+}

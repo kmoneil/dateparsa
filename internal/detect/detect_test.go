@@ -297,18 +297,23 @@ func TestEveryFieldDeclaresTheWidthItsOpReads(t *testing.T) {
 	}
 }
 
-// TestNoSkipCoversADigit is the detection half of the rule OpSkip enforces at
-// run time: a skip may not contain a digit.
+// TestNoUnreadRunCoversADigit is the detection half of the rule OpSkip and
+// OpLiteral enforce at run time: a byte the program does not read may not be a
+// digit.
 //
-// The executor's check is what stops a reused layout hiding a numeric token
-// inside a run it does not read. This one says detection never asks it to: a
-// format that emitted a skip over a digit would be refusing the very input it
-// was detected from, which is a detector bug and not a reuse question.
+// The executor's checks are what stop a reused layout hiding a numeric token
+// where it declared punctuation. This one says detection never asks it to: a
+// format that emitted an unread run over a digit would be refusing the very
+// input it was detected from, which is a detector bug and not a reuse question.
+//
+// An unread run is a skip, or a literal that names no byte. A literal that does
+// name one is checked against that byte instead, so a digit there would be
+// consistent and is not this test's business.
 //
 // The numeric corpus is here because C11 named it as the family to check rather
-// than assume. buildDatePartFields separates its parts with literals, so no
-// skip should appear between them at all.
-func TestNoSkipCoversADigit(t *testing.T) {
+// than assume. buildDatePartFields separates its parts with literals rather
+// than skips, and both are covered here.
+func TestNoUnreadRunCoversADigit(t *testing.T) {
 	corpus := []string{
 		// Textual, which is where the skips are: weekday names, punctuation,
 		// ordinal suffixes, " at ", and the name half of "GMT+0100".
@@ -318,11 +323,12 @@ func TestNoSkipCoversADigit(t *testing.T) {
 		"Mon Jan 2 15:04:05 2006", "Sat, 03 Feb 2024 11:45:00 GMT",
 		"MAY A1", "MAY B2", "1MAY",
 
-		// Numeric, where there should be no skip to check.
+		// Numeric, where the unread runs are the separators between parts.
 		"2024-03-15", "2024/03/15", "20240315", "3/15/2024", "15.03.2024",
 		"01/02/2024", "2024-03-15T10:30:00Z", "2024-03-15 10:30:00 UTC",
 		"2015-02-08 03:02:00 +0300 MSK", "2024-W11-5", "2024-074",
-		"2014年04月08日", "10:30:00.123", "10:30 PM",
+		"2014年04月08日", "10:30:00.123", "10:30 PM", "10:30", "00:00:00",
+		"2024:03:15", "2024-03-15T10:30:00.123456+05:30", "20240315T103000Z",
 	}
 
 	for _, in := range corpus {
@@ -331,18 +337,27 @@ func TestNoSkipCoversADigit(t *testing.T) {
 			continue // refusing is always allowed
 		}
 		for _, f := range r.Def.Fields {
-			if f.Kind != compile.FSkip {
+			unread := f.Kind == compile.FSkip ||
+				(f.Kind == compile.FLiteral && f.Aux == 0)
+			if !unread {
 				continue
 			}
 			for i := f.Offset; i < f.Offset+f.Len && i < len(in); i++ {
 				if in[i] >= '0' && in[i] <= '9' {
-					t.Errorf("Detect(%q) [%s]: skip at %d len %d covers the digit %q at %d",
-						in, r.Def.Name, f.Offset, f.Len, in[i:i+1], i)
+					t.Errorf("Detect(%q) [%s]: %s at %d len %d covers the digit %q at %d",
+						in, r.Def.Name, kindName(f.Kind), f.Offset, f.Len, in[i:i+1], i)
 					break
 				}
 			}
 		}
 	}
+}
+
+func kindName(k compile.FieldKind) string {
+	if k == compile.FSkip {
+		return "skip"
+	}
+	return "literal"
 }
 
 // TestEveryInputByteIsDescribedExactlyOnce asserts what the executor's coverage

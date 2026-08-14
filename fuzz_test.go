@@ -121,6 +121,11 @@ func FuzzLayoutReuse(f *testing.F) {
 		// inputs put their fields in different places and the cached layout
 		// read the second one's month out of its day.
 		{"020/1/0000", "17/11/0000"},
+
+		// ISO_ORDINAL described its year and its day-of-year and nothing for
+		// the '-' between them, so it accepted a compact eight-digit date and
+		// read its "0101" as day-of-year 101.
+		{"0000-001", "00000101"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

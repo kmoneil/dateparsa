@@ -108,6 +108,57 @@ func Detect(s string, cfg Config) (Result, bool) {
 	return Result{Def: def}, true
 }
 
+// lit returns a one-byte literal field carrying the byte the detector checked,
+// so the executor can check it too. A separator is what tells two formats
+// apart: ISO_ORDINAL described its year and its day-of-year and nothing at all
+// for the '-' between them, so a layout built from "0000-001" accepted the
+// compact date "00000101" and read its "0101" as day-of-year 101.
+func lit(s string, off int) compile.Field {
+	return compile.Field{Kind: compile.FLiteral, Offset: off, Len: 1, Aux: uint16(s[off])}
+}
+
+// coverGaps appends a skip for every run of bytes no field reads, so the
+// program accounts for the whole input.
+//
+// The textual formats locate their fields by scanning, so what sits between
+// them is punctuation, a weekday name, or an " at ", and none of it is read.
+// Width is still worth fixing: a run of a different length shifts every field
+// after it, which is how a layout built from "Fri Jul 03 2015" would land its
+// day field in the middle of "Wednesday". Content is not worth checking here,
+// unlike the separators above, because nothing else parses these bytes
+// differently: "March 15; 2024" has only one reading whatever the punctuation.
+func coverGaps(fields []compile.Field, s string) []compile.Field {
+	covered := make([]bool, len(s))
+	for _, f := range fields {
+		w := f.Len
+		if fw, fixed := compile.FixedWidth(f.Kind); fixed {
+			w = fw
+		}
+		for i := f.Offset; i < f.Offset+w && i < len(s); i++ {
+			covered[i] = true
+		}
+	}
+	for i := 0; i < len(s); {
+		if covered[i] {
+			i++
+			continue
+		}
+		start := i
+		for i < len(s) && !covered[i] {
+			i++
+		}
+		fields = append(fields, skip(start, i-start))
+	}
+	return fields
+}
+
+// skip covers a run the format does not read and does not constrain, such as
+// the weekday name of an RFC 2822 date. It fixes the run's width without
+// looking at it, which is what stops a wider one shifting every field after it.
+func skip(off, length int) compile.Field {
+	return compile.Field{Kind: compile.FSkip, Offset: off, Len: length}
+}
+
 // detectISO8601Frac handles ISO 8601/RFC 3339 with variable-length fractional seconds:
 // "2024-03-15T10:30:00.123Z", "2024-03-15T10:30:00.123456+05:30",
 // "2024-03-15 10:30:00.123456789Z", etc.
@@ -139,11 +190,17 @@ func detectISO8601Frac(s string) (Result, bool) {
 	fields := make([]compile.Field, 0, 10)
 	fields = append(fields,
 		compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+		lit(s, 4),
 		compile.Field{Kind: compile.FMonth2, Offset: 5, Len: 2},
+		lit(s, 7),
 		compile.Field{Kind: compile.FDay2, Offset: 8, Len: 2},
+		lit(s, 10),
 		compile.Field{Kind: compile.FHour24, Offset: 11, Len: 2},
+		lit(s, 13),
 		compile.Field{Kind: compile.FMinute2, Offset: 14, Len: 2},
+		lit(s, 16),
 		compile.Field{Kind: compile.FSecond2, Offset: 17, Len: 2},
+		lit(s, 19),
 		compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracLen},
 	)
 
@@ -195,10 +252,15 @@ func detectGoTimeString(s string) (Result, bool) {
 	fields := make([]compile.Field, 0, 10)
 	fields = append(fields,
 		compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+		lit(s, 4),
 		compile.Field{Kind: compile.FMonth2, Offset: 5, Len: 2},
+		lit(s, 7),
 		compile.Field{Kind: compile.FDay2, Offset: 8, Len: 2},
+		lit(s, 10),
 		compile.Field{Kind: compile.FHour24, Offset: 11, Len: 2},
+		lit(s, 13),
 		compile.Field{Kind: compile.FMinute2, Offset: 14, Len: 2},
+		lit(s, 16),
 		compile.Field{Kind: compile.FSecond2, Offset: 17, Len: 2},
 	)
 
@@ -211,13 +273,15 @@ func detectGoTimeString(s string) (Result, bool) {
 			fracEnd++
 		}
 		if fracEnd > fracStart {
-			fields = append(fields, compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracEnd - fracStart})
+			fields = append(fields, lit(s, pos),
+				compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracEnd - fracStart})
 			pos = fracEnd
 		}
 	}
 
 	// Skip space.
 	if pos < n && s[pos] == ' ' {
+		fields = append(fields, lit(s, pos))
 		pos++
 	}
 
@@ -266,7 +330,9 @@ func detectDatePlusTZ(s string) (Result, bool) {
 	tzLen := n - 10
 	fields := []compile.Field{
 		{Kind: compile.FYear4, Offset: 0, Len: 4},
+		lit(s, 4),
 		{Kind: compile.FMonth2, Offset: 5, Len: 2},
+		lit(s, 7),
 		{Kind: compile.FDay2, Offset: 8, Len: 2},
 		{Kind: compile.FTZOffset, Offset: 10, Len: tzLen},
 	}
@@ -309,9 +375,11 @@ func detectCJKDate(s string) (Result, bool) {
 	// Build fields using byte offsets.
 	fields := []compile.Field{
 		{Kind: compile.FYear4, Offset: 0, Len: len(yearStr)},
+		skip(yearIdx, len("年")),
 		{Kind: compile.FMonth1or2, Offset: yearIdx + len("年"), Len: len(monStr)},
+		skip(monthIdx, len("月")),
 		{Kind: compile.FDay1or2, Offset: monthIdx + len("月"), Len: len(dayStr)},
-		{Kind: compile.FSkip, Offset: dayIdx, Len: len("日")},
+		skip(dayIdx, len("日")),
 	}
 	def := &compile.FormatDef{Name: "CJK_DATE", Fields: fields}
 	return Result{Def: def}, true
@@ -397,7 +465,7 @@ func detectVariableNumeric(s string, cfg Config) (Result, bool) {
 			combined = append(combined, timeFields...)
 			ambigResult.Def = &compile.FormatDef{
 				Name:   ambigResult.Def.Name + "_TIME",
-				Fields: combined,
+				Fields: coverGaps(combined, s),
 			}
 		}
 	}
@@ -642,6 +710,7 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 				Name: "ISO_WEEK",
 				Fields: []compile.Field{
 					{Kind: compile.FYear4, Offset: 0, Len: 4},
+					lit(s, 4), lit(s, 5),
 					{Kind: compile.FISOWeek, Offset: 6, Len: 2},
 				},
 			}}, true
@@ -652,7 +721,9 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 				Name: "ISO_WEEK_DATE",
 				Fields: []compile.Field{
 					{Kind: compile.FYear4, Offset: 0, Len: 4},
+					lit(s, 4), lit(s, 5),
 					{Kind: compile.FISOWeek, Offset: 6, Len: 2},
+					lit(s, 8),
 					{Kind: compile.FISOWeekDay, Offset: 9, Len: 1},
 				},
 			}}, true
@@ -674,6 +745,7 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 					Name: "ISO_ORDINAL",
 					Fields: []compile.Field{
 						{Kind: compile.FYear4, Offset: 0, Len: 4},
+						lit(s, 4),
 						{Kind: compile.FOrdinalDay, Offset: 5, Len: 3},
 					},
 				}}, true
@@ -748,7 +820,7 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	}
 
 	// Build field list from actual byte positions.
-	fields := buildTextualFields(s, monthNum, monthStart, monthEnd)
+	fields := coverGaps(buildTextualFields(s, monthNum, monthStart, monthEnd), s)
 	def := &compile.FormatDef{Name: name, Fields: fields}
 	prone, guess := textualDayIsAGuess(fields)
 	return Result{Def: def, Ambig: guess, AmbigProne: prone}, true

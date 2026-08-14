@@ -483,7 +483,7 @@ func phase2Formats() []formatEntry {
 				{Kind: compile.FMinute2, Offset: 14, Len: 2},
 				{Kind: compile.FLiteral, Offset: 16, Len: 1},
 				{Kind: compile.FSecond2, Offset: 17, Len: 2},
-				{Kind: compile.FLiteral, Offset: 18, Len: 1},
+				{Kind: compile.FLiteral, Offset: 19, Len: 1},
 				{Kind: compile.FTZName, Offset: 20, Len: 3},
 			},
 		},

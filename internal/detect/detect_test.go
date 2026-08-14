@@ -296,3 +296,64 @@ func TestEveryFieldDeclaresTheWidthItsOpReads(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryInputByteIsDescribedExactlyOnce asserts what the executor's coverage
+// check assumes: every byte of an input a format claims belongs to exactly one
+// field, no byte to none and no byte to two.
+//
+// The executor counts bytes rather than marking them, because it runs per
+// instruction on the hot path, and a sum only equals the length if there are no
+// gaps AND no overlaps. This test is the half that a sum cannot check.
+//
+// It exists because a gap was a wrong answer, not just untidiness: ISO_ORDINAL
+// described its year and its day-of-year and nothing for the '-' between them,
+// so a layout built from "0000-001" accepted the compact date "00000101" and
+// read its "0101" as day-of-year 101.
+func TestEveryInputByteIsDescribedExactlyOnce(t *testing.T) {
+	corpus := []string{
+		"2024-03-15", "2024/03/15", "2024.03.15",
+		"2024-03-15T10:30:00Z", "2024-03-15T10:30:00+05:30",
+		"2024-03-15T10:30:00.123456+05:30", "2024-03-15T10:30:00.123Z",
+		"2024-03-15 10:30:00", "2024-03-15 10:30:00 UTC", "2024-03-15 10:30:00.123456",
+		"2015-02-08 03:02:00 +0300 MSK", "2012-08-03 18:31:59.257000000 +0000 UTC",
+		"2024-03-15 10:30:00 m=+0.000000001",
+		"0000-001", "2024-074", "2024-W11-5", "2024-W11",
+		"2014年04月08日", "2020-07-20+08:00", "20240315", "20240315T103000Z",
+		"March 15, 2024", "September 17, 2012 at 10:09am", "15 Mar 2024",
+		"December 23rd", "March 2024", "sept. 1, 2020",
+		"Fri Jul 03 2015 18:04:07 GMT+0100", "Thu, 4 Jan 2018 17:53:36 +0000",
+		"3/15/2024", "3/15/2024 10:30:00 AM", "3/15/2024 10:30:00",
+		"15.03.2024", "01/02/2024", "10:30", "10:30:00", "10:30 PM", "10:30:00.123",
+	}
+
+	for _, in := range corpus {
+		r, ok := Detect(in, Config{})
+		if !ok || r.Def == nil {
+			continue // refusing is always allowed
+		}
+		count := make([]int, len(in))
+		for _, f := range r.Def.Fields {
+			w := f.Len
+			if fw, fixed := compile.FixedWidth(f.Kind); fixed {
+				w = fw
+			}
+			if f.Kind == compile.FTail {
+				w = len(in) - f.Offset
+			}
+			for i := f.Offset; i < f.Offset+w && i < len(in); i++ {
+				count[i]++
+			}
+		}
+		for i, c := range count {
+			if c != 1 {
+				t.Errorf("Detect(%q) [%s]: byte %d (%q) described %d times, want 1",
+					in, r.Def.Name, i, in[i:i+1], c)
+				break
+			}
+		}
+		if n := len(r.Def.Fields); n > compile.MaxInstructions {
+			t.Errorf("Detect(%q) [%s]: %d fields, over MaxInstructions %d",
+				in, r.Def.Name, n, compile.MaxInstructions)
+		}
+	}
+}

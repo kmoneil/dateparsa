@@ -100,16 +100,21 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	// For fixed-width programs (detection path), delta stays 0 — zero cost.
 	var delta int
 
-	// end is one past the last byte any instruction read. The check after the
-	// loop is what stops a layout matching a mere prefix of a longer input,
-	// which is how a cached ISO8601_DATE layout used to accept
-	// "2024-03-16T10:30:00Z" and return midnight with no error.
+	// end is one past the last byte any instruction read, and covered is how
+	// many bytes they read between them. Requiring both to equal the input
+	// length is what makes a program describe the whole of it.
 	//
-	// It is a high-water mark, not a coverage map: a byte between two fields
-	// is not required to belong to one, because most formats leave their
-	// separators unmodelled. Only the tail is checked, which is the half that
-	// silently loses a time of day and a timezone.
-	end := 0
+	// end alone was the first version, and it only caught a tail: a byte
+	// between two fields belonged to nothing and was never examined. That let
+	// a layout built from "0000-001" accept "00000101", because ISO_ORDINAL
+	// described its year and its day-of-year and nothing for the '-' between
+	// them, so the compact date's "0101" was read as day-of-year 101. Every
+	// detector now emits a field for every byte, so the sum is exact.
+	//
+	// Two counters rather than a coverage map because this runs per
+	// instruction on the hot path. It assumes no two fields overlap, which
+	// TestEveryInputByteIsDescribedExactlyOnce checks.
+	end, covered := 0, 0
 
 	for i := 0; i < p.N; i++ {
 		inst := &p.Insts[i]
@@ -370,15 +375,16 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = slen - off
 		}
 
+		covered += w
 		if e := off + w; e > end {
 			end = e
 		}
 	}
 
 	// A program that read less than the whole input did not describe it.
-	if end != slen {
+	if end != slen || covered != slen {
 		return time.Time{}, fmt.Errorf(
-			"dateparsa: layout describes %d of %d bytes", end, slen)
+			"dateparsa: layout describes %d of %d bytes", covered, slen)
 	}
 
 	// A format with no year field at all takes the program's base year, so

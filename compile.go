@@ -46,7 +46,11 @@ func CompileWithTimezone(layout string, tz *time.Location) (*Layout, error) {
 		return nil, err
 	}
 
-	program := compile.Compile(def, tz)
+	// The base year is deliberately left unset. A compiled Go layout with no
+	// year field parses to year 0, the same as time.Parse("15:04:05", ...).
+	// Only auto-detection via Parse fills it, because only Parse has a base
+	// time to fill it from.
+	program, _ := compile.Compile(def, tz)
 	return &Layout{
 		program:  program,
 		goLayout: def.GoLayout,

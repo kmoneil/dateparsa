@@ -77,13 +77,23 @@ type FormatDef struct {
 }
 
 // Compile turns a FormatDef into an executable Program.
-func Compile(def *FormatDef, tz *time.Location) Program {
-	var p Program
+//
+// needsBaseYear reports that the format carries no year field, so the caller
+// may want to set Program.BaseYear before running it. It is returned rather
+// than resolved here because the answer costs a clock read, and the caller is
+// the only one who knows whether it has a configured base time to use instead.
+// Reporting it from this loop keeps that read off the formats that do carry a
+// year, which is nearly all of them.
+func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool) {
 	p.Tz = tz
+	needsBaseYear = true
 
 	for _, f := range def.Fields {
 		if p.N >= MaxInstructions {
 			break
+		}
+		if f.Kind == FYear4 || f.Kind == FYear2 {
+			needsBaseYear = false
 		}
 		p.Insts[p.N] = Inst{
 			Op:     fieldKindToOp[f.Kind],
@@ -94,5 +104,5 @@ func Compile(def *FormatDef, tz *time.Location) Program {
 		p.N++
 	}
 
-	return p
+	return p, needsBaseYear
 }

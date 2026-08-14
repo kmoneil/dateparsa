@@ -2,7 +2,15 @@ package dateparsa
 
 import "testing"
 
-// FuzzParse ensures that arbitrary inputs never panic.
+// FuzzParse ensures that arbitrary inputs never panic, and that the Layout
+// Parse hands back reproduces the time Parse returned.
+//
+// The equality half is the one that matters. This target used to call
+// Layout.Parse and check only that it returned no error, which asserts that
+// the layout is usable and says nothing about whether it is right. The whole
+// premise of the library is that the detection result is reusable, and a
+// reusable layout that returns a different instant from the call that produced
+// it is the failure that premise exists to rule out.
 func FuzzParse(f *testing.F) {
 	// Seed corpus with valid formats.
 	seeds := []string{
@@ -39,14 +47,27 @@ func FuzzParse(f *testing.F) {
 		}
 
 		// If parsing succeeded with a reusable layout, it must round-trip.
-		// Sentinel layouts (epoch, NL) are not reusable — skip them.
-		if result.Layout != nil &&
-			result.Layout != LayoutEpoch &&
-			result.Layout != LayoutNaturalLanguage {
-			_, err = result.Layout.Parse(input)
-			if err != nil {
-				t.Errorf("Layout.Parse(%q) failed after successful Parse: %v", input, err)
-			}
+		// Sentinel layouts (epoch, NL) are not reusable, so skip them.
+		if result.Layout == nil ||
+			result.Layout == LayoutEpoch ||
+			result.Layout == LayoutNaturalLanguage {
+			return
+		}
+
+		reparsed, err := result.Layout.Parse(input)
+		if err != nil {
+			t.Errorf("Layout.Parse(%q) failed after successful Parse: %v", input, err)
+			return
+		}
+
+		// Equal compares instants, so a layout that resolves the same moment
+		// in a different location still passes. Anything else is a genuine
+		// disagreement between detection and reuse.
+		if !reparsed.Equal(result.Time) {
+			t.Errorf("layout %s disagrees with Parse on %q:\n"+
+				"  Parse        = %v\n"+
+				"  Layout.Parse = %v",
+				result.Layout, input, result.Time, reparsed)
 		}
 	})
 }

@@ -96,19 +96,19 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 		return ParseResult{}, buildAmbiguousError(s, cfg)
 	}
 
-	program := compile.Compile(result.Def, cfg.timezone)
+	// The base year is compiled into the program rather than patched onto the
+	// result, so that the Layout returned below reproduces this call. Patching
+	// here left Parse("10:30:00") and Layout.Parse("10:30:00") disagreeing by
+	// two thousand years, and it could not tell a format with no year field
+	// from a year field that read 0, so Parse("0000-01-01") returned the
+	// current year.
+	program, needsBaseYear := compile.Compile(result.Def, cfg.timezone)
+	if needsBaseYear {
+		program.BaseYear = baseYear(cfg)
+	}
 	t, err := program.Execute(s)
 	if err != nil {
 		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
-	}
-
-	// If the detected format had no year, fill in the base year.
-	if t.Year() == 0 {
-		baseYear := cfg.baseTime.Year()
-		if cfg.baseTime.IsZero() {
-			baseYear = time.Now().Year()
-		}
-		t = time.Date(baseYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 	}
 
 	layout := &Layout{
@@ -152,7 +152,10 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		return nil, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
-	program := compile.Compile(result.Def, cfg.timezone)
+	program, needsBaseYear := compile.Compile(result.Def, cfg.timezone)
+	if needsBaseYear {
+		program.BaseYear = baseYear(cfg)
+	}
 	return &Layout{
 		program:  program,
 		goLayout: result.Def.GoLayout,
@@ -167,7 +170,10 @@ func buildAmbiguousError(s string, cfg config) error {
 	// MDY interpretation.
 	mdyDcfg := detect.Config{PreferDayFirst: false, Timezone: cfg.timezone}
 	if mdyResult, ok := detect.Detect(s, mdyDcfg); ok {
-		prog := compile.Compile(mdyResult.Def, cfg.timezone)
+		prog, needsBaseYear := compile.Compile(mdyResult.Def, cfg.timezone)
+		if needsBaseYear {
+			prog.BaseYear = baseYear(cfg)
+		}
 		t, err := prog.Execute(s)
 		if err == nil {
 			interps = append(interps, Interpretation{
@@ -181,7 +187,10 @@ func buildAmbiguousError(s string, cfg config) error {
 	// DMY interpretation.
 	dmyDcfg := detect.Config{PreferDayFirst: true, Timezone: cfg.timezone}
 	if dmyResult, ok := detect.Detect(s, dmyDcfg); ok {
-		prog := compile.Compile(dmyResult.Def, cfg.timezone)
+		prog, needsBaseYear := compile.Compile(dmyResult.Def, cfg.timezone)
+		if needsBaseYear {
+			prog.BaseYear = baseYear(cfg)
+		}
 		t, err := prog.Execute(s)
 		if err == nil {
 			interps = append(interps, Interpretation{
@@ -203,6 +212,18 @@ func buildAmbiguousError(s string, cfg config) error {
 		Input:           s,
 		Interpretations: interps,
 	}
+}
+
+// baseYear is the year a format carrying no year field takes, for example
+// "10:30:00" or "March 15". WithBaseTime sets it; otherwise it is the current
+// year. Read at detection time, never on Layout.Parse, and only for the formats
+// that actually lack a year: the clock read is about 50ns, which is a third of
+// a whole Parse, and calling it unconditionally cost 30% on every format.
+func baseYear(cfg config) int {
+	if cfg.baseTime.IsZero() {
+		return time.Now().Year()
+	}
+	return cfg.baseTime.Year()
 }
 
 // localeDataFromConfig extracts the internal locale data pointers from

@@ -73,7 +73,11 @@ func consumed1or2(s string, off, slen int) int {
 
 func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	var (
-		year       = 0
+		year = 0
+		// yearSet distinguishes "the format has no year field" from "the year
+		// field read 0". Testing year == 0 conflates them, which is how
+		// Parse("0000-01-01") used to come back as the current year.
+		yearSet    = false
 		month      = time.January
 		day        = 1
 		hour       int
@@ -113,6 +117,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("year", off, slen)
 			}
 			year = y
+			yearSet = true
 
 		case OpYear2:
 			v, ok := parse2Bounded(s, off, slen, 0, 99)
@@ -120,6 +125,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 				return time.Time{}, fieldError("year", off, slen)
 			}
 			year = NormalizeTwoDigitYear(v)
+			yearSet = true
 
 		case OpMonth2:
 			v, ok := parse2Bounded(s, off, slen, 1, 12)
@@ -314,6 +320,14 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		case OpSkip:
 			// Nothing to extract — skip N bytes.
 		}
+	}
+
+	// A format with no year field at all takes the program's base year, so
+	// that a Layout reproduces what the Parse which detected it returned.
+	// Zero means leave it unset, which is what the public Compile passes and
+	// what time.Parse does.
+	if !yearSet && p.BaseYear != 0 {
+		year = p.BaseYear
 	}
 
 	// Apply AM/PM conversion.

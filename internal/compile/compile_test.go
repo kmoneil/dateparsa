@@ -211,7 +211,7 @@ func TestCompile(t *testing.T) {
 		},
 	}
 
-	prog := Compile(def, time.UTC)
+	prog, _ := Compile(def, time.UTC)
 	if prog.N != 5 {
 		t.Errorf("got %d instructions, want 5", prog.N)
 	}

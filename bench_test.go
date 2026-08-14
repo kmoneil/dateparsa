@@ -47,6 +47,60 @@ func BenchmarkParse_AmbiguousSlash(b *testing.B) {
 	}
 }
 
+// The four below measure a parse that fails, which nothing here used to do.
+//
+// Every other benchmark in this file parses something that succeeds, and a real
+// ingest column is not like that: it has empty cells, "N/A", free text, and rows
+// where somebody typed a note into a date field. Each of those walks the whole
+// detection cascade, then epoch.Detect, then natural.Parse, and then allocates a
+// *ParseError, so a miss costs several times what a hit does and grew without
+// anybody being able to see it.
+//
+// The inputs are fixed rather than generated, so a regression reproduces.
+//
+// missText is deliberately long enough to make the per-byte constant visible
+// next to the short forms. The cost is linear in input length, measured at 15.4
+// to 19.8 MB/s over inputs from 68 to 4352 bytes, so what these track is the
+// constant and not the shape.
+const (
+	missShort = "N/A"
+	missText  = "not a date at all"
+	missLong  = "the quick brown fox jumps over the lazy dog and then some more text "
+)
+
+// BenchmarkParse_Miss_Short benchmarks the empty-ish cell an import is full of.
+func BenchmarkParse_Miss_Short(b *testing.B) {
+	for b.Loop() {
+		_, _ = Parse(missShort)
+	}
+}
+
+// BenchmarkParse_Miss_Text benchmarks free text in a date column.
+func BenchmarkParse_Miss_Text(b *testing.B) {
+	for b.Loop() {
+		_, _ = Parse(missText)
+	}
+}
+
+// BenchmarkParse_Miss_Long reports MB/s as well, which is what makes the
+// per-byte constant comparable against the short forms.
+func BenchmarkParse_Miss_Long(b *testing.B) {
+	b.SetBytes(int64(len(missLong)))
+	for b.Loop() {
+		_, _ = Parse(missLong)
+	}
+}
+
+// BenchmarkParse_Miss_Locales is the same miss with locales configured, which is
+// what makes the per-locale rescan in natural.Parse visible: it scans once for
+// English and once more for each locale, building a token slice every time, for
+// an input that fails all of them.
+func BenchmarkParse_Miss_Locales(b *testing.B) {
+	for b.Loop() {
+		_, _ = ParseWith(missText, WithLocales(FR, DE, ES))
+	}
+}
+
 // BenchmarkLayout_Parse benchmarks the compiled Layout hot path.
 func BenchmarkLayout_Parse(b *testing.B) {
 	result, err := Parse("2024-03-15T10:30:00Z")

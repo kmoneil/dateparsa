@@ -153,9 +153,20 @@ size:
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 ## bench: run the benchmarks into benchmarks/current.txt
+#
+# ./... because the benchmarks are not all in the root package. This swept the
+# root package alone, which is 40 of the 50 benchmark functions in the tree; the
+# other 10 are flextime's, so the surface a caller actually scans database rows
+# through was measured by nothing and never reached benchmarks/baseline.txt.
+# Same shape as the fuzz sweep before it discovered its own targets, and the same
+# fix: ask the tree rather than name the package.
+#
+# -run='^$$' because this used to run the whole test suite as well, on every
+# package, and write its PASS lines into the benchmark file. benchstat ignores
+# them, a reader does not, and `make check` is where tests belong.
 .PHONY: bench
 bench:
-	@go test -bench=. -benchmem -count=3 -timeout=600s | tee benchmarks/current.txt
+	@go test -run='^$$' -bench=. -benchmem -count=3 -timeout=900s ./... | tee benchmarks/current.txt
 
 ## bench-compare: benchstat current against the committed baseline
 .PHONY: bench-compare

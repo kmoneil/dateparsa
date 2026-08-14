@@ -2,6 +2,7 @@ package dateparsa
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -804,6 +805,71 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 	if _, err := rfc.Layout.Parse("Mon Jul 06 2015 18:04:07 GMT+0100"); err != nil {
 		t.Errorf("layout refused a different weekday of the same width: %v", err)
 	}
+}
+
+// TestCompileRefusesALayoutItCannotRepresent covers C4, which was a wrong time
+// when it was filed and had already decayed into a confusing error by the time
+// it was worked.
+//
+// Compile stopped filling the program at MaxInstructions and returned what it
+// had, with a nil error. ParseGoLayout emits one instruction per unrecognised
+// layout byte, so a long enough run of literal text ran the count out before
+// the first field and the layout answered year zero for every input. c4851ae
+// turned that into an error at parse time, which blamed the input: "layout
+// describes 24 of 37 bytes" is a true sentence about the wrong thing.
+func TestCompileRefusesALayoutItCannotRepresent(t *testing.T) {
+	// Layouts inside the budget keep working and keep agreeing with the stdlib.
+	for _, tt := range []struct{ layout, input string }{
+		{"2006-01-02", "2024-03-15"},
+		{"2006-01-02T15:04:05Z07:00", "2024-03-15T10:30:00Z"},
+		{"Date: 2006-01-02", "Date: 2024-03-15"},
+	} {
+		l, err := Compile(tt.layout)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", tt.layout, err)
+			continue
+		}
+		got, err := l.Parse(tt.input)
+		if err != nil {
+			t.Errorf("Compile(%q).Parse(%q): %v", tt.layout, tt.input, err)
+			continue
+		}
+		want, err := time.Parse(tt.layout, tt.input)
+		if err != nil {
+			t.Fatalf("the reference itself refused %q: %v", tt.input, err)
+		}
+		if !got.Equal(want) {
+			t.Errorf("Compile(%q).Parse(%q) = %v, time.Parse = %v",
+				tt.layout, tt.input, got, want)
+		}
+	}
+
+	// Past the budget it has to be the constructor that refuses, not the parse.
+	// One instruction per unrecognised layout byte is what spends it, so these
+	// are layouts the stdlib handles and this library will not. That is the
+	// trade: a refusal a caller sees at construction beats a Layout that fails
+	// on every value.
+	for _, layout := range []string{
+		strings.Repeat("x", 70) + "2006-01-02",
+		"The current date and time: 2006-01-02", // 32 instructions
+		"Generated on 2006-01-02 at 15:04",      // 25
+	} {
+		if l, err := Compile(layout); err == nil {
+			t.Errorf("Compile(%q) returned a Layout for %d instructions, limit is %d",
+				layout, len(l.goLayout), 24)
+		}
+	}
+
+	// MustCompile is the same constructor, so it has to panic rather than hand
+	// back a layout that cannot work.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("MustCompile of an over-long layout did not panic")
+			}
+		}()
+		MustCompile(strings.Repeat("x", 70) + "2006-01-02")
+	}()
 }
 
 // TestEpochOverflowAndSign covers what a caller sees for the two epoch bugs,

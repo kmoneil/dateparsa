@@ -102,7 +102,10 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 	// two thousand years, and it could not tell a format with no year field
 	// from a year field that read 0, so Parse("0000-01-01") returned the
 	// current year.
-	program, needsBaseYear := compile.Compile(result.Def, cfg.timezone)
+	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
+	if err != nil {
+		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+	}
 	if needsBaseYear {
 		program.BaseYear = baseYear(cfg)
 	}
@@ -155,7 +158,10 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		return nil, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
-	program, needsBaseYear := compile.Compile(result.Def, cfg.timezone)
+	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
+	if err != nil {
+		return nil, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+	}
 	if needsBaseYear {
 		program.BaseYear = baseYear(cfg)
 	}
@@ -176,7 +182,10 @@ func buildAmbiguousError(s string, cfg config) error {
 	// MDY interpretation.
 	mdyDcfg := detect.Config{PreferDayFirst: false, Timezone: cfg.timezone}
 	if mdyResult, ok := detect.Detect(s, mdyDcfg); ok {
-		prog, needsBaseYear := compile.Compile(mdyResult.Def, cfg.timezone)
+		prog, needsBaseYear, cerr := compile.Compile(mdyResult.Def, cfg.timezone)
+		if cerr != nil {
+			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
+		}
 		if needsBaseYear {
 			prog.BaseYear = baseYear(cfg)
 		}
@@ -193,7 +202,10 @@ func buildAmbiguousError(s string, cfg config) error {
 	// DMY interpretation.
 	dmyDcfg := detect.Config{PreferDayFirst: true, Timezone: cfg.timezone}
 	if dmyResult, ok := detect.Detect(s, dmyDcfg); ok {
-		prog, needsBaseYear := compile.Compile(dmyResult.Def, cfg.timezone)
+		prog, needsBaseYear, cerr := compile.Compile(dmyResult.Def, cfg.timezone)
+		if cerr != nil {
+			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
+		}
 		if needsBaseYear {
 			prog.BaseYear = baseYear(cfg)
 		}

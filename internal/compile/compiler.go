@@ -1,6 +1,9 @@
 package compile
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // FormatField describes a component within a date format.
 type FieldKind byte
@@ -87,7 +90,21 @@ type FormatDef struct {
 	Fields   []Field
 }
 
-// Compile turns a FormatDef into an executable Program.
+// Compile turns a FormatDef into an executable Program, or refuses a def the
+// Program cannot represent.
+//
+// It used to refuse nothing. Over MaxInstructions it stopped filling and
+// returned what it had, so Compile("The current date and time: 2006-01-02")
+// came back with a nil error and a layout that answered year zero for every
+// input: ParseGoLayout emits one instruction per unrecognised layout byte, and
+// 27 of them ran the count out before the first field. The end-of-input check
+// added in c4851ae turned that from a wrong date into an error at parse time,
+// which is better and still wrong. A constructor that cannot honour a layout
+// should say so when it is handed the layout.
+//
+// Offset and Len are bytes, so a def addressing past 255 is refused too rather
+// than wrapping. Detection reaches that with a long enough input: it is what
+// stops a 300-byte prefix putting a month name at byte 44.
 //
 // needsBaseYear reports that the format carries no year field, so the caller
 // may want to set Program.BaseYear before running it. It is returned rather
@@ -95,13 +112,25 @@ type FormatDef struct {
 // the only one who knows whether it has a configured base time to use instead.
 // Reporting it from this loop keeps that read off the formats that do carry a
 // year, which is nearly all of them.
-func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool) {
+func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, err error) {
+	// The error paths return the named results rather than a fresh Program{}.
+	// A Program is 216 bytes, and materialising a second zero one puts the cost
+	// of the refusal on every call that does not refuse.
+	if n := len(def.Fields); n > MaxInstructions {
+		err = fmt.Errorf("compile: format %s needs %d instructions, the limit is %d",
+			def.Name, n, MaxInstructions)
+		return p, false, err
+	}
+
 	p.Tz = tz
 	needsBaseYear = true
 
 	for _, f := range def.Fields {
-		if p.N >= MaxInstructions {
-			break
+		if f.Offset > maxFieldByte || f.Len > maxFieldByte {
+			err = fmt.Errorf(
+				"compile: format %s has a field at offset %d of length %d, past the %d it can address",
+				def.Name, f.Offset, f.Len, maxFieldByte)
+			return p, false, err
 		}
 		if f.Kind == FYear4 || f.Kind == FYear2 {
 			needsBaseYear = false
@@ -115,7 +144,7 @@ func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool) 
 		p.N++
 	}
 
-	return p, needsBaseYear
+	return p, needsBaseYear, nil
 }
 
 // FixedWidth returns the number of input bytes the instruction for k reads,

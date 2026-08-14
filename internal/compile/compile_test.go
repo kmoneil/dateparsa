@@ -211,7 +211,10 @@ func TestCompile(t *testing.T) {
 		},
 	}
 
-	prog, _ := Compile(def, time.UTC)
+	prog, _, err := Compile(def, time.UTC)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
 	if prog.N != 5 {
 		t.Errorf("got %d instructions, want 5", prog.N)
 	}
@@ -223,6 +226,48 @@ func TestCompile(t *testing.T) {
 	want := time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestCompileRefusesWhatItCannotAddress covers the other half of C4. Offset and
+// Len are bytes on Inst, and Compile used to narrow them with a conversion, so
+// a field at offset 260 addressed byte 4 instead. Detection reaches this with a
+// long enough input, and restoring textual detection past byte 64 (C13) makes
+// it routine, so the guard has to be here rather than in any one caller.
+func TestCompileRefusesWhatItCannotAddress(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		field Field
+	}{
+		{"offset past a byte", Field{Kind: FYear4, Offset: 260, Len: 4}},
+		{"offset exactly past", Field{Kind: FYear4, Offset: 256, Len: 4}},
+		{"length past a byte", Field{Kind: FSkip, Offset: 0, Len: 300}},
+	} {
+		def := &FormatDef{Name: "PROBE", Fields: []Field{tt.field}}
+		if _, _, err := Compile(def, time.UTC); err == nil {
+			t.Errorf("%s: Compile accepted a field it cannot address", tt.name)
+		}
+	}
+
+	// The largest addressable field still compiles, or the guard is off by one.
+	def := &FormatDef{Name: "PROBE", Fields: []Field{{Kind: FSkip, Offset: 255, Len: 255}}}
+	if _, _, err := Compile(def, time.UTC); err != nil {
+		t.Errorf("Compile refused the largest addressable field: %v", err)
+	}
+}
+
+// TestCompileRefusesTooManyInstructions is the instruction-count half.
+func TestCompileRefusesTooManyInstructions(t *testing.T) {
+	fields := make([]Field, MaxInstructions+1)
+	for i := range fields {
+		fields[i] = Field{Kind: FLiteral, Offset: i, Len: 1, Aux: 'x'}
+	}
+	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields}, time.UTC); err == nil {
+		t.Errorf("Compile accepted %d fields, the limit is %d", len(fields), MaxInstructions)
+	}
+
+	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields[:MaxInstructions]}, time.UTC); err != nil {
+		t.Errorf("Compile refused exactly %d fields: %v", MaxInstructions, err)
 	}
 }
 

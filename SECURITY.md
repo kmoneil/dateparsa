@@ -93,8 +93,21 @@ truncated for signature purposes. Structured detection therefore does a fixed
 amount of work regardless of input size, and allocates nothing.
 
 **A program is at most 24 instructions.** `compile.MaxInstructions` is 24 and
-the compiler stops there. Execution is a single pass over that fixed array with
-no loop whose trip count depends on the input.
+the compiler **refuses** a format needing more, rather than stopping there.
+Execution is a single pass over that fixed array with no loop whose trip count
+depends on the input.
+
+The refusal is the part that changed. The compiler used to stop filling and
+return the truncated program with no error, so
+`Compile("The current date and time: 2006-01-02")` returned a layout that
+answered year zero for every input: `ParseGoLayout` emits one instruction per
+unrecognised layout byte and 27 of them exhausted the count before the first
+field. Detection is unaffected, and never emits more than 16 fields.
+
+**A program addresses at most 256 bytes of input.** `Inst.Offset` and `Inst.Len`
+are single bytes, and the compiler refuses a format with a field past what they
+hold rather than narrowing it. Before that check, a field at offset 260 read
+byte 4.
 
 **The natural language path is linear in input length and has no cap.** It runs
 only after structured detection and epoch detection have both failed. When it

@@ -2,9 +2,27 @@ package compile
 
 import "time"
 
-// MaxInstructions is the maximum number of instructions in a program.
-// Covers the most complex date formats with room to spare.
+// MaxInstructions is the maximum number of instructions in a program, and the
+// bound on the work one Execute can do.
+//
+// Detection never comes close: the widest format the detectors emit is 16
+// fields, which TestEveryInputByteIsDescribedExactlyOnce checks. What spends it
+// is the public Compile, where ParseGoLayout emits one instruction per
+// unrecognised layout byte, so "Generated on 2006-01-02 at 15:04" is 25
+// instructions and is refused.
+//
+// Raising it is not free, which is worth writing down because it looks free.
+// Compile returns a Program by value and Parse builds one on every call, so the
+// array is copied per parse and not per Layout. Taking this to 64 measured
+// +37% on Parse_ISO8601 and +45% on Detect_Only, against Layout_Parse_ISODate
+// and a stdlib control both flat. The way to buy the headroom is to spend fewer
+// instructions on literal text, not to hold more of them.
 const MaxInstructions = 24
+
+// maxFieldByte is the largest value Inst.Offset and Inst.Len can hold. A
+// program cannot address a byte past this, so Compile refuses a def that tries
+// rather than wrapping into the middle of the input.
+const maxFieldByte = 255
 
 // Program is a compiled sequence of parse instructions.
 // It is a value type (no pointers) so it can be embedded directly in Layout

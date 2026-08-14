@@ -13,7 +13,14 @@ import (
 // via Parse).
 //
 // The returned Layout is safe for concurrent use. Where an input is what the
-// layout literally describes, it agrees with time.Parse(layout, value).
+// layout literally describes, it agrees with time.Parse(layout, value),
+// including on trailing text: both refuse "2024-03-15GARBAGE" for "2006-01-02".
+//
+// Compile refuses a layout it cannot represent rather than returning a Layout
+// that cannot work. A program holds compile.MaxInstructions instructions and
+// addresses 256 bytes of input, and one unrecognised layout byte costs one
+// instruction, so a layout with several hundred bytes of literal text around
+// its fields is an error here and not a surprise later.
 //
 // It is stricter in one respect, deliberately. A compiled layout reads fields
 // at fixed byte offsets, which is what lets it run without allocating, so a
@@ -50,7 +57,10 @@ func CompileWithTimezone(layout string, tz *time.Location) (*Layout, error) {
 	// year field parses to year 0, the same as time.Parse("15:04:05", ...).
 	// Only auto-detection via Parse fills it, because only Parse has a base
 	// time to fill it from.
-	program, _ := compile.Compile(def, tz)
+	program, _, err := compile.Compile(def, tz)
+	if err != nil {
+		return nil, err
+	}
 	return &Layout{
 		program:  program,
 		goLayout: def.GoLayout,

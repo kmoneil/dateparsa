@@ -547,26 +547,115 @@ func TestStrictModeSurvivesTheParserCache(t *testing.T) {
 	}
 }
 
-// TestParserReportsAmbiguityLikeParse covers the non-strict half: a cache hit
-// used to leave ParseResult.Ambiguous at its zero value, so the same input
-// reported true through Parse and false through Parser.
+// TestParserReportsAmbiguityLikeParse pins the whole of the property: a row read
+// through a Parser and the same row read through Parse agree on the instant and
+// on the flag, whatever seeded the cache.
+//
+// It began as three rows after one seed, and every one of those rows was
+// ambiguous exactly like the seed, so the samples could not reach what the
+// assertion was for. Twenty-one inputs diverged behind it, in two families:
+//
+//	seed        row         Parser              Parse
+//	03/15/2024  01/02/2024  2024-01-02 false    2024-01-02 true     flag
+//	01/02/2024  03/15/2024  2024-03-15 true     2024-03-15 false    flag
+//	25/12/2024  01/02/2024  2024-02-01 false    2024-01-02 true     INSTANT
+//	MAY70       MAY10       2010-05-01 false    2026-05-10 true     INSTANT
+//	March 32    March 31    2031-03-01 false    2026-03-31 true     INSTANT
+//
+// Both families have the same root. Detection resolved the format by looking at
+// the values, and the readings it chose between emit the same fields at the same
+// offsets and widths, so the cached program parses the next row whichever way
+// that row wanted to be read. A value-derived field assignment cannot be reused,
+// only re-derived, which is what Parser does now for any layout detection marks
+// ambiguity-prone.
+//
+// The seeds below are chosen so that the seed and the row resolve differently.
+// A table where they agree passes against the unfixed tree.
 func TestParserReportsAmbiguityLikeParse(t *testing.T) {
-	p := NewParser()
-	if _, err := p.Parse("01/02/2024"); err != nil { // seed the cache
-		t.Fatal(err)
+	seqs := []struct {
+		name string
+		seed string
+		rows []string
+	}{
+		// Numeric: which part is the month is decided by value, and the
+		// preference decides only when both parts could be either.
+		{"slash/unambiguous seed", "03/15/2024", []string{"01/02/2024", "05/06/2024"}},
+		{"slash/ambiguous seed", "01/02/2024", []string{"03/15/2024", "05/06/2024"}},
+		{"slash/day-first seed", "25/12/2024", []string{"01/02/2024", "05/06/2024"}},
+		{"slash/2-digit year", "03/15/24", []string{"01/02/24"}},
+		{"dot/day-first", "15.03.2024", []string{"01.02.2024"}},
+		{"dash", "03-15-2024", []string{"01-02-2024"}},
+
+		// Textual: a bare number over 31 is a year and at or under 31 is a day,
+		// and both are two bytes at the same offset.
+		{"textual/year seed", "MAY70", []string{"MAY10", "MAY99"}},
+		{"textual/day seed", "MAY10", []string{"MAY70"}},
+		{"textual/spaced", "March 32", []string{"March 31", "March 15"}},
+		{"textual/day first", "70 March", []string{"10 March"}},
+		{"textual/abbrev", "Mar 70", []string{"Mar 10"}},
+		{"textual/width settles it", "March 5", []string{"March 15"}},
+		{"textual/4-digit year settles it", "March 2015", []string{"March 15"}},
+
+		// A shaped format is not prone and must keep using the cache.
+		{"shaped", "2024-03-15T10:30:00Z", []string{"2025-01-01T00:00:00Z"}},
+		{"format changes mid-column", "01/02/2024", []string{"2024-03-15"}},
 	}
-	for _, s := range []string{"03/04/2024", "05/06/2024", "01/02/2024"} {
-		cached, err := p.Parse(s)
-		if err != nil {
-			t.Fatalf("Parser.Parse(%q): %v", s, err)
+
+	for _, seq := range seqs {
+		t.Run(seq.name, func(t *testing.T) {
+			p := NewParser()
+			if _, err := p.Parse(seq.seed); err != nil {
+				t.Fatalf("seed %q: %v", seq.seed, err)
+			}
+			for _, s := range seq.rows {
+				cached, cerr := p.Parse(s)
+				fresh, ferr := Parse(s)
+				if (cerr == nil) != (ferr == nil) {
+					t.Fatalf("after %q, %q: Parser err=%v, Parse err=%v",
+						seq.seed, s, cerr, ferr)
+				}
+				if cerr != nil {
+					continue
+				}
+				if !cached.Time.Equal(fresh.Time) {
+					t.Errorf("after %q, %q: Parser returns %v, Parse returns %v",
+						seq.seed, s, cached.Time, fresh.Time)
+				}
+				if cached.Ambiguous != fresh.Ambiguous {
+					t.Errorf("after %q, %q: Parser reports Ambiguous=%v, Parse reports %v",
+						seq.seed, s, cached.Ambiguous, fresh.Ambiguous)
+				}
+			}
+		})
+	}
+}
+
+// TestParserKeepsTheCacheForShapedFormats is the other half of the gate above.
+// Declining the cache is only correct where the format was resolved by value; a
+// format whose fields are fixed by its shape must still skip detection, or the
+// fix for the ambiguity-prone case has quietly turned Parser into Parse.
+func TestParserKeepsTheCacheForShapedFormats(t *testing.T) {
+	for _, s := range []string{
+		"2024-03-15T10:30:00Z",
+		"2024-03-15",
+		"2024-03-15 10:30:00",
+		"March 15, 2024",
+		"20240315",
+	} {
+		p := NewParser()
+		if _, err := p.Parse(s); err != nil {
+			t.Fatalf("seed %q: %v", s, err)
 		}
-		fresh, err := Parse(s)
-		if err != nil {
-			t.Fatalf("Parse(%q): %v", s, err)
+		before := p.layout
+		if before == nil {
+			t.Fatalf("%q: no layout cached", s)
 		}
-		if cached.Ambiguous != fresh.Ambiguous {
-			t.Errorf("%q: Parser reports Ambiguous=%v, Parse reports %v",
-				s, cached.Ambiguous, fresh.Ambiguous)
+		allocs := testing.AllocsPerRun(100, func() {
+			_, _ = p.Parse(s)
+		})
+		if allocs > 0 {
+			t.Errorf("%q: Parser.Parse allocated %.0f times on a cache hit, want 0"+
+				" (ambiguityProne=%v)", s, allocs, before.ambiguityProne)
 		}
 	}
 }

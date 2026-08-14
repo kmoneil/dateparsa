@@ -141,6 +141,19 @@ so the application decides. **If you are parsing dates that cross a trust
 boundary and a wrong day has consequences, use strict mode.** The default exists
 for convenience, not for safety.
 
+**A guess is never reused across rows.** `Parser` caches the layout it detected
+and skips detection for later values, which is the whole reason it exists. It
+does not do that for a format detection resolved by looking at the values, and
+the reason is that the readings it chose between compile to the same program:
+the same fields, the same widths, at the same offsets. A layout built from
+`25/12/2024` is day-first because 25 cannot be a month, and it parses
+`01/02/2024` perfectly well as the first of February where the format's own
+preference rule reads the second of January. A layout built from `MAY70` reads
+the 70 as a year, and it parses `MAY10` as 2010 where detection reads the tenth
+of May. Both answers are wrong days returned with no error and no flag, so any
+layout detection marks ambiguity-prone is re-detected per value rather than
+reused. It costs the cache on those formats and on no others.
+
 **Correctness is fuzzed semantically, not only for panics.** `FuzzParse` and
 `FuzzDetect` prove the library does not crash. They cannot prove it returns the
 right time, because a wrong answer is a successful parse. `roundtrip_test.go`

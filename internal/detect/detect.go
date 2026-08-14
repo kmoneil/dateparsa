@@ -863,8 +863,25 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 func textualDayIsAGuess(fields []compile.Field) (prone, guess bool) {
 	for i := range fields {
 		switch fields[i].Kind {
-		case compile.FYear2, compile.FYear4:
-			return false, false // a year is written out, so the other number is not one
+		case compile.FYear2:
+			// A year is written out, so the other number is not one, and this
+			// input needed no guess. The format still did: buildTextualFields
+			// calls a bare number over 31 a year and one at or under 31 a day,
+			// and both emit a two-byte field at the same offset. The programs
+			// are the same shape, so a layout built under one reading accepts
+			// input that wanted the other and answers with the wrong instant.
+			//
+			// "MAY70" builds a year field and reads "MAY10" as 2010-05-01,
+			// where detection reads the tenth of May. "March 32" reads
+			// "March 31" as 2031-03-01 against the thirty-first of March. Both
+			// used to come back with Ambiguous false and no error, because
+			// prone was false here and Parser reuses a layout it is not told to
+			// re-detect.
+			return true, false
+		case compile.FYear4:
+			// Four digits cannot be a day, so nothing about this shape is
+			// decided by value and no later row can flip it.
+			return false, false
 		case compile.FDay1or2:
 			prone = true
 		case compile.FDay2:

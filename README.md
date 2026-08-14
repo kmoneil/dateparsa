@@ -70,7 +70,9 @@ for _, row := range rows {
 p := dateparsa.NewParser()
 
 // Detects format on first row, reuses for the rest.
-// Falls back to re-detection if the format changes.
+// Falls back to re-detection if the format changes, and re-detects
+// every row of an ambiguous format such as DD/MM vs MM/DD, because
+// which part is the month is decided per value and not per format.
 times, errs := p.ParseColumn([]string{
     "2024-01-01",
     "2024-06-15",
@@ -233,6 +235,9 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 3. **User preference** — `WithPreferDayFirst` / `WithPreferYearFirst`
 4. **Ambiguity flag** — `result.Ambiguous` tells you when the choice was a guess
 5. **Strict mode** — `WithStrictMode(true)` returns all interpretations as an error
+6. **No reuse of a guess** — `Parser` re-detects every row of an ambiguous
+   format instead of applying the previous row's reading to it. Steps 1 and 2
+   answer per value, so a layout cannot carry the answer forward.
 
 ## Performance
 

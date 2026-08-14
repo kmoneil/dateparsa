@@ -806,6 +806,47 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 	}
 }
 
+// TestEpochOverflowAndSign covers what a caller sees for the two epoch bugs,
+// which were found by reading rather than by any test: internal/epoch had no
+// fuzz target, and it is the one package doing unchecked integer arithmetic on
+// untrusted input.
+func TestEpochOverflowAndSign(t *testing.T) {
+	// Nineteen digits reach past int64 and used to wrap into a confident
+	// wrong date, the third of these into the future despite its minus.
+	for _, in := range []string{
+		"9999999999999999999",  // was 1702-05-02
+		"9223372036854775808",  // was 1677-09-21
+		"-9999999999999999999", // was 2237-09-01
+		"-9223372036854775808", // was 1677-09-21
+	} {
+		if got, err := Parse(in); err == nil {
+			t.Errorf("Parse(%q) = %v, want an error", in, got.Time)
+		}
+	}
+
+	for _, tt := range []struct {
+		in   string
+		want time.Time
+	}{
+		{"9223372036854775807", time.Unix(0, 9223372036854775807)},
+		{"-1710500000123", time.UnixMilli(-1710500000123)},
+		{"-1710500000123456", time.UnixMicro(-1710500000123456)},
+		{"-1710500000123456789", time.Unix(0, -1710500000123456789)},
+		{"-1710500000.5", time.Unix(-1710500000, -500000000)},
+		{"1710500000.99999999999999999999999", time.Unix(1710500000, 999999999)},
+	} {
+		got, err := Parse(tt.in)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", tt.in, err)
+			continue
+		}
+		if !got.Time.Equal(tt.want) {
+			t.Errorf("Parse(%q) = %v, want %v (off by %v)",
+				tt.in, got.Time.UTC(), tt.want.UTC(), got.Time.Sub(tt.want))
+		}
+	}
+}
+
 // TestLiteralHoldingADigitIsRefused is the same rule as
 // TestSkippedRunWithADigitIsRefused reaching the other instruction that does
 // not read what it covers.

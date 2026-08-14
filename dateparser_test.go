@@ -505,3 +505,105 @@ func TestZoneOffsetIsNotDropped(t *testing.T) {
 		})
 	}
 }
+
+// TestStrictModeSurvivesTheParserCache pins the half of strict mode that the
+// layout cache used to take away. A Parser seeded with an unambiguous value of
+// an ambiguity-prone format cached a layout, and every later row went through
+// it without the ambiguity check, so a caller who asked to be told about
+// guesses stopped being told after the first success.
+//
+// The gate is on whether the format can need a guess, not on whether the parse
+// that produced the layout did. Ambiguity belongs to the input: "25/12/2024"
+// resolves without one and still yields a layout that meets "01/02/2024" two
+// rows later.
+func TestStrictModeSurvivesTheParserCache(t *testing.T) {
+	seeds := []struct{ unambiguous, ambiguous string }{
+		{"25/12/2024", "01/02/2024"}, // 25 cannot be a month
+		{"March 5", "March 15"},      // one digit cannot be a year
+	}
+	for _, tt := range seeds {
+		p := NewParser(WithStrictMode(true))
+		if _, err := p.Parse(tt.unambiguous); err != nil {
+			t.Fatalf("seed %q: %v", tt.unambiguous, err)
+		}
+		_, err := p.Parse(tt.ambiguous)
+		if !errors.Is(err, ErrAmbiguous) {
+			t.Errorf("after caching %q, Parse(%q) = %v, want ErrAmbiguous",
+				tt.unambiguous, tt.ambiguous, err)
+		}
+		var ade *AmbiguousDateError
+		if errors.As(err, &ade) && len(ade.Interpretations) < 2 {
+			t.Errorf("Parse(%q): %d interpretations, want both", tt.ambiguous, len(ade.Interpretations))
+		}
+	}
+
+	// Strict mode must not turn into a blanket refusal.
+	p := NewParser(WithStrictMode(true))
+	for _, s := range []string{"2024-03-15", "25/12/2024", "March 2015", "MAY70", "March 15, 2024"} {
+		if _, err := p.Parse(s); err != nil {
+			t.Errorf("Parse(%q) refused in strict mode: %v", s, err)
+		}
+	}
+}
+
+// TestParserReportsAmbiguityLikeParse covers the non-strict half: a cache hit
+// used to leave ParseResult.Ambiguous at its zero value, so the same input
+// reported true through Parse and false through Parser.
+func TestParserReportsAmbiguityLikeParse(t *testing.T) {
+	p := NewParser()
+	if _, err := p.Parse("01/02/2024"); err != nil { // seed the cache
+		t.Fatal(err)
+	}
+	for _, s := range []string{"03/04/2024", "05/06/2024", "01/02/2024"} {
+		cached, err := p.Parse(s)
+		if err != nil {
+			t.Fatalf("Parser.Parse(%q): %v", s, err)
+		}
+		fresh, err := Parse(s)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", s, err)
+		}
+		if cached.Ambiguous != fresh.Ambiguous {
+			t.Errorf("%q: Parser reports Ambiguous=%v, Parse reports %v",
+				s, cached.Ambiguous, fresh.Ambiguous)
+		}
+	}
+}
+
+// TestBareMonthNumberReportsTheGuess covers the value-dependent classification
+// of a month and a bare number. Over 31 it must be a year, one digit cannot be
+// a year, and anything else is a choice the caller has to be told about:
+// "MAY70" is May 1970 and "MAY10" is the tenth of May, and until this was
+// flagged nothing said the second was a guess.
+func TestBareMonthNumberReportsTheGuess(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"March 5", false},        // one digit, no year is written with one
+		{"March 05", true},        // two digits at or under 31
+		{"March 15", true},        //
+		{"March 31", true},        //
+		{"MAY10", true},           // no separator, same question
+		{"15 March", true},        // and the same before the month
+		{"5 March", false},        //
+		{"March 32", false},       // over 31, so not a day
+		{"MAY70", false},          //
+		{"March 2015", false},     // four digits
+		{"March 15, 2024", false}, // a year is written out
+		{"2024-03-15", false},     // no question arises
+	}
+	for _, tt := range tests {
+		got, err := Parse(tt.input)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tt.input, err)
+		}
+		if got.Ambiguous != tt.want {
+			t.Errorf("Parse(%q).Ambiguous = %v, want %v", tt.input, got.Ambiguous, tt.want)
+		}
+		_, err = ParseWith(tt.input, WithStrictMode(true))
+		if (err != nil) != tt.want {
+			t.Errorf("ParseWith(%q, WithStrictMode(true)) err = %v, want error: %v", tt.input, err, tt.want)
+		}
+	}
+}

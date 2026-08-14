@@ -24,13 +24,27 @@ func NewParser(opts ...Option) *Parser {
 // detection on format change.
 func (p *Parser) Parse(s string) (ParseResult, error) {
 	// Fast path: try the cached layout first.
-	if p.layout != nil {
+	//
+	// Strict mode declines it whenever the format can need a guess, which is
+	// not the same as whether the parse that produced it did. Ambiguity is a
+	// property of the input, so a cached layout cannot answer it for the next
+	// value, and the only way to know is to detect again. A caller who asked
+	// to be told about guesses is paying for that on purpose.
+	//
+	// The cache used to take strict mode away after one success: a Parser
+	// seeded with "25/12/2024", unambiguous because 25 cannot be a month, then
+	// read "01/02/2024" through the cached layout and returned a time where
+	// ParseWith returns an *AmbiguousDateError.
+	if p.layout != nil && !(p.cfg.strictMode && p.layout.ambiguityProne) {
 		t, err := p.layout.Parse(s)
 		if err == nil {
 			return ParseResult{
 				Time:   t,
 				Layout: p.layout,
-				Kind:   KindAbsolute,
+				// Carried from the layout, not left at false. Detection said
+				// this format was a guess; reusing it does not make it certain.
+				Ambiguous: p.layout.ambiguous,
+				Kind:      KindAbsolute,
 			}, nil
 		}
 	}

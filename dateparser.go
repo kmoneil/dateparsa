@@ -115,6 +115,9 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 		program:  program,
 		goLayout: result.Def.GoLayout,
 		label:    result.Def.Name,
+
+		ambiguous:      result.Ambig,
+		ambiguityProne: result.AmbigProne,
 	}
 
 	return ParseResult{
@@ -160,6 +163,9 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		program:  program,
 		goLayout: result.Def.GoLayout,
 		label:    result.Def.Name,
+
+		ambiguous:      result.Ambig,
+		ambiguityProne: result.AmbigProne,
 	}, nil
 }
 

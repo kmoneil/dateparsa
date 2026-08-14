@@ -17,8 +17,21 @@ func init() {
 
 // Result holds the outcome of format detection.
 type Result struct {
-	Def   *compile.FormatDef
+	Def *compile.FormatDef
+
+	// Ambig reports that THIS input needed a guess: "01/02/2024" could be
+	// either reading and the configured preference picked one.
 	Ambig bool
+
+	// AmbigProne reports that the FORMAT can need a guess, whether or not this
+	// input did. "25/12/2024" is unambiguous because 25 is not a month, but it
+	// is the same DD/DD/DDDD shape as "01/02/2024" and resolves by value.
+	//
+	// The distinction exists because Parser caches a layout and reuses it
+	// without re-detecting. Ambiguity belongs to the input, so a layout cannot
+	// answer it for the next value; what a layout can carry is whether the
+	// question arises at all. Strict mode uses this to decline the cache.
+	AmbigProne bool
 }
 
 // Config passes user preferences into the detection layer.
@@ -442,7 +455,7 @@ func resolveAmbiguous(s string, _ *formatEntry, cfg Config) (Result, bool) {
 		}
 	}
 	def := &compile.FormatDef{Name: name, Fields: fields}
-	return Result{Def: def, Ambig: ambig}, true
+	return Result{Def: def, Ambig: ambig, AmbigProne: true}, true
 }
 
 // resolveYearMonthDay determines which parts are year, month, and day,
@@ -713,7 +726,46 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// Build field list from actual byte positions.
 	fields := buildTextualFields(s, monthNum, monthStart, monthEnd)
 	def := &compile.FormatDef{Name: name, Fields: fields}
-	return Result{Def: def}, true
+	prone, guess := textualDayIsAGuess(fields)
+	return Result{Def: def, Ambig: guess, AmbigProne: prone}, true
+}
+
+// textualDayIsAGuess reports whether the number this format read as a day could
+// equally have been read as a two-digit year.
+//
+// A bare month and number is classified by value: over 31 it is a year, at or
+// under 31 it is a day. So "MAY70" is May 1970 and "MAY10" is the tenth of May,
+// and nothing said the second was a choice. A caller who cached the layout from
+// the first row of a column then got 2010-05-01 out of "MAY10" while Parse gave
+// 2026-05-10, with Ambiguous false on both.
+//
+// The width of the number is what separates a guess from a certainty:
+//
+//	"March 5"      one digit, and no year is written with one    day
+//	"March 15"     could be the fifteenth, could be 2015         GUESS
+//	"March 32"     over 31, so not a day                         year
+//	"March 2015"   four digits                                   year
+//
+// Two digits is the whole of the ambiguous set, because NormalizeTwoDigitYear
+// maps every two-digit value to some year, so "could be a year" excludes
+// nothing that "could be a day" admits.
+// It returns prone, meaning the day-or-year question arises for this shape at
+// all, and guess, meaning this input actually needed it answered.
+func textualDayIsAGuess(fields []compile.Field) (prone, guess bool) {
+	for i := range fields {
+		switch fields[i].Kind {
+		case compile.FYear2, compile.FYear4:
+			return false, false // a year is written out, so the other number is not one
+		case compile.FDay1or2:
+			prone = true
+		case compile.FDay2:
+			prone = true
+			if fields[i].Len == 2 {
+				guess = true
+			}
+		}
+	}
+	return prone, guess
 }
 
 // classifyTextualPattern determines the format name based on how numbers

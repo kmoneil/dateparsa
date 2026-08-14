@@ -130,6 +130,16 @@ func FuzzLayoutReuse(f *testing.F) {
 			return // refusing is always allowed
 		}
 
+		// A reported guess is allowed to differ. Where detection says it had to
+		// choose which field was which, a cached layout that made the other
+		// choice is not wrong, it is the other reading, and the caller was told
+		// on both calls. This exclusion is keyed on the flag precisely so that
+		// a format which guesses without reporting it still fails here: that is
+		// how "MAY70" against "MAY10" was found.
+		if cached.Ambiguous || fresh.Ambiguous {
+			return
+		}
+
 		if !got.Equal(fresh.Time) {
 			t.Errorf("layout %s detected from %q accepted %q and disagreed with detection:\n"+
 				"  reused %-18s = %v\n"+

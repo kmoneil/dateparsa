@@ -13,6 +13,22 @@ type Layout struct {
 	program  compile.Program
 	goLayout string // Go time layout equivalent, if any
 	label    string // Human-readable label, e.g. "ISO8601_DATE"
+
+	// ambiguous records that detection had to guess which field was which,
+	// as for DD/MM against MM/DD. It travels with the layout because Parser
+	// reuses the layout without re-detecting, and a guess that was reported
+	// once has to stay reported every time the guess is reused.
+	//
+	// Set at construction and never afterwards: Layout is documented as
+	// immutable and safe for concurrent use, and this field is part of that.
+	ambiguous bool
+
+	// ambiguityProne records that the format can need a guess for some input,
+	// whether or not the input it was detected from did. Ambiguity belongs to
+	// the input, so a cached layout cannot answer it for the next value:
+	// "25/12/2024" resolves without a guess and yields a layout that meets
+	// "01/02/2024" two rows later. Strict mode declines the cache on this.
+	ambiguityProne bool
 }
 
 // Sentinel layouts for non-structured parse results.

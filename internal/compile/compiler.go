@@ -33,6 +33,7 @@ const (
 	FOrdinalDay  // Ordinal day of year (1-366)
 	FTZZOrOffset // 'Z' → UTC, or ±HH:MM/±HHMM offset (conditional)
 	FTail        // Everything from Offset to the end of the input is ignored
+	FDaySpacePad // Two bytes: a space and a digit, or two digits
 
 	numFieldKinds // sentinel — must be last
 )
@@ -73,6 +74,7 @@ var fieldKindToOp = [numFieldKinds]OpCode{
 	FOrdinalDay:  OpOrdinalDay,
 	FTZZOrOffset: OpTZZOrOffset,
 	FTail:        OpTail,
+	FDaySpacePad: OpDaySpacePad,
 }
 
 // Field describes one component in a format definition.
@@ -164,7 +166,8 @@ func FixedWidth(k FieldKind) (int, bool) {
 	switch k {
 	case FYear4:
 		return 4, true
-	case FYear2, FMonth2, FDay2, FHour24, FHour12, FMinute2, FSecond2, FAMPM, FISOWeek:
+	case FYear2, FMonth2, FDay2, FHour24, FHour12, FMinute2, FSecond2, FAMPM, FISOWeek,
+		FDaySpacePad:
 		return 2, true
 	case FTZZ, FISOWeekDay:
 		return 1, true

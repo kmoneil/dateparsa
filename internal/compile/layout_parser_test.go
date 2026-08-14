@@ -144,7 +144,7 @@ func TestParseGoLayout(t *testing.T) {
 			name:   "space-padded day",
 			layout: "2006-01-_2",
 			wantFields: []FieldKind{
-				FYear4, FLiteral, FMonth2, FLiteral, FDay1or2,
+				FYear4, FLiteral, FMonth2, FLiteral, FDaySpacePad,
 			},
 		},
 		{
@@ -395,6 +395,7 @@ func fieldKindName(k FieldKind) string {
 		FLiteral:     "FLiteral",
 		FSkip:        "FSkip",
 		FTZZOrOffset: "FTZZOrOffset",
+		FDaySpacePad: "FDaySpacePad",
 	}
 	if n, ok := names[k]; ok {
 		return n

@@ -56,7 +56,7 @@ var goTokens = []goToken{
 	{"03", FHour12, 2, 0},
 	{"02", FDay2, 2, 0},
 	{"01", FMonth2, 2, 0},
-	{"_2", FDay1or2, 2, 0}, // space-padded day — consumes 2 layout bytes, 1-2 input bytes
+	{"_2", FDaySpacePad, 2, 0}, // space-padded day: two layout bytes, two input bytes
 
 	// Single-character tokens
 	{"3", FHour1or2, 0, 0},  // variable width
@@ -115,17 +115,27 @@ func ParseGoLayout(layout string) (*FormatDef, error) {
 				break
 			}
 
-			// Conditional timezone (Z07:00 / Z0700): single field
+			// Conditional timezone (Z07:00 / Z0700): single field.
+			//
+			// offset advances by the offset form's width, which is the wider
+			// of the two the field can take. When the input carries a 'Z'
+			// instead, the executor's delta shifts everything after it left by
+			// the difference, the same machinery the 1-or-2 ops use.
+			//
+			// This did not advance offset at all, on the reasoning that "for
+			// fields after this, we won't have more tokens (TZ is always
+			// last)". That holds for the layouts this library ships. It does
+			// not hold for a layout a caller writes, which is the entire point
+			// of a public Compile: every field after the zone was assigned the
+			// zone's own offset, so "15:04:05Z07:00 2006" read its year out of
+			// the middle of the zone.
 			if tok.kind == FTZZOrOffset {
 				fields = append(fields, Field{
 					Kind:   FTZZOrOffset,
 					Offset: offset,
 					Len:    tok.inputLen, // length of the offset form (+HH:MM or +HHMM)
 				})
-				// Input width is variable: 1 byte for 'Z', or inputLen bytes for offset.
-				// We don't advance offset by a fixed amount since the executor
-				// handles the variable width. But for fields after this, we won't
-				// have more tokens (TZ is always last), so it doesn't matter.
+				offset += tok.inputLen
 				pos += len(tok.token)
 				hasDateTimeField = true
 				break

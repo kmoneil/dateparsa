@@ -271,6 +271,56 @@ func FuzzCompile_Equivalence(f *testing.F) {
 	})
 }
 
+// FuzzCompile_SpacePaddedDay_Equivalence covers the "_2" token, which mapped to
+// the 1-or-2 digit day op and so implemented only the two-digit half of what it
+// advertises: parse1or2Bounded computes s[off]-'0' on the leading space, reads
+// 251, and refuses.
+func FuzzCompile_SpacePaddedDay_Equivalence(f *testing.F) {
+	const ref = "2006-01-_2"
+	seeds := []string{
+		"2024-03- 5", // the space-padded form, the whole point of the token
+		"2024-03-15", "2024-03-05", "2024-03-01",
+		"2024-03-  ", // a space where the digit goes
+		"2024-03- 0", // day zero
+		"2024-03-x5", // not a space and not a digit
+		"2024-03-5",  // narrower than the layout declares, which this refuses
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	layout := MustCompile(ref)
+	f.Fuzz(func(t *testing.T, input string) {
+		assertCompileMatchesStdlib(t, ref, layout, input)
+	})
+}
+
+// FuzzCompile_ZoneThenField_Equivalence covers a field after the conditional
+// zone. ParseGoLayout never advanced past Z07:00, on the reasoning that the
+// zone is always last, so every field after it was assigned the zone's own
+// offset and read out of the middle of it. True of the layouts this library
+// ships, and not true of a layout a caller writes.
+func FuzzCompile_ZoneThenField_Equivalence(f *testing.F) {
+	const ref = "15:04:05Z07:00 2006"
+	seeds := []string{
+		"10:30:00Z 2024",      // the Z form, one byte where the offset takes six
+		"10:30:00+05:00 2024", // the offset form
+		"10:30:00-08:00 1999",
+		"10:30:00Z 0000",
+		"10:30:00Z2024",  // the literal space missing
+		"10:30:00 2024",  // the zone missing
+		"10:30:00Z 2024", // a year the offset form's width would have covered
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	layout := MustCompile(ref)
+	f.Fuzz(func(t *testing.T, input string) {
+		assertCompileMatchesStdlib(t, ref, layout, input)
+	})
+}
+
 func FuzzCompile_RFC3339_Equivalence(f *testing.F) {
 	const ref = "2006-01-02T15:04:05Z07:00"
 	seeds := []string{

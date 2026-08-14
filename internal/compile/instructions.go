@@ -28,6 +28,7 @@ const (
 	OpOrdinalDay                // Extract ordinal day of year (001-366) at offset
 	OpTZZOrOffset               // 'Z' → UTC, or parse ±offset of Len bytes
 	OpTail                      // Consume the rest of the input without reading it
+	OpDaySpacePad               // Extract a space-padded day: " 5" or "15"
 )
 
 // Inst is a single parse instruction.

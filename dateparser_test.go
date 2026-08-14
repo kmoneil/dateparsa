@@ -807,6 +807,78 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 	}
 }
 
+// TestCompileHonoursTheTokensItAccepts covers W5 and W6, which are one defect
+// wearing two shapes: ParseGoLayout accepted a token the rest of the pipeline
+// could not honour, and said nothing.
+//
+// "_2" mapped to the 1-or-2 digit day op, which computes s[off]-'0' on the
+// leading space, reads 251, and refuses. Only the two-digit half of what the
+// token advertises was implemented, so the token could not parse the one thing
+// it exists for.
+//
+// Z07:00 never advanced the layout parser's offset, so every field after it was
+// assigned the zone's own offset. The comment said the zone is always last,
+// which is true of the formats this library ships and not of a layout a caller
+// writes.
+func TestCompileHonoursTheTokensItAccepts(t *testing.T) {
+	for _, tt := range []struct{ layout, input string }{
+		// W5. The first is the case the token exists for.
+		{"2006-01-_2", "2024-03- 5"},
+		{"2006-01-_2", "2024-03-15"},
+		{"2006-01-_2", "2024-03-05"},
+		{"2006-01-_2 15:04", "2024-03- 5 10:30"},
+
+		// W6, both zone forms and both widths.
+		{"15:04:05Z07:00 2006", "10:30:00Z 2024"},
+		{"15:04:05Z07:00 2006", "10:30:00+05:00 2024"},
+		{"15:04:05Z07:00 2006", "10:30:00-08:00 1999"},
+		{"15:04:05Z0700 2006", "10:30:00Z 2024"},
+		{"15:04:05Z0700 2006", "10:30:00+0530 2024"},
+		{"2006-01-02T15:04:05Z07:00 01", "2024-03-15T10:30:00Z 12"},
+
+		// The shapes that already worked, so the fixes are additions.
+		{"2006-01-02T15:04:05Z07:00", "2024-03-15T10:30:00Z"},
+		{"2006-01-02T15:04:05Z07:00", "2024-03-15T10:30:00+05:00"},
+		{"15:04:05Z07:00", "10:30:00Z"},
+	} {
+		want, err := time.Parse(tt.layout, tt.input)
+		if err != nil {
+			t.Fatalf("the reference itself refused %q with %q: %v", tt.input, tt.layout, err)
+		}
+		l, err := Compile(tt.layout)
+		if err != nil {
+			t.Errorf("Compile(%q): %v", tt.layout, err)
+			continue
+		}
+		got, err := l.Parse(tt.input)
+		if err != nil {
+			t.Errorf("Compile(%q).Parse(%q): %v", tt.layout, tt.input, err)
+			continue
+		}
+		if !got.Equal(want) {
+			t.Errorf("Compile(%q).Parse(%q) = %v, time.Parse = %v",
+				tt.layout, tt.input, got, want)
+		}
+	}
+
+	// The strictness in compile.go's doc comment still holds either side of
+	// this: an element narrower than the layout declares is refused, where
+	// time.Parse takes it.
+	for _, tt := range []struct{ layout, input string }{
+		{"2006-01-_2", "2024-03-5"},  // one byte where the token declares two
+		{"2006-01-_2", "2024-03-  "}, // a space where the digit goes
+		{"2006-01-_2", "2024-03- 0"}, // day zero
+	} {
+		l, err := Compile(tt.layout)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", tt.layout, err)
+		}
+		if got, err := l.Parse(tt.input); err == nil {
+			t.Errorf("Compile(%q).Parse(%q) = %v, want an error", tt.layout, tt.input, got)
+		}
+	}
+}
+
 // TestNaturalLanguageReadsTheWholeInput covers C14. Every eval* pattern matched
 // a prefix of the token stream and returned without looking at the rest, so an
 // input naming an absolute date came back as a time derived from the clock:

@@ -189,6 +189,38 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = consumed1or2(s, off, slen)
 			delta += w - int(inst.Len)
 
+		case OpDaySpacePad:
+			// Go's "_2" token: exactly two bytes, either a space and a digit
+			// or two digits. It mapped to OpDay1or2, which computes s[off]-'0'
+			// on the leading space, reads 251, and refuses. Only the two-digit
+			// half of what the token advertises was ever implemented.
+			//
+			// This is its own op rather than a widening of parse1or2Bounded,
+			// which is on the hot path for NUMERIC_MDY, NUMERIC_DMY and
+			// CJK_DATE, and none of those can carry a leading space.
+			if off+2 > slen {
+				return time.Time{}, fieldError("day", off, slen)
+			}
+			var v int
+			if s[off] == ' ' {
+				d := s[off+1] - '0'
+				if d > 9 {
+					return time.Time{}, fieldError("day", off, slen)
+				}
+				v = int(d)
+			} else {
+				pv, ok := parse2Digits(s, off)
+				if !ok {
+					return time.Time{}, fieldError("day", off, slen)
+				}
+				v = pv
+			}
+			if v < 1 || v > 31 {
+				return time.Time{}, fieldError("day", off, slen)
+			}
+			day = v
+			w = 2
+
 		// ── Time fields ───────────────────────────────────────────��──
 
 		case OpHour24:
@@ -302,6 +334,13 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			if s[off] == 'Z' {
 				loc = time.UTC
 				w = 1
+				// This was the one variable-width op that did not report its
+				// width back, so a field after it read from wherever the
+				// offset form would have ended. The Op*1or2 arms have always
+				// done this. Only the 'Z' branch is narrower than declared;
+				// the offset branch consumes exactly inst.Len and adds zero,
+				// so it does not pay for the arithmetic.
+				delta += 1 - int(inst.Len)
 			} else {
 				length := int(inst.Len)
 				if off+length > slen {

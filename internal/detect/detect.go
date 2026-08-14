@@ -1256,49 +1256,189 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 }
 
 // monthEntry pairs a lowercase month name with its month number.
+//
+// wordOnly is whether every byte of name is a word character, computed once in
+// init rather than per lookup. These 24 spellings are tried on every call to
+// findMonthNameCI, before any locale, so asking the question there cost 12% on
+// BenchmarkParse_Miss_Short: a three-byte cell is dismissed by the length guard
+// almost immediately, and a per-spelling scan is then most of what is left.
+//
+// It is not a formality. 140 of the registered locale month names carry a byte
+// that is not a word character, and they are not all trailing dots: the CJK
+// locales spell months with digits.
 type monthEntry struct {
-	name string
-	num  int
+	name     string
+	num      int
+	wordOnly bool
+}
+
+func init() {
+	for i := range defaultMonthNames {
+		defaultMonthNames[i].wordOnly = allWordChars(defaultMonthNames[i].name)
+	}
 }
 
 // defaultMonthNames is sorted longest-first for greedy matching.
 // Using a slice instead of a map gives deterministic iteration order
 // and eliminates hash-table traversal overhead on the hot path.
 var defaultMonthNames = []monthEntry{
-	{"september", 9},
-	{"february", 2},
-	{"november", 11},
-	{"december", 12},
-	{"january", 1},
-	{"october", 10},
-	{"august", 8},
-	{"march", 3},
-	{"april", 4},
-	{"june", 6},
-	{"july", 7},
-	{"sept", 9},
-	{"jan", 1},
-	{"feb", 2},
-	{"mar", 3},
-	{"apr", 4},
-	{"may", 5},
-	{"jun", 6},
-	{"jul", 7},
-	{"aug", 8},
-	{"sep", 9},
-	{"oct", 10},
-	{"nov", 11},
-	{"dec", 12},
+	{name: "september", num: 9},
+	{name: "february", num: 2},
+	{name: "november", num: 11},
+	{name: "december", num: 12},
+	{name: "january", num: 1},
+	{name: "october", num: 10},
+	{name: "august", num: 8},
+	{name: "march", num: 3},
+	{name: "april", num: 4},
+	{name: "june", num: 6},
+	{name: "july", num: 7},
+	{name: "sept", num: 9},
+	{name: "jan", num: 1},
+	{name: "feb", num: 2},
+	{name: "mar", num: 3},
+	{name: "apr", num: 4},
+	{name: "may", num: 5},
+	{name: "jun", num: 6},
+	{name: "jul", num: 7},
+	{name: "aug", num: 8},
+	{name: "sep", num: 9},
+	{name: "oct", num: 10},
+	{name: "nov", num: 11},
+	{name: "dec", num: 12},
+}
+
+// wordSpan is one maximal run of word characters in the input.
+type wordSpan struct{ start, end int32 }
+
+// monthWordCap bounds the word list a matcher keeps on the stack. A date has
+// well under a dozen words; the cap is what stops a long input turning a stack
+// array into a reason to allocate.
+const monthWordCap = 48
+
+// wordMatcher finds a whole-word occurrence of a name in s.
+//
+// A month spelling can only ever match a maximal run of word characters. Every
+// byte of a spelling is a word character, and matchWordCI requires a non-word
+// character on each side, so a match is exactly one whole word of the same byte
+// length. Listing the words once and then asking each spelling only about words
+// of its own length is therefore the same question as scanning the whole input
+// once per spelling, and it is why this type exists: findMonthNameCI tries 24
+// English spellings before it reaches any locale, and each one walked every
+// position in the input. That was 47% of a failed parse.
+//
+// words is nil for an input holding more words than the cap, and find falls back
+// to scanning. Correct either way, and it keeps the cost linear in the input
+// length rather than putting a slice on the heap for a path that is about to
+// fail anyway.
+type wordMatcher struct {
+	s     string
+	words []wordSpan
+}
+
+func newWordMatcher(s string, buf []wordSpan) wordMatcher {
+	n := 0
+	for i := 0; i < len(s); {
+		if !isWordChar(s[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(s) && isWordChar(s[i]) {
+			i++
+		}
+		if n == len(buf) {
+			return wordMatcher{s: s}
+		}
+		buf[n] = wordSpan{int32(start), int32(i)}
+		n++
+	}
+	return wordMatcher{s: s, words: buf[:n]}
+}
+
+// allWordChars reports whether every byte of word is a word character, which is
+// the condition that makes a whole-word match and a maximal word run the same
+// thing.
+//
+// Not every spelling qualifies. A locale abbreviation can carry a trailing dot,
+// and "sept." matches "sept. 1, 2020" at offset 0 where the maximal run is
+// "sept" and stops at the dot, so the word list would miss it. Those spellings
+// scan. TestWordMatcherAgreesWithScanning is what found this, on the one input
+// in the corpus that has a dotted abbreviation in it.
+func allWordChars(word string) bool {
+	for i := 0; i < len(word); i++ {
+		if !isWordChar(word[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// find returns the first whole-word occurrence of word in input order, which is
+// the answer matchWordCI gives.
+func (m wordMatcher) find(word string) (int, int, bool) {
+	// The guards are repeated here rather than left to findKnown, because an
+	// argument is evaluated before the call: writing this as
+	// findKnown(word, allWordChars(word)) scans every spelling before the
+	// length check inside findKnown can dismiss it. That cost 56% on a locale
+	// miss, where "hier" is measured against names like "septembre".
+	if m.words == nil {
+		return matchWordCI(m.s, word)
+	}
+	if len(word) == 0 || len(word) > len(m.s) {
+		return 0, 0, false
+	}
+	return m.findKnown(word, allWordChars(word))
+}
+
+// findKnown is find for a caller that already knows whether the word is made
+// only of word characters. The English table computes that once in init.
+func (m wordMatcher) findKnown(word string, wordOnly bool) (int, int, bool) {
+	if m.words == nil {
+		return matchWordCI(m.s, word)
+	}
+	// The length guard comes first because it is what makes a short input
+	// cheap, and it is the one matchWordCI opens with for the same reason. A
+	// spelling wider than the whole input cannot occur in it, and against "N/A"
+	// that dismisses 12 of the 24 English spellings before anything looks at a
+	// byte. Testing allWordChars ahead of this instead cost 25% on
+	// BenchmarkParse_Miss_Short, which is the shape an empty-ish CSV cell takes.
+	wlen := len(word)
+	if wlen == 0 || wlen > len(m.s) {
+		return 0, 0, false
+	}
+	if !wordOnly {
+		return matchWordCI(m.s, word)
+	}
+	for _, w := range m.words {
+		if int(w.end-w.start) != wlen {
+			continue
+		}
+		if equalsFoldASCII(m.s[w.start:w.end], word) {
+			return int(w.start), int(w.end), true
+		}
+	}
+	return 0, 0, false
 }
 
 // findMonthNameCI finds the first month name in the string using
 // case-insensitive matching directly on the input (no lowered copy).
 // Returns (month number 1-12, start index, end index) or (0, 0, 0) if not found.
+//
+// The spelling order is load bearing and it is not the input order. Names are
+// tried longest first and each is looked for anywhere in the string, so a longer
+// name later beats a shorter name earlier: "mar 1 september 2024" is the first
+// of September, because "september" is tried before "mar". Restructuring this
+// into one pass over the input reverses that and answers March. The word list
+// changes how each spelling is looked for, never the order they are tried in.
 func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
+	var buf [monthWordCap]wordSpan
+	m := newWordMatcher(s, buf[:])
+
 	// Search English names (case-insensitive), longest first.
 	for i := range defaultMonthNames {
 		entry := &defaultMonthNames[i]
-		if idx, end, ok := matchWordCI(s, entry.name); ok {
+		if idx, end, ok := m.findKnown(entry.name, entry.wordOnly); ok {
 			return entry.num, idx, end
 		}
 	}
@@ -1306,18 +1446,18 @@ func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
 	for _, loc := range locales {
 		for i := 0; i < 12; i++ {
 			if name := loc.MonthsWide[i]; name != "" {
-				if idx, end, ok := matchWordCI(s, name); ok {
+				if idx, end, ok := m.find(name); ok {
 					return i + 1, idx, end
 				}
 			}
 			if name := loc.MonthsAbbr[i]; name != "" {
-				if idx, end, ok := matchWordCI(s, name); ok {
+				if idx, end, ok := m.find(name); ok {
 					return i + 1, idx, end
 				}
 				// Try without trailing dot.
 				clean := strings.TrimRight(name, ".")
 				if clean != name {
-					if idx, end, ok := matchWordCI(s, clean); ok {
+					if idx, end, ok := m.find(clean); ok {
 						return i + 1, idx, end
 					}
 				}

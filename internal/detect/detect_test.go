@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/kmoneil/dateparsa/internal/compile"
+	"github.com/kmoneil/dateparsa/internal/locale"
+	_ "github.com/kmoneil/dateparsa/internal/locale/data"
 )
 
 func TestScan_BasicSignatures(t *testing.T) {
@@ -470,5 +472,71 @@ func TestEveryInputByteIsDescribedExactlyOnce(t *testing.T) {
 			t.Errorf("Detect(%q) [%s]: %d fields, over MaxInstructions %d",
 				in, r.Def.Name, n, compile.MaxInstructions)
 		}
+	}
+}
+
+// TestWordMatcherAgreesWithScanning is the safety argument for prefiltering the
+// month-name search by word span instead of scanning the input once per
+// spelling. The two have to give the same answer for every spelling this
+// package will ever ask about, over inputs that exercise the boundaries the old
+// scan cared about: punctuation, digits, accents, repeats, and a word that
+// contains a month name without being one.
+//
+// It also covers the fallback. An input with more words than monthWordCap
+// leaves wordMatcher.words nil and find delegates to matchWordCI, so the
+// property has to hold on both sides of that cap.
+func TestWordMatcherAgreesWithScanning(t *testing.T) {
+	var names []string
+	for _, e := range defaultMonthNames {
+		names = append(names, e.name)
+	}
+	for _, tag := range locale.Tags() {
+		d := locale.Lookup(tag)
+		if d == nil {
+			continue
+		}
+		for i := range 12 {
+			for _, n := range [2]string{d.MonthsWide[i], d.MonthsAbbr[i]} {
+				if n == "" {
+					continue
+				}
+				names = append(names, n, strings.TrimRight(n, "."))
+			}
+		}
+	}
+
+	inputs := []string{
+		"", "x", "march", "March", "MARCH", "march.", ".march", "1march2",
+		"March 15, 2024", "15 mars 2024", "15 März 2024", "15 марта 2024",
+		"mar 1 september 2024", "sept. 1, 2020", "sep 15", "sept 15",
+		"marching band", "amarch", "marcha", "may may may",
+		"MAY70", "MAY10", "december 25th at 5pm", "Fri, 15 Mar 2024 10:30:00 +0000",
+		strings.Repeat("word ", monthWordCap-1) + "march",
+		strings.Repeat("word ", monthWordCap) + "march",
+		strings.Repeat("word ", monthWordCap+40) + "march",
+		strings.Repeat(" ", 200) + "March 15, 2024",
+		"\xff\xfe march \xff", "1é2é3",
+	}
+
+	sawFast, sawSlow := false, false
+	for _, in := range inputs {
+		var buf [monthWordCap]wordSpan
+		m := newWordMatcher(in, buf[:])
+		if m.words == nil {
+			sawSlow = true
+		} else {
+			sawFast = true
+		}
+		for _, name := range names {
+			gs, ge, gok := m.find(name)
+			ws, we, wok := matchWordCI(in, name)
+			if gs != ws || ge != we || gok != wok {
+				t.Errorf("find(%q) in %q = (%d,%d,%v), matchWordCI = (%d,%d,%v)",
+					name, in, gs, ge, gok, ws, we, wok)
+			}
+		}
+	}
+	if !sawFast || !sawSlow {
+		t.Errorf("corpus did not exercise both paths: fast=%v slow=%v", sawFast, sawSlow)
 	}
 }

@@ -607,3 +607,97 @@ func TestBareMonthNumberReportsTheGuess(t *testing.T) {
 		}
 	}
 }
+
+// TestReusedLayoutRefusesAnotherMonth covers the instruction that used to
+// decide a field without reading the input. OpMonthName took the month from the
+// instruction, resolved when the format was detected, so a reused layout
+// answered with the month it was built from:
+//
+//	Parse("March 15, 2024").Layout.Parse("April 20, 2024") = 2024-03-20, nil
+//
+// Whether that was caught depended on the width of the name. "December" shifted
+// the fields after it and failed the day parse, so it fell back to detection and
+// came out right; "April", as wide as "March", did not.
+func TestReusedLayoutRefusesAnotherMonth(t *testing.T) {
+	march, err := Parse("March 15, 2024")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{"April 20, 2024", "December 01, 2024", "August 09, 2024"} {
+		if got, err := march.Layout.Parse(in); err == nil {
+			t.Errorf("March layout accepted %q and returned %v", in, got)
+		}
+	}
+	// It must still accept its own month, in any casing.
+	for _, in := range []string{"March 15, 2024", "MARCH 15, 2024", "march 15, 2024"} {
+		if _, err := march.Layout.Parse(in); err != nil {
+			t.Errorf("March layout refused %q: %v", in, err)
+		}
+	}
+
+	// A column of mixed months re-detects per row and agrees with detection.
+	p := NewParser()
+	col := []string{"March 15, 2024", "April 20, 2024", "May 03, 2024", "December 01, 2024", "June 10, 2024"}
+	times, errs := p.ParseColumn(col)
+	for i, in := range col {
+		if errs[i] != nil {
+			t.Fatalf("row %d %q: %v", i, in, errs[i])
+		}
+		fresh, err := Parse(in)
+		if err != nil {
+			t.Fatalf("row %d %q: %v", i, in, err)
+		}
+		if !times[i].Equal(fresh.Time) {
+			t.Errorf("row %d %q: Parser gave %v, detection gives %v", i, in, times[i], fresh.Time)
+		}
+	}
+}
+
+// TestMonthNameVerificationKeepsLocales guards the other direction: the check
+// has to accept every spelling detection matches, or a layout refuses the very
+// input it was detected from. English "sept" and a locale abbreviation with its
+// trailing dot dropped are both such spellings.
+func TestMonthNameVerificationKeepsLocales(t *testing.T) {
+	tests := []struct {
+		input string
+		opts  []Option
+	}{
+		{"sept. 1, 2020", nil},
+		{"15 mars 2024", []Option{WithLocales(FR)}},
+		{"15 janv 2024", []Option{WithLocales(FR)}},
+		{"15 März 2024", []Option{WithLocales(DE)}},
+		{"15 marzo 2024", []Option{WithLocales(ES)}},
+	}
+	for _, tt := range tests {
+		r, err := ParseWith(tt.input, tt.opts...)
+		if err != nil {
+			t.Fatalf("ParseWith(%q): %v", tt.input, err)
+		}
+		again, err := r.Layout.Parse(tt.input)
+		if err != nil {
+			t.Errorf("layout from %q refuses the input it was detected from: %v", tt.input, err)
+			continue
+		}
+		if !again.Equal(r.Time) {
+			t.Errorf("%q: reuse gave %v, detection gave %v", tt.input, again, r.Time)
+		}
+	}
+}
+
+// TestUTCMarkerIsRead covers the second instruction that decided without
+// looking: OpTZZ set UTC on trust, so a reused layout read
+// "2024-03-15T10:30:00+", a truncated offset, as UTC.
+func TestUTCMarkerIsRead(t *testing.T) {
+	z, err := Parse("2024-03-15T10:30:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{"2024-03-15T10:30:00+", "2024-03-15T10:30:00Q", "2024-03-15T10:30:00z"} {
+		if got, err := z.Layout.Parse(in); err == nil {
+			t.Errorf("layout accepted %q as UTC and returned %v", in, got)
+		}
+	}
+	if _, err := z.Layout.Parse("2024-03-15T10:30:00Z"); err != nil {
+		t.Errorf("layout refused its own input: %v", err)
+	}
+}

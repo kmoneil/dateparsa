@@ -159,6 +159,12 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			delta += w - int(inst.Len)
 
 		case OpMonthName:
+			// The month is carried in Aux, resolved when the format was
+			// detected. Verify the input still names it, or a reused layout
+			// answers with the month it was built from. See monthNameMatches.
+			if !monthNameMatches(s, off, int(inst.Len), int(inst.Aux)) {
+				return time.Time{}, fieldError("month name", off, slen)
+			}
 			month = time.Month(inst.Aux)
 
 		case OpDay2:
@@ -250,6 +256,14 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		// ── Timezone fields ───────────────────────────────────────��──
 
 		case OpTZZ:
+			// Check the byte rather than assume it. Every producer of this
+			// instruction emits it only where it saw a 'Z', but a layout is
+			// reused against inputs no producer looked at, and setting UTC
+			// without looking accepted "2024-03-15T10:30:00+" as UTC when the
+			// value was a truncated offset.
+			if off >= slen || s[off] != 'Z' {
+				return time.Time{}, fieldError("timezone", off, slen)
+			}
 			loc = time.UTC
 			w = 1
 

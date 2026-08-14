@@ -110,6 +110,12 @@ func FuzzLayoutReuse(f *testing.F) {
 		// fields land on the wrong digits: year at 0..2 reads "01", day at 6
 		// reads "10", and 1000-01-01 comes back as 2001-01-10.
 		{"70/01/1 00", "01/01/1000"},
+
+		// OpMonthName took the month from the instruction and read no bytes, so
+		// a layout answered with the month it was detected from. Minimised to a
+		// pair of four-byte inputs, because a name of a different width shifts
+		// the fields after it and fails the day parse instead.
+		{"1MAY", "1MAr"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

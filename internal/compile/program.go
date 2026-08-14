@@ -46,13 +46,18 @@ type Program struct {
 
 // Execute runs the program against a string input and returns the parsed time.
 func (p *Program) Execute(s string) (time.Time, error) {
-	return p.executeInner(s, len(s))
+	return p.executeInner(s)
 }
 
 // ExecuteBytes runs the program against a byte slice input.
-// Note: currently converts to string internally. A future optimization
-// could use unsafe.String or refactor executeInner to operate on []byte
-// natively to avoid the copy.
+//
+// The conversion copies, and that is deliberate rather than pending.
+// unsafe.String is the obvious way to avoid it and is closed off: this library
+// imports no unsafe, which README promises and SECURITY.md lists among the
+// things it does not do. The only honest alternative is an executor that reads
+// []byte natively, which means a second copy of the opcode switch or a generic
+// one, and nobody has costed that. Until somebody does, the copy stays and this
+// comment says why instead of pointing at a door that is locked.
 func (p *Program) ExecuteBytes(b []byte) (time.Time, error) {
-	return p.executeInner(string(b), len(b))
+	return p.executeInner(string(b))
 }

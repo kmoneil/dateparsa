@@ -8,8 +8,14 @@ import (
 // parse2Bounded extracts a 2-digit field at s[off:off+2] and validates it is within [lo, hi].
 // Returns (value, true) on success, (0, false) on failure.
 // Kept minimal for inlining — callers handle error construction.
-func parse2Bounded(s string, off, slen, lo, hi int) (int, bool) {
-	if off+2 > slen {
+//
+// The length comes from s and is not passed in. It used to be a slen parameter,
+// which every caller filled with len(s) and the compiler could not know that:
+// an opaque int bounds nothing, so `off+2 > slen` returning false proved
+// nothing about s and the two index expressions below both kept their bounds
+// checks. Asking s directly is what lets the prove pass discharge them.
+func parse2Bounded(s string, off, lo, hi int) (int, bool) {
+	if off+2 > len(s) {
 		return 0, false
 	}
 	v, ok := parse2Digits(s, off)
@@ -21,8 +27,8 @@ func parse2Bounded(s string, off, slen, lo, hi int) (int, bool) {
 
 // parse1or2Bounded extracts a 1-or-2-digit field at s[off:] and validates it is within [lo, hi].
 // Returns (value, true) on success, (0, false) on failure.
-func parse1or2Bounded(s string, off, slen, lo, hi int) (int, bool) {
-	if off >= slen {
+func parse1or2Bounded(s string, off, lo, hi int) (int, bool) {
+	if off >= len(s) {
 		return 0, false
 	}
 	d0 := s[off] - '0'
@@ -30,7 +36,7 @@ func parse1or2Bounded(s string, off, slen, lo, hi int) (int, bool) {
 		return 0, false
 	}
 	v := int(d0)
-	if off+1 < slen {
+	if off+1 < len(s) {
 		if d1 := s[off+1] - '0'; d1 <= 9 {
 			v = v*10 + int(d1)
 		}
@@ -64,14 +70,21 @@ func NormalizeTwoDigitYear(y int) int {
 
 // consumed1or2 returns how many digits parse1or2Bounded actually consumed
 // at position off. Checks the second character to distinguish "04" (2) from "4-" (1).
-func consumed1or2(s string, off, slen int) int {
-	if off+1 < slen && s[off+1] >= '0' && s[off+1] <= '9' {
+func consumed1or2(s string, off int) int {
+	if off+1 < len(s) && s[off+1] >= '0' && s[off+1] <= '9' {
 		return 2
 	}
 	return 1
 }
 
-func (p *Program) executeInner(s string, slen int) (time.Time, error) {
+// executeInner takes the length from s rather than as an argument. It used to
+// take a slen, and both callers passed len(s), and the compiler had no way to
+// know that: an opaque int cannot bound an index, so every read in this function
+// and in the extractors it inlines kept a bounds check that the surrounding test
+// had already made redundant. The local below is the same value by construction,
+// which is the point.
+func (p *Program) executeInner(s string) (time.Time, error) {
+	slen := len(s)
 	var (
 		year = 0
 		// yearSet distinguishes "the format has no year field" from "the year
@@ -116,9 +129,31 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 	// TestEveryInputByteIsDescribedExactlyOnce checks.
 	end, covered := 0, 0
 
-	for i := 0; i < p.N; i++ {
-		inst := &p.Insts[i]
+	// Slice once rather than index p.Insts per iteration. N is a plain int field
+	// with no proven relation to the array's length, so the compiler kept a
+	// bounds check on every instruction of every parse, and reloaded N through
+	// the pointer with it.
+	//
+	// The clamp is what makes the slice expression safe. Compile refuses a def
+	// over the limit before it fills anything, so N is in range for every Program
+	// this package builds; but Program is a plain struct with exported fields,
+	// and a slice expression panics where an index expression would have read a
+	// zero Inst. Truncating instead leaves the program describing fewer bytes
+	// than the input, which the coverage check below turns into an error. "Parse
+	// never panics on any input" is an invariant, and this is cheaper than
+	// arguing that no caller can ever build such a Program.
+	n := p.N
+	if n > MaxInstructions {
+		n = MaxInstructions
+	}
+	insts := p.Insts[:n]
+
+	for i := range insts {
+		inst := &insts[i]
 		off := int(inst.Offset) + delta
+		if off < 0 {
+			return time.Time{}, fieldError("instruction offset", off, slen)
+		}
 		w := int(inst.Len)
 
 		switch inst.Op {
@@ -138,7 +173,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 4
 
 		case OpYear2:
-			v, ok := parse2Bounded(s, off, slen, 0, 99)
+			v, ok := parse2Bounded(s, off, 0, 99)
 			if !ok {
 				return time.Time{}, fieldError("year", off, slen)
 			}
@@ -147,7 +182,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 2
 
 		case OpMonth2:
-			v, ok := parse2Bounded(s, off, slen, 1, 12)
+			v, ok := parse2Bounded(s, off, 1, 12)
 			if !ok {
 				return time.Time{}, fieldError("month", off, slen)
 			}
@@ -155,12 +190,12 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 2
 
 		case OpMonth1or2:
-			v, ok := parse1or2Bounded(s, off, slen, 1, 12)
+			v, ok := parse1or2Bounded(s, off, 1, 12)
 			if !ok {
 				return time.Time{}, fieldError("month", off, slen)
 			}
 			month = time.Month(v)
-			w = consumed1or2(s, off, slen)
+			w = consumed1or2(s, off)
 			delta += w - int(inst.Len)
 
 		case OpMonthName:
@@ -173,7 +208,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			month = time.Month(inst.Aux)
 
 		case OpDay2:
-			v, ok := parse2Bounded(s, off, slen, 1, 31)
+			v, ok := parse2Bounded(s, off, 1, 31)
 			if !ok {
 				return time.Time{}, fieldError("day", off, slen)
 			}
@@ -181,12 +216,12 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 2
 
 		case OpDay1or2:
-			v, ok := parse1or2Bounded(s, off, slen, 1, 31)
+			v, ok := parse1or2Bounded(s, off, 1, 31)
 			if !ok {
 				return time.Time{}, fieldError("day", off, slen)
 			}
 			day = v
-			w = consumed1or2(s, off, slen)
+			w = consumed1or2(s, off)
 			delta += w - int(inst.Len)
 
 		case OpDaySpacePad:
@@ -224,7 +259,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		// ── Time fields ───────────────────────────────────────────��──
 
 		case OpHour24:
-			v, ok := parse2Bounded(s, off, slen, 0, 23)
+			v, ok := parse2Bounded(s, off, 0, 23)
 			if !ok {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
@@ -232,7 +267,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 2
 
 		case OpHour12:
-			v, ok := parse2Bounded(s, off, slen, 1, 12)
+			v, ok := parse2Bounded(s, off, 1, 12)
 			if !ok {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
@@ -240,16 +275,16 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 2
 
 		case OpHour1or2:
-			v, ok := parse1or2Bounded(s, off, slen, 0, 23)
+			v, ok := parse1or2Bounded(s, off, 0, 23)
 			if !ok {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
-			w = consumed1or2(s, off, slen)
+			w = consumed1or2(s, off)
 			delta += w - int(inst.Len)
 
 		case OpMinute2:
-			v, ok := parse2Bounded(s, off, slen, 0, 59)
+			v, ok := parse2Bounded(s, off, 0, 59)
 			if !ok {
 				return time.Time{}, fieldError("minute", off, slen)
 			}
@@ -257,7 +292,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 			w = 2
 
 		case OpSecond2:
-			v, ok := parse2Bounded(s, off, slen, 0, 60) // 60 for leap second
+			v, ok := parse2Bounded(s, off, 0, 60) // 60 for leap second
 			if !ok {
 				return time.Time{}, fieldError("second", off, slen)
 			}
@@ -356,7 +391,7 @@ func (p *Program) executeInner(s string, slen int) (time.Time, error) {
 		// ── ISO week/ordinal fields ──────────────────────────────────
 
 		case OpISOWeek:
-			v, ok := parse2Bounded(s, off, slen, 1, 53)
+			v, ok := parse2Bounded(s, off, 1, 53)
 			if !ok {
 				return time.Time{}, fieldError("iso week", off, slen)
 			}

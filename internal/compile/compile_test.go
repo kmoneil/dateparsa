@@ -294,3 +294,51 @@ func TestFieldKindToOpIsComplete(t *testing.T) {
 		t.Error("FieldKind and OpCode now agree at 4 and 5; re-check the comment on fieldKindToOp")
 	}
 }
+
+// TestExecuteRefusesAMalformedProgram covers the two ways a Program can be
+// out of shape without any input being at fault, both of which used to be an
+// out-of-bounds read rather than an error.
+//
+// Neither is reachable through the public API today. Compile refuses a def over
+// MaxInstructions before it fills anything, and the only op that drives delta
+// negative is OpTZZOrOffset, whose 'Z' branch subtracts at most 5 while the
+// field after it sits at least 6 bytes further along, so offsets stay positive.
+// Fifteen adversarial layouts through the public Compile crossed with sixteen
+// inputs produced no panic. That is an argument, not a proof, and Program is a
+// plain struct with exported fields that anything in this module can build, so
+// the guards are cheaper than having the argument again.
+//
+// "Parse never panics on any input" is the invariant these defend.
+func TestExecuteRefusesAMalformedProgram(t *testing.T) {
+	t.Run("negative offset", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panicked instead of erroring: %v", r)
+			}
+		}()
+		// A conditional zone declared 6 wide at offset 0, then a year at 1.
+		// "Z" takes the one-byte branch, so delta is 1-6 and the year would
+		// read at offset -4.
+		var p Program
+		p.Insts[0] = Inst{Op: OpTZZOrOffset, Offset: 0, Len: 6}
+		p.Insts[1] = Inst{Op: OpYear4, Offset: 1, Len: 4}
+		p.N = 2
+		if _, err := p.Execute("Z2024"); err == nil {
+			t.Error("Execute accepted a program that reads before the start of the input")
+		}
+	})
+
+	t.Run("N past the instruction array", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panicked instead of erroring: %v", r)
+			}
+		}()
+		var p Program
+		p.Insts[0] = Inst{Op: OpYear4, Offset: 0, Len: 4}
+		p.N = MaxInstructions + 7
+		if _, err := p.Execute("2024"); err == nil {
+			t.Error("Execute accepted a program claiming more instructions than it holds")
+		}
+	})
+}

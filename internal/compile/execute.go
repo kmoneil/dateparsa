@@ -698,6 +698,19 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 }
 
 // Pre-built timezone abbreviation Locations — allocated once at init.
+//
+// Every abbreviation this library accepts is a fixed offset, taken as written.
+// The four European names carried a second meaning until now, because they are
+// tzdata zone names as well as abbreviations and fell through to
+// time.LoadLocation, which applies the zone's daylight rules:
+//
+//	"2024-07-15 10:30:00 CET"   was +0200 CEST, an hour off what it says
+//	"2024-07-15 10:30:00 EST"   was -0500 EST, taken as written
+//
+// Two rules for the same shape of input, and the one that read the calendar
+// silently overrode the abbreviation the caller wrote. They are fixed offsets
+// here for the same reason EST is: an abbreviation names an offset, and a
+// caller who means the summer one writes CEST.
 var (
 	tzGMT = time.FixedZone("GMT", 0)
 	tzEST = time.FixedZone("EST", -5*3600)
@@ -708,13 +721,32 @@ var (
 	tzMDT = time.FixedZone("MDT", -6*3600)
 	tzPST = time.FixedZone("PST", -8*3600)
 	tzPDT = time.FixedZone("PDT", -7*3600)
+	tzHST = time.FixedZone("HST", -10*3600)
+	tzCET = time.FixedZone("CET", 1*3600)
+	tzEET = time.FixedZone("EET", 2*3600)
+	tzMET = time.FixedZone("MET", 1*3600)
+	tzWET = time.FixedZone("WET", 0)
 )
 
-// lookupTZAbbr resolves a timezone abbreviation to a *time.Location.
-// Uses pre-built Locations for common abbreviations to avoid allocation.
+// lookupTZAbbr resolves a timezone abbreviation to a *time.Location. Every
+// answer is a pre-built fixed offset, so this allocates nothing and reads
+// nothing.
+//
+// It used to fall through to time.LoadLocation for anything not listed, which
+// reads the zone file on every call and does not cache: Layout.Parse allocated
+// 24 times on "2024-03-15 10:30:00 CET" while README promised zero. It was also
+// the library's only filesystem access, documented as such in SECURITY.md, and
+// it is gone.
+//
+// The fallback reached exactly nine names beyond this list, enumerated rather
+// than guessed by asking LoadLocation about all 17576 three-letter strings.
+// Four are the European abbreviations above and two, HST and UCT, are listed
+// here now. The other three were PRC, ROC and ROK, which are tzdata aliases for
+// countries rather than timezone abbreviations, and nobody writes them in a
+// timestamp. They are refused.
 func lookupTZAbbr(name string) (*time.Location, bool) {
 	switch name {
-	case "UTC":
+	case "UTC", "UCT":
 		return time.UTC, true
 	case "GMT":
 		return tzGMT, true
@@ -734,14 +766,18 @@ func lookupTZAbbr(name string) (*time.Location, bool) {
 		return tzPST, true
 	case "PDT":
 		return tzPDT, true
-	default:
-		// Try Go's timezone database.
-		loc, err := time.LoadLocation(name)
-		if err != nil {
-			return nil, false
-		}
-		return loc, true
+	case "HST":
+		return tzHST, true
+	case "CET":
+		return tzCET, true
+	case "EET":
+		return tzEET, true
+	case "MET":
+		return tzMET, true
+	case "WET":
+		return tzWET, true
 	}
+	return nil, false
 }
 
 // isLeap is the full Gregorian rule. Testing only for divisibility by 4 gets

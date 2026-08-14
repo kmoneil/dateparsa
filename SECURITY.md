@@ -62,8 +62,8 @@ crafted input is a stall.
 **No network.** Nothing imports `net`, `net/http`, or anything that dials.
 Parsing a date never leaves the process.
 
-**No filesystem, with one documented exception.** Nothing imports `os` or `io`.
-The exception is timezone resolution, described below.
+**No filesystem.** Nothing imports `os` or `io`, and nothing reads a file.
+Timezone resolution used to be an exception and is not any more; see below.
 
 **No `unsafe`, no `reflect`, no `os/exec`.** The extraction path is ordinary Go
 that the bounds checker can see. `Program.ExecuteBytes` converts to a string and
@@ -156,30 +156,29 @@ as a defect.
 checked the length, because the compiled offsets come from a format definition
 and the input does not have to agree with it.
 
-## The one filesystem read
+## Timezone resolution reads nothing
 
-`lookupTZAbbr` resolves ten common abbreviations (`UTC`, `GMT`, `EST`, `EDT`,
-`CST`, `CDT`, `MST`, `MDT`, `PST`, `PDT`) from pre-built locations with no
-allocation and no I/O. Anything else falls through to `time.LoadLocation`, which
-reads the system timezone database.
+`lookupTZAbbr` resolves a closed set of fifteen abbreviations from pre-built
+fixed-offset locations: `UTC`, `UCT`, `GMT`, `EST`, `EDT`, `CST`, `CDT`, `MST`,
+`MDT`, `PST`, `PDT`, `HST`, `CET`, `EET`, `MET`, `WET`. No allocation, no I/O,
+and no name outside that list is accepted.
 
-What this means in practice:
+**This section used to describe a filesystem read, and it is worth saying what
+changed.** Anything not in the pre-built table fell through to
+`time.LoadLocation`, which reads the system timezone database, does not cache,
+and reads whatever `ZONEINFO` points at. A stream of inputs carrying varied
+abbreviations turned into a stream of file reads, and `Layout.Parse` allocated
+24 times per call on `CET`, `EET`, `MET` and `WET` while the README promised
+zero.
 
-- **Path traversal is not reachable.** `time.LoadLocation` rejects any name
-  containing `..` or beginning with a slash or backslash before it touches the
-  filesystem. The guard is the standard library's, not this library's, which is
-  the reason the call goes through it rather than reading a path directly.
-- **The results are not cached.** Go re-reads and re-parses the zone file on
-  every `LoadLocation` call. A stream of inputs carrying varied timezone
-  abbreviations therefore turns into a stream of file reads. This is the one
-  place where hostile input converts into I/O, and it is the first thing to look
-  at if parsing throughput collapses on adversarial data.
-- **It reads whatever `ZONEINFO` points at.** That environment variable is part
-  of the standard library's contract, and on a host where an attacker sets
-  environment variables you have already lost the process.
+The fallback reached exactly nine names beyond the pre-built ten, which was
+established by asking `LoadLocation` about all 17576 three-letter strings rather
+than by reasoning about tzdata. Six of them are listed above now. The other
+three were `PRC`, `ROC` and `ROK`, tzdata aliases for countries rather than
+timezone abbreviations, and they are refused.
 
-An application that never wants this can avoid it entirely by parsing once and
-reusing the returned `Layout`, which resolves the timezone at compile time.
+This removes the only place where hostile input converted into I/O, and the only
+reason this library ever touched the filesystem.
 
 ## Timezone abbreviations are ambiguous, and the resolution is a policy
 
@@ -188,6 +187,14 @@ dateparsa picks the US reading. This is documented in `ARCHITECTURE.md` under
 known limitations, and it is repeated here because it is a correctness decision
 that looks like a parsing detail: input from a non-US source can parse to a time
 14 hours from what its author meant, with no error and no ambiguity flag.
+
+Every abbreviation is a **fixed offset, taken as written**, and daylight saving
+is never applied on the caller's behalf. `CET` is +01:00 in July as well as in
+January; a caller who means the summer offset writes `CEST`. Four names did not
+follow that rule until the pre-built table absorbed them, because they are
+tzdata zone names as well as abbreviations: `"2024-07-15 10:30:00 CET"` resolved
+through the zone's daylight rules and came back as +02:00 CEST, an hour from
+what the input said, while `EST` in the same position stayed -05:00.
 
 Use `WithTimezone` to state the assumption your data actually carries.
 

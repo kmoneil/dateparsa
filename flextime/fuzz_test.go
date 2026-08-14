@@ -14,6 +14,13 @@ func FuzzScanString(f *testing.F) {
 		"not a date",
 		"2024-13-45",
 		"99/99/9999",
+
+		// Panicked through dateparsa.Parse in detect.trimAtSuffix, which took
+		// the index of " at " from a strings.ToLower copy and sliced the input
+		// with it. Kept here as well as in the root package: a database column
+		// is exactly where a byte sequence like this arrives without anyone
+		// having chosen it.
+		"deC0000\xcd\xcd\xcd At 0",
 	}
 	for _, s := range seeds {
 		f.Add(s)

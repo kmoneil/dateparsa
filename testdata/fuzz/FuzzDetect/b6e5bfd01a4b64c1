@@ -1,0 +1,2 @@
+go test fuzz v1
+string("MAY00\xc30\xae\x840000 At 0")

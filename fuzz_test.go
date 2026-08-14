@@ -19,6 +19,13 @@ func FuzzParse(f *testing.F) {
 		"",
 		"not a date",
 		"2024-03-15T10:30:00.123456789Z",
+
+		// Panicked in detect.trimAtSuffix with a slice bounds error. It took
+		// the index of " at " from a strings.ToLower copy and sliced the
+		// original with it; the invalid bytes lower to a three-byte U+FFFD
+		// each, so the copy is longer than the input and the index runs past
+		// its end. A month name is needed to reach that code at all.
+		"dEC0000A\xbe\xc2\xd0 At 0",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -51,6 +58,7 @@ func FuzzDetect(f *testing.F) {
 	f.Add("")
 	f.Add("123456789012345678901234567890") // long numeric
 	f.Add("aaaaaaaaaaaaaaaaaaaaaaaaaaaa")   // long alpha
+	f.Add("MAY00\xc30\xae\x840000 At 0")    // trimAtSuffix slice bounds panic
 
 	f.Fuzz(func(t *testing.T, input string) {
 		// Must not panic.

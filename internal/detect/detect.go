@@ -635,12 +635,35 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 	return Result{}, false
 }
 
+// indexFoldASCII returns the byte index of the first occurrence of sub in s,
+// folding ASCII case, or -1 if sub is not present.
+//
+// It exists because an index taken from a strings.ToLower copy is not valid in
+// the original. Lowering can change a string's byte length: every byte of
+// invalid UTF-8 lowers to a three-byte U+FFFD, and a few real runes grow too
+// (U+0130 becomes two runes). trimAtSuffix used to search the lowered copy and
+// slice the original with the result, which panicked with a slice bounds error
+// on "dEC0000A\xbe\xc2\xd0 At 0" and on any other input carrying an invalid
+// byte before an " at ". Both needles here are ASCII, so folding ASCII on the
+// input is exactly equivalent to the search it replaces, minus the copy.
+func indexFoldASCII(s, sub string) int {
+	if len(sub) == 0 {
+		return 0
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if equalsFoldASCII(s[i:i+len(sub)], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
 // trimAtSuffix strips the " at ..." portion from a string when it would
 // cause a bare time number to be misidentified as a year.
 // e.g. "25th at 5pm" → "25th" (no year present, trim to avoid confusion).
 // But "17, 2012 at 10:09am" → unchanged (4-digit year present, keep for parsing).
 func trimAtSuffix(s string) string {
-	atIdx := strings.Index(strings.ToLower(s), " at ")
+	atIdx := indexFoldASCII(s, " at ")
 	if atIdx < 0 {
 		return s
 	}
@@ -665,7 +688,7 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// this is a NL expression like "december 25th at 5pm" — bail so the
 	// NL parser handles it.
 	after := strings.TrimSpace(s[monthEnd:])
-	if strings.Contains(strings.ToLower(after), " at ") && !hasFourDigitYear(after) {
+	if indexFoldASCII(after, " at ") >= 0 && !hasFourDigitYear(after) {
 		return Result{}, false
 	}
 
@@ -890,7 +913,7 @@ func parseTimeComponent(s string, from int) []compile.Field {
 	}
 
 	// Look for "at " prefix.
-	if i+3 <= len(s) && strings.ToLower(s[i:i+3]) == "at " {
+	if i+3 <= len(s) && equalsFoldASCII(s[i:i+3], "at ") {
 		i += 3
 	}
 

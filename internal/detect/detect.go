@@ -444,7 +444,10 @@ func resolveAmbiguous(s string, _ *formatEntry, cfg Config) (Result, bool) {
 	}
 
 	_ = year // year value used for validation only; fields extract at runtime
-	fields := buildDatePartFields(parts, monthPart, dayPart)
+	fields, ok := buildDatePartFields(parts, monthPart, dayPart)
+	if !ok {
+		return Result{}, false
+	}
 
 	name := "NUMERIC_AMBIG"
 	if !ambig {
@@ -508,6 +511,16 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 	if month.value < 1 || month.value > 12 || day.value < 1 || day.value > 31 {
 		return 0, datePart{}, datePart{}, false, false
 	}
+
+	// A day or a month is written with one digit or two, never three. The
+	// field kinds below can only express those two widths, so a wider part
+	// produced a field whose declared width and read width disagreed:
+	// buildDatePartFields gave "020" an FDay2 with Len 3, OpDay2 read the
+	// first two bytes, and Parse("020/01/2024") came back as the second of
+	// January having validated the twentieth.
+	if month.length > 2 || day.length > 2 {
+		return 0, datePart{}, datePart{}, false, false
+	}
 	return year, month, day, ambig, true
 }
 
@@ -526,7 +539,7 @@ func partIndex(offset int, parts []string) int {
 
 // buildDatePartFields constructs compile.Fields for a 3-part date, sorting by
 // input position and inserting literal separator fields between them.
-func buildDatePartFields(parts []string, month, day datePart) []compile.Field {
+func buildDatePartFields(parts []string, month, day datePart) ([]compile.Field, bool) {
 	// Determine year part by elimination: whichever offset is not month or day.
 	// Both are assigned on every path below, so neither carries an initializer.
 	var yearOffset, yearLen int
@@ -558,9 +571,20 @@ func buildDatePartFields(parts []string, month, day datePart) []compile.Field {
 		yearLen = len(parts[0])
 	}
 
-	yearKind := compile.FYear4
-	if yearLen <= 2 {
+	// A year here is written with exactly two digits or exactly four, because
+	// those are the only widths FYear2 and FYear4 read. Anything else produced
+	// a field whose declared width and read width disagreed, which is the same
+	// defect as the over-wide day and month parts refused above. Those two
+	// happened to refuse anyway, by running off the end of the input, which is
+	// luck rather than a check.
+	var yearKind compile.FieldKind
+	switch yearLen {
+	case 4:
+		yearKind = compile.FYear4
+	case 2:
 		yearKind = compile.FYear2
+	default:
+		return nil, false
 	}
 	monthKind := compile.FMonth2
 	if month.length == 1 {
@@ -602,7 +626,7 @@ func buildDatePartFields(parts []string, month, day datePart) []compile.Field {
 		fields = append(fields, info.field)
 		prevEnd = info.offset + info.field.Len
 	}
-	return fields
+	return fields, true
 }
 
 // detectISOWeekOrOrdinal detects ISO week dates (2024-W11-5) and ordinal dates (2024-074).

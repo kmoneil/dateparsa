@@ -117,3 +117,32 @@ func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool) 
 
 	return p, needsBaseYear
 }
+
+// FixedWidth returns the number of input bytes the instruction for k reads,
+// and whether that number is fixed at all.
+//
+// It exists so a test can assert what this package assumes and what the
+// detectors have to honour: a Field's declared Len is the number of bytes its
+// op will read. buildDatePartFields broke that by giving a three-character
+// part an FDay2 with Len 3, and since OpDay2 reads exactly two, the value
+// detection validated was not the value the program returned. Nothing failed,
+// because the program was wrong the same way every time it ran, so comparing
+// Parse against Layout.Parse could not see it either.
+//
+// Variable-width kinds report false: their width comes from the input or from
+// Len itself, so there is nothing to cross-check.
+func FixedWidth(k FieldKind) (int, bool) {
+	switch k {
+	case FYear4:
+		return 4, true
+	case FYear2, FMonth2, FDay2, FHour24, FHour12, FMinute2, FSecond2, FAMPM, FISOWeek:
+		return 2, true
+	case FTZZ, FISOWeekDay:
+		return 1, true
+	default:
+		// FMonth1or2, FDay1or2, FHour1or2 read one byte or two.
+		// FMonthName, FFracSec, FTZOffset, FTZName, FOrdinalDay, FLiteral,
+		// FSkip read exactly Len. FTZZOrOffset and FTail vary with the input.
+		return 0, false
+	}
+}

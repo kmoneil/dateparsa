@@ -116,6 +116,11 @@ func FuzzLayoutReuse(f *testing.F) {
 		// pair of four-byte inputs, because a name of a different width shifts
 		// the fields after it and fails the day parse instead.
 		{"1MAY", "1MAr"},
+
+		// A three-character day part got an FDay2, which reads two, so the two
+		// inputs put their fields in different places and the cached layout
+		// read the second one's month out of its day.
+		{"020/1/0000", "17/11/0000"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

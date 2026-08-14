@@ -701,3 +701,54 @@ func TestUTCMarkerIsRead(t *testing.T) {
 		t.Errorf("layout refused its own input: %v", err)
 	}
 }
+
+// TestNumericPartWiderThanItsFieldIsRefused covers a wrong answer that needed
+// no reuse at all. buildDatePartFields chose the field kind by testing only for
+// width one, so a three-character part got an FDay2 and a Len of 3. OpDay2
+// reads exactly two, so detection validated one value and the program returned
+// another:
+//
+//	Parse("020/01/2024") = 2024-01-02   detection resolved day 20, the op read "02"
+//	Parse("3/015/2024")  = 2024-03-01   detection resolved day 15, the op read "01"
+//
+// Neither fuzz target could see it. FuzzParse compares Parse against
+// Layout.Parse, and both run the same program, so both were wrong identically
+// and agreed. Only FuzzLayoutReuse caught it, and only because two
+// differently-shaped inputs put the fields in different places.
+func TestNumericPartWiderThanItsFieldIsRefused(t *testing.T) {
+	for _, in := range []string{
+		"020/01/2024", // three-digit day
+		"3/015/2024",  // three-digit day in the second position
+		"020/1/0000",  //
+		"013/1/2",     //
+		"1/2/003",     // three-digit year, FYear4 would read four
+		"1/1/1",       // one-digit year, FYear2 would read two
+	} {
+		if got, err := Parse(in); err == nil {
+			t.Errorf("Parse(%q) = %v, want an error", in, got.Time)
+		}
+	}
+
+	// The ordinary widths must all survive.
+	for _, tt := range []struct {
+		in   string
+		want string
+	}{
+		{"3/15/2024", "2024-03-15"},
+		{"03/15/2024", "2024-03-15"},
+		{"15.03.2024", "2024-03-15"},
+		{"01/02/2024", "2024-01-02"},
+		{"12/12/12", "2012-12-12"},
+		{"1/2/24", "2024-01-02"},
+		{"25/12/2024", "2024-12-25"},
+	} {
+		got, err := Parse(tt.in)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", tt.in, err)
+			continue
+		}
+		if s := got.Time.UTC().Format("2006-01-02"); s != tt.want {
+			t.Errorf("Parse(%q) = %s, want %s", tt.in, s, tt.want)
+		}
+	}
+}

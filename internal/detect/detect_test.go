@@ -2,6 +2,8 @@ package detect
 
 import (
 	"testing"
+
+	"github.com/kmoneil/dateparsa/internal/compile"
 )
 
 func TestScan_BasicSignatures(t *testing.T) {
@@ -246,4 +248,51 @@ func sigToString(sig *Signature) string {
 		out[i] = chars[sig.buf[i]]
 	}
 	return string(out)
+}
+
+// TestEveryFieldDeclaresTheWidthItsOpReads asserts the invariant C9 violated:
+// a Field's Len is the number of bytes the instruction for its Kind will read.
+//
+// buildDatePartFields gave a three-character part an FDay2 with Len 3. OpDay2
+// reads exactly two, so detection validated the twentieth and the program
+// returned the second, and Parse("020/01/2024") came back as 2024-01-02 with no
+// error. Comparing Parse against Layout.Parse could not catch it: both run the
+// same program, so both were wrong identically and agreed.
+//
+// The corpus is deliberately full of shapes nobody writes on purpose. A
+// well-formed input cannot produce the mismatch, which is why the round-trip
+// generator never did.
+func TestEveryFieldDeclaresTheWidthItsOpReads(t *testing.T) {
+	corpus := []string{
+		// Well-formed, one per family.
+		"2024-03-15", "2024-03-15T10:30:00Z", "2024-03-15T10:30:00+05:30",
+		"2024-03-15 10:30:00", "2024-03-15 10:30:00 UTC", "20240315",
+		"March 15, 2024", "15 Mar 2024", "sept. 1, 2020", "March 2024",
+		"3/15/2024", "15.03.2024", "01/02/2024", "10:30", "10:30:00", "10:30 PM",
+		"2024-W11-5", "2024-074", "2014年04月08日", "2020-07-20+08:00",
+		"2015-02-08 03:02:00 +0300 MSK", "Fri Jul 03 2015 18:04:07 GMT+0100",
+		"December 23rd", "September 17, 2012 at 10:09am",
+
+		// Zero-padded and over-wide parts, which is where it went wrong.
+		"020/01/2024", "3/015/2024", "020/1/0000", "0020/1/2024",
+		"1/2/003", "013/1/2", "003/1/2", "1/0002/3", "0001/02/03",
+		"17/11/0000", "1/1/1", "12/12/12", "123/1/2024", "1/234/2024",
+	}
+
+	for _, in := range corpus {
+		r, ok := Detect(in, Config{})
+		if !ok || r.Def == nil {
+			continue // refusing is always allowed
+		}
+		for i, f := range r.Def.Fields {
+			want, fixed := compile.FixedWidth(f.Kind)
+			if !fixed {
+				continue
+			}
+			if f.Len != want {
+				t.Errorf("Detect(%q) field %d: Kind %d declares Len %d, its op reads %d",
+					in, i, f.Kind, f.Len, want)
+			}
+		}
+	}
 }

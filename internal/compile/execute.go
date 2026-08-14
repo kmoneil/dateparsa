@@ -83,6 +83,38 @@ func consumed1or2(s string, off int) int {
 // and in the extractors it inlines kept a bounds check that the surrounding test
 // had already made redundant. The local below is the same value by construction,
 // which is the point.
+// numericW returns the total width a fixed-width numeric instruction accounts
+// for: its own w, plus one for a separator fused onto it, and reports whether
+// that separator matched. See the Aux convention in instructions.go.
+//
+// Kept minimal for inlining, like the extractors above. sepNone is the common
+// case and returns without looking at the input at all, so an instruction with
+// nothing fused onto it pays one compare against a register.
+func numericW(s string, off, w int, aux uint16) (int, bool) {
+	if aux == sepNone {
+		return w, true
+	}
+	at := off + w
+	if at >= len(s) {
+		return 0, false
+	}
+	c := s[at]
+	if aux == sepAnyNonDigit {
+		// A digit here is a numeric token, and which token sits where is what
+		// picks the format. TIME_HMS declares ':' at 2 and 5 and read
+		// "00000101" as one second past midnight, where detection reads
+		// COMPACT_DATE and the first of January in the year 0.
+		if c >= '0' && c <= '9' {
+			return 0, false
+		}
+		return w + 1, true
+	}
+	if c != byte(aux) {
+		return 0, false
+	}
+	return w + 1, true
+}
+
 func (p *Program) executeInner(s string) (time.Time, error) {
 	slen := len(s)
 	var (
@@ -170,7 +202,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			}
 			year = y
 			yearSet = true
-			w = 4
+			w, ok = numericW(s, off, 4, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after year", off+4, slen)
+			}
 
 		case OpYear2:
 			v, ok := parse2Bounded(s, off, 0, 99)
@@ -179,7 +214,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			}
 			year = NormalizeTwoDigitYear(v)
 			yearSet = true
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after year", off+2, slen)
+			}
 
 		case OpMonth2:
 			v, ok := parse2Bounded(s, off, 1, 12)
@@ -187,7 +225,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("month", off, slen)
 			}
 			month = time.Month(v)
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after month", off+2, slen)
+			}
 
 		case OpMonth1or2:
 			v, ok := parse1or2Bounded(s, off, 1, 12)
@@ -213,7 +254,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("day", off, slen)
 			}
 			day = v
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after day", off+2, slen)
+			}
 
 		case OpDay1or2:
 			v, ok := parse1or2Bounded(s, off, 1, 31)
@@ -254,7 +298,11 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("day", off, slen)
 			}
 			day = v
-			w = 2
+			sw, sok := numericW(s, off, 2, inst.Aux)
+			if !sok {
+				return time.Time{}, fieldError("separator after day", off+2, slen)
+			}
+			w = sw
 
 		// ── Time fields ───────────────────────────────────────────��──
 
@@ -264,7 +312,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after hour", off+2, slen)
+			}
 
 		case OpHour12:
 			v, ok := parse2Bounded(s, off, 1, 12)
@@ -272,7 +323,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("hour", off, slen)
 			}
 			hour = v
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after hour", off+2, slen)
+			}
 
 		case OpHour1or2:
 			v, ok := parse1or2Bounded(s, off, 0, 23)
@@ -289,7 +343,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("minute", off, slen)
 			}
 			minute = v
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after minute", off+2, slen)
+			}
 
 		case OpSecond2:
 			v, ok := parse2Bounded(s, off, 0, 60) // 60 for leap second
@@ -297,7 +354,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("second", off, slen)
 			}
 			second = v
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after second", off+2, slen)
+			}
 
 		case OpFracSec:
 			length := int(inst.Len)
@@ -396,7 +456,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("iso week", off, slen)
 			}
 			isoWeek = v
-			w = 2
+			w, ok = numericW(s, off, 2, inst.Aux)
+			if !ok {
+				return time.Time{}, fieldError("separator after iso week", off+2, slen)
+			}
 
 		case OpISOWeekDay:
 			if off >= slen {

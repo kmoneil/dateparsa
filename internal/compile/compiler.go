@@ -127,7 +127,13 @@ func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, 
 	p.Tz = tz
 	needsBaseYear = true
 
-	for _, f := range def.Fields {
+	// The refusal above counts fields, deliberately, and not the instructions
+	// the loop below emits. Fusion makes some formats fit that did not, and
+	// letting that raise the effective budget would mean the error names a
+	// number the caller cannot derive from the layout they wrote. A caller can
+	// count tokens; they cannot predict which separators fuse.
+	for i := 0; i < len(def.Fields); i++ {
+		f := def.Fields[i]
 		if f.Offset > maxFieldByte || f.Len > maxFieldByte {
 			err = fmt.Errorf(
 				"compile: format %s has a field at offset %d of length %d, past the %d it can address",
@@ -137,11 +143,36 @@ func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, 
 		if f.Kind == FYear4 || f.Kind == FYear2 {
 			needsBaseYear = false
 		}
+
+		aux := f.Aux
+
+		// Fuse a following single-byte literal into this field, so the executor
+		// reads the separator without spending a loop iteration and a dispatch
+		// on it. See the Aux convention in instructions.go.
+		//
+		// The literal has to sit exactly where this field ends. A gap would mean
+		// some byte belongs to neither, and the executor's coverage counters
+		// cannot see that: they sum widths, which is why every detector emits a
+		// field for every byte and why TestEveryInputByteIsDescribedExactlyOnce
+		// exists. Requiring adjacency here keeps the sum exact, because the
+		// fused instruction accounts for both widths.
+		if w, ok := fusesSeparator(f.Kind); ok && i+1 < len(def.Fields) {
+			if next := def.Fields[i+1]; next.Kind == FLiteral &&
+				next.Len == 1 && next.Offset == f.Offset+w {
+				if next.Aux == 0 {
+					aux = sepAnyNonDigit
+				} else {
+					aux = next.Aux
+				}
+				i++ // the literal is this instruction's now
+			}
+		}
+
 		p.Insts[p.N] = Inst{
 			Op:     fieldKindToOp[f.Kind],
 			Offset: byte(f.Offset),
 			Len:    byte(f.Len),
-			Aux:    f.Aux,
+			Aux:    aux,
 		}
 		p.N++
 	}

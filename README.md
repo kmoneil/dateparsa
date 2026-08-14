@@ -262,6 +262,14 @@ whose allocation count moved. Do not read the two columns as one measurement.
 | `Layout.Parse` (ISO datetime+Z) | 36.6  | 0      | 1.4x            |
 | `Parser` (cached layout)        | 38.7  | 0      | 1.4x            |
 
+**These four `ns/op` figures are stale and low.** Every one of them got faster
+in the commit that folded a format's separators into the fields in front of
+them, and none of the movement is in this table because it cannot be measured
+on the machine the table names. On `linux/arm64` the same change measured
+`Layout.Parse` (ISO datetime+Z) at -8.4%, `Parser` (cached layout) at -18.5%,
+`Layout.Parse` (ISO date) at -4.1%, and the compact date flat, since it carries
+no separators to fold. The allocation column is still 0 and still exact.
+
 ### Full detection + parse (first call)
 
 | Format               | ns/op | Allocs |

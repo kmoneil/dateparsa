@@ -215,8 +215,12 @@ func TestCompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if prog.N != 5 {
-		t.Errorf("got %d instructions, want 5", prog.N)
+	// Three, not five. Both separators are single bytes sitting exactly where
+	// the field before them ends, so Compile folds each into that field rather
+	// than spending an instruction on it. See the Aux convention in
+	// instructions.go and TestFusionMatchesTheUnfusedProgram below.
+	if prog.N != 3 {
+		t.Errorf("got %d instructions, want 3", prog.N)
 	}
 
 	got, err := prog.Execute("2024-03-15")
@@ -226,6 +230,26 @@ func TestCompile(t *testing.T) {
 	want := time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// The fused separator is still checked. It was its own instruction with its
+	// own refusal before, and folding it must not turn it into a byte nobody
+	// looks at.
+	// A digit where the separator belongs is the half that is enforced, and it
+	// is the half that matters: a digit is a numeric token, and which token
+	// sits where is what picks the format.
+	for _, bad := range []string{"20240315", "2024-0315", "2024030-15"} {
+		if _, err := prog.Execute(bad); err == nil {
+			t.Errorf("Execute(%q) succeeded, want a refusal", bad)
+		}
+	}
+	// Any other byte is still accepted, exactly as it was when the separator
+	// was its own OpLiteral with Aux zero. A trie entry matches a character
+	// class, so naming '-' would refuse "2024/03/15", which detection accepts.
+	// Over-acceptance, same instant, and it is a known residual rather than
+	// anything fusion introduced.
+	if _, err := prog.Execute("2024x03x15"); err != nil {
+		t.Errorf("Execute(\"2024x03x15\") = %v, want the same acceptance as before fusion", err)
 	}
 }
 
@@ -341,4 +365,184 @@ func TestExecuteRefusesAMalformedProgram(t *testing.T) {
 			t.Error("Execute accepted a program claiming more instructions than it holds")
 		}
 	})
+}
+
+// compileUnfused lowers a def the way Compile did before separators were folded
+// into the field in front of them: one instruction per field, nothing merged.
+// It exists so the differential below has something to be differential against.
+func compileUnfused(def *FormatDef, tz *time.Location) Program {
+	var p Program
+	p.Tz = tz
+	for _, f := range def.Fields {
+		p.Insts[p.N] = Inst{
+			Op:     fieldKindToOp[f.Kind],
+			Offset: byte(f.Offset),
+			Len:    byte(f.Len),
+			Aux:    f.Aux,
+		}
+		p.N++
+	}
+	return p
+}
+
+// TestFusionMatchesTheUnfusedProgram is the whole safety argument for folding a
+// separator into the numeric field before it: the two programs have to answer
+// the same thing for every input, including the inputs they refuse.
+//
+// The shapes below mirror what the tree actually emits. The trie entries in
+// formats.go leave a literal's Aux zero, meaning "any byte that is not a digit",
+// because an entry matches a signature of character classes and one entry serves
+// every byte in the class. lit() in the detectors and ParseGoLayout both name an
+// exact byte instead. Fusion has to preserve both readings, so both are here.
+//
+// The inputs per shape deliberately include the malformed ones. A fused
+// separator that stopped being checked would pass every well-formed input and
+// every round-trip spec, and that is the failure this test exists for: the
+// separator was its own instruction with its own refusal, and folding it must
+// not turn it into a byte nobody looks at.
+func TestFusionMatchesTheUnfusedProgram(t *testing.T) {
+	classLit := func(off int) Field { return Field{Kind: FLiteral, Offset: off, Len: 1} }
+	exactLit := func(off int, b byte) Field {
+		return Field{Kind: FLiteral, Offset: off, Len: 1, Aux: uint16(b)}
+	}
+
+	shapes := []struct {
+		name   string
+		fields []Field
+		inputs []string
+	}{
+		{
+			"ISO8601_DATE, class separators",
+			[]Field{
+				{Kind: FYear4, Offset: 0, Len: 4},
+				classLit(4),
+				{Kind: FMonth2, Offset: 5, Len: 2},
+				classLit(7),
+				{Kind: FDay2, Offset: 8, Len: 2},
+			},
+			[]string{
+				"2024-03-15", "2024/03/15", "2024.03.15", "2024x03x15",
+				"20240315", "2024-0315", "2024-03-1", "2024-03-15x", "",
+				"2024-13-15", "2024-03-32", "abcd-03-15",
+			},
+		},
+		{
+			"ISO8601_DATETIME_Z, five separators and a zone",
+			[]Field{
+				{Kind: FYear4, Offset: 0, Len: 4},
+				classLit(4),
+				{Kind: FMonth2, Offset: 5, Len: 2},
+				classLit(7),
+				{Kind: FDay2, Offset: 8, Len: 2},
+				classLit(10),
+				{Kind: FHour24, Offset: 11, Len: 2},
+				classLit(13),
+				{Kind: FMinute2, Offset: 14, Len: 2},
+				classLit(16),
+				{Kind: FSecond2, Offset: 17, Len: 2},
+				{Kind: FTZZ, Offset: 19, Len: 1},
+			},
+			[]string{
+				"2024-03-15T10:30:00Z", "2024-03-15 10:30:00Z",
+				"2024-03-1510:30:00Z", "2024-03-15T103000Z",
+				"2024-03-15T10:30:00", "2024-03-15T10:30:60Z",
+				"2024-03-15T24:30:00Z", "2024-03-15T10:30:00+",
+			},
+		},
+		{
+			"exact-byte separators, as lit() and ParseGoLayout emit",
+			[]Field{
+				{Kind: FYear4, Offset: 0, Len: 4},
+				exactLit(4, '-'),
+				{Kind: FMonth2, Offset: 5, Len: 2},
+				exactLit(7, '-'),
+				{Kind: FDay2, Offset: 8, Len: 2},
+			},
+			[]string{
+				"2024-03-15", "2024/03/15", "2024.03.15", "2024x03-15",
+				"20240315", "2024-03/15", "2024-03-15 ",
+			},
+		},
+		{
+			"time, hour and minute and second",
+			[]Field{
+				{Kind: FHour24, Offset: 0, Len: 2},
+				exactLit(2, ':'),
+				{Kind: FMinute2, Offset: 3, Len: 2},
+				exactLit(5, ':'),
+				{Kind: FSecond2, Offset: 6, Len: 2},
+			},
+			[]string{"10:30:45", "10:30:60", "10-30-45", "103045", "10:30:4", "24:30:45"},
+		},
+		{
+			"two-digit year and a space-padded day",
+			[]Field{
+				{Kind: FDaySpacePad, Offset: 0, Len: 2},
+				exactLit(2, ' '),
+				{Kind: FMonth2, Offset: 3, Len: 2},
+				exactLit(5, '/'),
+				{Kind: FYear2, Offset: 6, Len: 2},
+			},
+			[]string{" 5 03/24", "15 03/24", " 5 03-24", "1503/24", " 5 13/24", " 5 03/2"},
+		},
+		{
+			"ISO week, which fuses like any other two-digit field",
+			[]Field{
+				{Kind: FYear4, Offset: 0, Len: 4},
+				exactLit(4, '-'),
+				classLit(5),
+				{Kind: FISOWeek, Offset: 6, Len: 2},
+				exactLit(8, '-'),
+				{Kind: FISOWeekDay, Offset: 9, Len: 1},
+			},
+			[]string{"2024-W05-1", "2024-W05-7", "2024-W54-1", "2024-W05-8", "2024-W0501"},
+		},
+		{
+			"no separators at all, so nothing fuses",
+			[]Field{
+				{Kind: FYear4, Offset: 0, Len: 4},
+				{Kind: FMonth2, Offset: 4, Len: 2},
+				{Kind: FDay2, Offset: 6, Len: 2},
+			},
+			[]string{"20240315", "2024-03-15", "202403", "2024xx15"},
+		},
+		{
+			"a literal that is not adjacent, which must stay its own instruction",
+			[]Field{
+				{Kind: FYear4, Offset: 0, Len: 4},
+				{Kind: FSkip, Offset: 4, Len: 2},
+				exactLit(6, '-'),
+				{Kind: FMonth2, Offset: 7, Len: 2},
+			},
+			[]string{"2024ab-03", "2024ab-13", "2024a1-03", "2024ab/03"},
+		},
+	}
+
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			def := &FormatDef{Name: sh.name, Fields: sh.fields}
+			fused, _, err := Compile(def, time.UTC)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			plain := compileUnfused(def, time.UTC)
+
+			if fused.N > plain.N {
+				t.Errorf("fusion produced more instructions, %d against %d", fused.N, plain.N)
+			}
+
+			for _, in := range sh.inputs {
+				gotT, gotErr := fused.Execute(in)
+				wantT, wantErr := plain.Execute(in)
+
+				if (gotErr == nil) != (wantErr == nil) {
+					t.Errorf("Execute(%q): fused err=%v, unfused err=%v", in, gotErr, wantErr)
+					continue
+				}
+				if gotErr == nil && !gotT.Equal(wantT) {
+					t.Errorf("Execute(%q): fused %v, unfused %v", in, gotT, wantT)
+				}
+			}
+		})
+	}
 }

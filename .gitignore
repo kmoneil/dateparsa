@@ -29,6 +29,10 @@ coverage.out
 *.test
 *.prof
 
+# make bench writes this on every run; benchmarks/baseline.txt is the tracked
+# reference and current.txt is the thing measured against it
+benchmarks/current.txt
+
 # Secrets / credentials
 *.env
 *.env.*

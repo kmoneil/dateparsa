@@ -78,10 +78,19 @@ var fieldKindToOp = [numFieldKinds]OpCode{
 }
 
 // Field describes one component in a format definition.
+//
+// Offset and Len are int32 rather than int, which makes a Field 16 bytes
+// instead of 32. Compile refuses any field whose Offset or Len exceeds
+// maxFieldByte, which is 255, so the other 60 bits were headroom nothing could
+// reach. Every fallback detector allocates a slice of these and they are the
+// bulk of what a non-trie parse allocates.
+//
+// Not int16: it measures the same 16 bytes at this alignment and would add a
+// truncation that a long input could plausibly reach.
 type Field struct {
 	Kind   FieldKind
-	Offset int    // Byte offset in the input
-	Len    int    // Expected length (0 = variable)
+	Offset int32  // Byte offset in the input
+	Len    int32  // Expected length (0 = variable)
 	Aux    uint16 // Pre-resolved value: month number, literal byte, or class. See instructions.go
 }
 

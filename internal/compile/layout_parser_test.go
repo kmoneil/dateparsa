@@ -279,7 +279,7 @@ func TestParseGoLayout_Offsets(t *testing.T) {
 	}
 	for i, e := range expected {
 		f := def.Fields[i]
-		if f.Kind != e.kind || f.Offset != e.offset || f.Len != e.length {
+		if f.Kind != e.kind || int(f.Offset) != e.offset || int(f.Len) != e.length {
 			t.Errorf("field[%d] = {Kind:%d, Offset:%d, Len:%d}, want {Kind:%d, Offset:%d, Len:%d}",
 				i, f.Kind, f.Offset, f.Len, e.kind, e.offset, e.length)
 		}
@@ -309,7 +309,7 @@ func TestParseGoLayout_FracSecLength(t *testing.T) {
 			for _, f := range def.Fields {
 				if f.Kind == FFracSec {
 					found = true
-					if f.Len != tt.fracLen {
+					if int(f.Len) != tt.fracLen {
 						t.Errorf("FFracSec.Len = %d, want %d", f.Len, tt.fracLen)
 					}
 				}
@@ -339,7 +339,7 @@ func TestParseGoLayout_TZZOrOffsetLen(t *testing.T) {
 			for _, f := range def.Fields {
 				if f.Kind == FTZZOrOffset {
 					found = true
-					if f.Len != tt.auxLen {
+					if int(f.Len) != tt.auxLen {
 						t.Errorf("FTZZOrOffset.Len = %d, want %d", f.Len, tt.auxLen)
 					}
 				}

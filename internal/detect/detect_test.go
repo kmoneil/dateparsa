@@ -292,7 +292,7 @@ func TestEveryFieldDeclaresTheWidthItsOpReads(t *testing.T) {
 			if !fixed {
 				continue
 			}
-			if f.Len != want {
+			if int(f.Len) != want {
 				t.Errorf("Detect(%q) field %d: Kind %d declares Len %d, its op reads %d",
 					in, i, f.Kind, f.Len, want)
 			}
@@ -396,7 +396,7 @@ func TestNoUnreadRunCoversADigit(t *testing.T) {
 			if !unread {
 				continue
 			}
-			for i := f.Offset; i < f.Offset+f.Len && i < len(in); i++ {
+			for i := int(f.Offset); i < int(f.Offset)+int(f.Len) && i < len(in); i++ {
 				if in[i] >= '0' && in[i] <= '9' {
 					t.Errorf("Detect(%q) [%s]: %s at %d len %d covers the digit %q at %d",
 						in, r.Def.Name, kindName(f.Kind), f.Offset, f.Len, in[i:i+1], i)
@@ -450,14 +450,14 @@ func TestEveryInputByteIsDescribedExactlyOnce(t *testing.T) {
 		}
 		count := make([]int, len(in))
 		for _, f := range r.Def.Fields {
-			w := f.Len
+			off, w := int(f.Offset), int(f.Len)
 			if fw, fixed := compile.FixedWidth(f.Kind); fixed {
 				w = fw
 			}
 			if f.Kind == compile.FTail {
-				w = len(in) - f.Offset
+				w = len(in) - off
 			}
-			for i := f.Offset; i < f.Offset+w && i < len(in); i++ {
+			for i := off; i < off+w && i < len(in); i++ {
 				count[i]++
 			}
 		}
@@ -565,7 +565,7 @@ func TestTrieLiteralsCarryTheirClass(t *testing.T) {
 						e.name, f.Offset, f.Len)
 					continue
 				}
-				if f.Offset >= len(e.sig) {
+				if int(f.Offset) >= len(e.sig) {
 					t.Errorf("%s: literal at offset %d is past its %d-class signature",
 						e.name, f.Offset, len(e.sig))
 					continue

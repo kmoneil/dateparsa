@@ -79,6 +79,12 @@ func ParseGoLayout(layout string) (*FormatDef, error) {
 	offset := 0 // position in the hypothetical input string
 	hasDateTimeField := false
 
+	// Both counters stay int and convert where a Field is built. Field.Offset
+	// and Field.Len are int32, and the conversion cannot truncate: offset sums
+	// the widths of the tokens in one layout string, and Compile refuses any
+	// field past maxFieldByte, which is 255, long before either counter could
+	// reach the int32 range.
+
 	for pos < len(layout) {
 		matched := false
 		for _, tok := range goTokens {
@@ -99,15 +105,15 @@ func ParseGoLayout(layout string) (*FormatDef, error) {
 			if tok.kind == FFracSec {
 				fields = append(fields, Field{
 					Kind:   FLiteral,
-					Offset: offset,
+					Offset: int32(offset),
 					Len:    1,
 					Aux:    uint16('.'),
 				})
 				offset++
 				fields = append(fields, Field{
 					Kind:   FFracSec,
-					Offset: offset,
-					Len:    tok.inputLen,
+					Offset: int32(offset),
+					Len:    int32(tok.inputLen),
 				})
 				offset += tok.inputLen
 				pos += len(tok.token)
@@ -132,8 +138,8 @@ func ParseGoLayout(layout string) (*FormatDef, error) {
 			if tok.kind == FTZZOrOffset {
 				fields = append(fields, Field{
 					Kind:   FTZZOrOffset,
-					Offset: offset,
-					Len:    tok.inputLen, // length of the offset form (+HH:MM or +HHMM)
+					Offset: int32(offset),
+					Len:    int32(tok.inputLen), // length of the offset form (+HH:MM or +HHMM)
 				})
 				offset += tok.inputLen
 				pos += len(tok.token)
@@ -157,8 +163,8 @@ func ParseGoLayout(layout string) (*FormatDef, error) {
 
 			f := Field{
 				Kind:   tok.kind,
-				Offset: offset,
-				Len:    inputWidth,
+				Offset: int32(offset),
+				Len:    int32(inputWidth),
 				Aux:    tok.aux,
 			}
 
@@ -177,7 +183,7 @@ func ParseGoLayout(layout string) (*FormatDef, error) {
 			// Not a reference token — treat as a literal character.
 			fields = append(fields, Field{
 				Kind:   FLiteral,
-				Offset: offset,
+				Offset: int32(offset),
 				Len:    1,
 				Aux:    uint16(layout[pos]),
 			})

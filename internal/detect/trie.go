@@ -103,7 +103,7 @@ func stampLiteralClasses(e *formatEntry) {
 		if f.Kind != compile.FLiteral || f.Len != 1 || f.Aux != 0 {
 			continue
 		}
-		if f.Offset >= len(e.sig) {
+		if int(f.Offset) >= len(e.sig) {
 			continue
 		}
 		cc := e.sig[f.Offset]

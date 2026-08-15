@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -45,6 +46,20 @@ type Config struct {
 // Detect analyzes a date string and returns the matching FormatDef.
 // Returns ok=false if no structured format matches.
 func Detect(s string, cfg Config) (Result, bool) {
+	// Every position below becomes a compile.Field.Offset or Len, which are
+	// int32. Nothing here can describe an input longer than that, and Compile
+	// refuses any field past byte 255 in any case, so an input this long has no
+	// correct answer. Refusing at the door is what makes the int32 conversions
+	// in this file safe: the alternative is a position wrapping into a small
+	// positive offset that looks valid and reads the wrong bytes, which is the
+	// C9 failure shape.
+	//
+	// This is the only entry point to the package, so one check covers every
+	// detector.
+	if len(s) > math.MaxInt32 {
+		return Result{}, false
+	}
+
 	// Step 1: Try special formats that contain letters but aren't textual months.
 	if r, ok := detectISOWeekOrOrdinal(s); ok {
 		return r, true
@@ -122,7 +137,7 @@ func Detect(s string, cfg Config) (Result, bool) {
 // for the '-' between them, so a layout built from "0000-001" accepted the
 // compact date "00000101" and read its "0101" as day-of-year 101.
 func lit(s string, off int) compile.Field {
-	return compile.Field{Kind: compile.FLiteral, Offset: off, Len: 1, Aux: uint16(s[off])}
+	return compile.Field{Kind: compile.FLiteral, Offset: int32(off), Len: 1, Aux: uint16(s[off])}
 }
 
 // coverGaps appends a skip for every run of bytes no field reads, so the
@@ -138,11 +153,11 @@ func lit(s string, off int) compile.Field {
 func coverGaps(fields []compile.Field, s string) []compile.Field {
 	covered := make([]bool, len(s))
 	for _, f := range fields {
-		w := f.Len
+		off, w := int(f.Offset), int(f.Len)
 		if fw, fixed := compile.FixedWidth(f.Kind); fixed {
 			w = fw
 		}
-		for i := f.Offset; i < f.Offset+w && i < len(s); i++ {
+		for i := off; i < off+w && i < len(s); i++ {
 			covered[i] = true
 		}
 	}
@@ -164,7 +179,7 @@ func coverGaps(fields []compile.Field, s string) []compile.Field {
 // the weekday name of an RFC 2822 date. It fixes the run's width without
 // looking at it, which is what stops a wider one shifting every field after it.
 func skip(off, length int) compile.Field {
-	return compile.Field{Kind: compile.FSkip, Offset: off, Len: length}
+	return compile.Field{Kind: compile.FSkip, Offset: int32(off), Len: int32(length)}
 }
 
 // detectISO8601Frac handles ISO 8601/RFC 3339 with variable-length fractional seconds:
@@ -209,7 +224,7 @@ func detectISO8601Frac(s string) (Result, bool) {
 		lit(s, 16),
 		compile.Field{Kind: compile.FSecond2, Offset: 17, Len: 2},
 		lit(s, 19),
-		compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracLen},
+		compile.Field{Kind: compile.FFracSec, Offset: int32(fracStart), Len: int32(fracLen)},
 	)
 
 	// Parse timezone immediately after fractional seconds (no space).
@@ -217,11 +232,11 @@ func detectISO8601Frac(s string) (Result, bool) {
 	pos := fracEnd
 	if pos < n {
 		if s[pos] == 'Z' && (pos+1 == n) {
-			fields = append(fields, compile.Field{Kind: compile.FTZZ, Offset: pos, Len: 1})
+			fields = append(fields, compile.Field{Kind: compile.FTZZ, Offset: int32(pos), Len: 1})
 		} else if s[pos] == '+' || s[pos] == '-' {
 			tzLen := n - pos
 			if tzLen == 5 || tzLen == 6 {
-				fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: pos, Len: tzLen})
+				fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(pos), Len: int32(tzLen)})
 			} else {
 				return Result{}, false // complex tz — let other handlers deal with it
 			}
@@ -282,7 +297,7 @@ func detectGoTimeString(s string) (Result, bool) {
 		}
 		if fracEnd > fracStart {
 			fields = append(fields, lit(s, pos),
-				compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracEnd - fracStart})
+				compile.Field{Kind: compile.FFracSec, Offset: int32(fracStart), Len: int32(fracEnd - fracStart)})
 			pos = fracEnd
 		}
 	}
@@ -304,7 +319,7 @@ func detectGoTimeString(s string) (Result, bool) {
 			digits++
 		}
 		if digits >= 4 {
-			fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: tzStart, Len: pos - tzStart})
+			fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(tzStart), Len: int32(pos - tzStart)})
 		}
 	}
 
@@ -313,7 +328,7 @@ func detectGoTimeString(s string) (Result, bool) {
 	// as a decision the program carries, rather than leaving it to the
 	// executor not to check.
 	if pos < n {
-		fields = append(fields, compile.Field{Kind: compile.FTail, Offset: pos})
+		fields = append(fields, compile.Field{Kind: compile.FTail, Offset: int32(pos)})
 	}
 
 	def := &compile.FormatDef{Name: "GO_TIME_STRING", Fields: fields}
@@ -342,7 +357,7 @@ func detectDatePlusTZ(s string) (Result, bool) {
 		{Kind: compile.FMonth2, Offset: 5, Len: 2},
 		lit(s, 7),
 		{Kind: compile.FDay2, Offset: 8, Len: 2},
-		{Kind: compile.FTZOffset, Offset: 10, Len: tzLen},
+		{Kind: compile.FTZOffset, Offset: 10, Len: int32(tzLen)},
 	}
 	def := &compile.FormatDef{Name: "ISO_DATE_TZ", Fields: fields}
 	return Result{Def: def}, true
@@ -382,11 +397,11 @@ func detectCJKDate(s string) (Result, bool) {
 
 	// Build fields using byte offsets.
 	fields := []compile.Field{
-		{Kind: compile.FYear4, Offset: 0, Len: len(yearStr)},
+		{Kind: compile.FYear4, Offset: 0, Len: int32(len(yearStr))},
 		skip(yearIdx, len("年")),
-		{Kind: compile.FMonth1or2, Offset: yearIdx + len("年"), Len: len(monStr)},
+		{Kind: compile.FMonth1or2, Offset: int32(yearIdx + len("年")), Len: int32(len(monStr))},
 		skip(monthIdx, len("月")),
-		{Kind: compile.FDay1or2, Offset: monthIdx + len("月"), Len: len(dayStr)},
+		{Kind: compile.FDay1or2, Offset: int32(monthIdx + len("月")), Len: int32(len(dayStr))},
 		skip(dayIdx, len("日")),
 	}
 	def := &compile.FormatDef{Name: "CJK_DATE", Fields: fields}
@@ -681,9 +696,9 @@ func buildDatePartFields(parts []string, sepChar byte, month, day datePart) ([]c
 		field  compile.Field
 	}
 	infos := [3]posField{
-		{yearOffset, compile.Field{Kind: yearKind, Offset: yearOffset, Len: yearLen}},
-		{month.offset, compile.Field{Kind: monthKind, Offset: month.offset, Len: month.length}},
-		{day.offset, compile.Field{Kind: dayKind, Offset: day.offset, Len: day.length}},
+		{yearOffset, compile.Field{Kind: yearKind, Offset: int32(yearOffset), Len: int32(yearLen)}},
+		{month.offset, compile.Field{Kind: monthKind, Offset: int32(month.offset), Len: int32(month.length)}},
+		{day.offset, compile.Field{Kind: dayKind, Offset: int32(day.offset), Len: int32(day.length)}},
 	}
 
 	// Sort 3 elements by offset (simple conditional swaps).
@@ -722,11 +737,11 @@ func buildDatePartFields(parts []string, sepChar byte, month, day datePart) ([]c
 				aux = 0 // a wider run needs a class per byte, and Aux holds one
 			}
 			fields = append(fields, compile.Field{
-				Kind: compile.FLiteral, Offset: prevEnd, Len: info.offset - prevEnd, Aux: aux,
+				Kind: compile.FLiteral, Offset: int32(prevEnd), Len: int32(info.offset - prevEnd), Aux: aux,
 			})
 		}
 		fields = append(fields, info.field)
-		prevEnd = info.offset + info.field.Len
+		prevEnd = info.offset + int(info.field.Len)
 	}
 	return fields, true
 }
@@ -984,8 +999,8 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 	// Add the month name field.
 	fields = append(fields, compile.Field{
 		Kind:   compile.FMonthName,
-		Offset: monthStart,
-		Len:    monthEnd - monthStart,
+		Offset: int32(monthStart),
+		Len:    int32(monthEnd - monthStart),
 		Aux:    uint16(monthNum),
 	})
 
@@ -1105,7 +1120,7 @@ func yearField(n numToken) compile.Field {
 	if n.end-n.start <= 2 {
 		kind = compile.FYear2
 	}
-	return compile.Field{Kind: kind, Offset: n.start, Len: n.end - n.start}
+	return compile.Field{Kind: kind, Offset: int32(n.start), Len: int32(n.end - n.start)}
 }
 
 // ordinalSuffixLen returns 2 when an English ordinal suffix follows a day
@@ -1143,7 +1158,7 @@ func boundaryAfter(s string, at int) int {
 func appendDay(fields []compile.Field, s string, n numToken) []compile.Field {
 	fields = append(fields, dayField(n))
 	if w := ordinalSuffixLen(s, n.end); w > 0 {
-		fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: n.end, Len: w})
+		fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: int32(n.end), Len: int32(w)})
 	}
 	return fields
 }
@@ -1153,7 +1168,7 @@ func dayField(n numToken) compile.Field {
 	if n.end-n.start == 1 {
 		kind = compile.FDay1or2
 	}
-	return compile.Field{Kind: kind, Offset: n.start, Len: n.end - n.start}
+	return compile.Field{Kind: kind, Offset: int32(n.start), Len: int32(n.end - n.start)}
 }
 
 // parseTimeComponent looks for HH:MM or HH:MM:SS or HH:MM:SS.fff patterns
@@ -1182,13 +1197,13 @@ func parseTimeComponent(s string, from int) []compile.Field {
 	// Find HH:MM pattern.
 	if i+5 <= len(s) && isDigit(s[i]) && isDigit(s[i+1]) && s[i+2] == ':' && isDigit(s[i+3]) && isDigit(s[i+4]) {
 		fields := make([]compile.Field, 0, 8)
-		fields = append(fields, compile.Field{Kind: compile.FHour24, Offset: i, Len: 2})
-		fields = append(fields, compile.Field{Kind: compile.FMinute2, Offset: i + 3, Len: 2})
+		fields = append(fields, compile.Field{Kind: compile.FHour24, Offset: int32(i), Len: 2})
+		fields = append(fields, compile.Field{Kind: compile.FMinute2, Offset: int32(i + 3), Len: 2})
 
 		j := i + 5
 		// Check for :SS
 		if j+3 <= len(s) && s[j] == ':' && isDigit(s[j+1]) && isDigit(s[j+2]) {
-			fields = append(fields, compile.Field{Kind: compile.FSecond2, Offset: j + 1, Len: 2})
+			fields = append(fields, compile.Field{Kind: compile.FSecond2, Offset: int32(j + 1), Len: 2})
 			j += 3
 
 			// Check for .fractional
@@ -1199,7 +1214,7 @@ func parseTimeComponent(s string, from int) []compile.Field {
 					fracEnd++
 				}
 				if fracEnd > fracStart {
-					fields = append(fields, compile.Field{Kind: compile.FFracSec, Offset: fracStart, Len: fracEnd - fracStart})
+					fields = append(fields, compile.Field{Kind: compile.FFracSec, Offset: int32(fracStart), Len: int32(fracEnd - fracStart)})
 					j = fracEnd
 				}
 			}
@@ -1237,13 +1252,13 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 			if len(fields) > 0 && fields[0].Kind == compile.FHour24 {
 				fields[0].Kind = compile.FHour12
 			}
-			return append(fields, compile.Field{Kind: compile.FAMPM, Offset: j, Len: 2})
+			return append(fields, compile.Field{Kind: compile.FAMPM, Offset: int32(j), Len: 2})
 		}
 	}
 
 	// Timezone: Z, ±HHMM/±HH:MM, or abbreviation.
 	if s[j] == 'Z' && (j+1 == len(s) || !isLetter(s[j+1])) {
-		return append(fields, compile.Field{Kind: compile.FTZZ, Offset: j, Len: 1})
+		return append(fields, compile.Field{Kind: compile.FTZZ, Offset: int32(j), Len: 1})
 	}
 	if s[j] == '+' || s[j] == '-' {
 		remaining := len(s) - j
@@ -1252,7 +1267,7 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 			if remaining >= 6 && s[j+3] == ':' {
 				tzLen = 6
 			}
-			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: j, Len: tzLen})
+			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(j), Len: int32(tzLen)})
 		}
 	}
 	if isLetter(s[j]) {
@@ -1268,10 +1283,10 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 			if rem >= 6 && s[tzEnd+3] == ':' {
 				tzLen = 6
 			}
-			fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: j, Len: tzEnd - j})
-			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: tzEnd, Len: tzLen})
+			fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: int32(j), Len: int32(tzEnd - j)})
+			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(tzEnd), Len: int32(tzLen)})
 		}
-		return append(fields, compile.Field{Kind: compile.FTZName, Offset: j, Len: tzEnd - j})
+		return append(fields, compile.Field{Kind: compile.FTZName, Offset: int32(j), Len: int32(tzEnd - j)})
 	}
 	return fields
 }

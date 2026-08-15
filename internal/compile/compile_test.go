@@ -284,7 +284,7 @@ func TestCompileRefusesWhatItCannotAddress(t *testing.T) {
 func TestCompileRefusesTooManyInstructions(t *testing.T) {
 	fields := make([]Field, MaxInstructions+1)
 	for i := range fields {
-		fields[i] = Field{Kind: FLiteral, Offset: i, Len: 1, Aux: 'x'}
+		fields[i] = Field{Kind: FLiteral, Offset: int32(i), Len: 1, Aux: 'x'}
 	}
 	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields}, time.UTC); err == nil {
 		t.Errorf("Compile accepted %d fields, the limit is %d", len(fields), MaxInstructions)
@@ -401,8 +401,8 @@ func compileUnfused(def *FormatDef, tz *time.Location) Program {
 // separator was its own instruction with its own refusal, and folding it must
 // not turn it into a byte nobody looks at.
 func TestFusionMatchesTheUnfusedProgram(t *testing.T) {
-	classLit := func(off int) Field { return Field{Kind: FLiteral, Offset: off, Len: 1} }
-	exactLit := func(off int, b byte) Field {
+	classLit := func(off int32) Field { return Field{Kind: FLiteral, Offset: off, Len: 1} }
+	exactLit := func(off int32, b byte) Field {
 		return Field{Kind: FLiteral, Offset: off, Len: 1, Aux: uint16(b)}
 	}
 

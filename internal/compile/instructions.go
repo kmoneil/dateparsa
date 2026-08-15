@@ -244,7 +244,9 @@ func litAccepts(aux uint16, c byte) bool {
 // variable-width kinds are excluded deliberately: their width comes from the
 // input and interacts with the executor's delta, and no format in the tree needs
 // them fused, so they keep their separator as its own instruction.
-func fusesSeparator(k FieldKind) (int, bool) {
+//
+// The width is int32 because its only caller adds it to a Field.Offset.
+func fusesSeparator(k FieldKind) (int32, bool) {
 	switch k {
 	case FYear4:
 		return 4, true

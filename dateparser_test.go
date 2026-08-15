@@ -3,6 +3,7 @@ package dateparsa
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -630,6 +631,64 @@ func TestParserReportsAmbiguityLikeParse(t *testing.T) {
 	}
 }
 
+// TestParserConcurrentUse is the gate on the promise in Parser's doc comment.
+// The cached layout lives in an atomic pointer and the Layout behind it is
+// immutable, so several goroutines may share one Parser.
+//
+// It is a race-detector test first and a correctness test second. On the commit
+// before the atomic pointer it reports a write/read data race on Parser.layout
+// under -race, and it is in the suite that runs with -race in CI for that
+// reason. The correctness half matters too: each goroutine parses a different
+// format through the same cache, so a goroutine that picked up another's layout
+// and trusted it would return the wrong instant rather than falling through to
+// detection.
+func TestParserConcurrentUse(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Time
+	}{
+		{"2024-03-15", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"2024-03-15T10:30:00Z", time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{"20240315", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"2024-03-15 10:30:00", time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{"March 15, 2024", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+	}
+
+	p := NewParser()
+	var wg sync.WaitGroup
+	for g := range 12 {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			c := cases[g%len(cases)]
+			for range 500 {
+				got, err := p.Parse(c.in)
+				if err != nil {
+					t.Errorf("goroutine %d: Parse(%q): %v", g, c.in, err)
+					return
+				}
+				if !got.Time.Equal(c.want) {
+					t.Errorf("goroutine %d: Parse(%q) = %v, want %v", g, c.in, got.Time, c.want)
+					return
+				}
+			}
+		}(g)
+	}
+
+	// Reset races the readers on purpose: it is documented as safe to call
+	// while other goroutines parse, and nothing else in the suite calls it
+	// concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			p.Reset()
+		}
+	}()
+
+	wg.Wait()
+}
+
 // TestParserKeepsTheCacheForShapedFormats is the other half of the gate above.
 // Declining the cache is only correct where the format was resolved by value; a
 // format whose fields are fixed by its shape must still skip detection, or the
@@ -646,7 +705,7 @@ func TestParserKeepsTheCacheForShapedFormats(t *testing.T) {
 		if _, err := p.Parse(s); err != nil {
 			t.Fatalf("seed %q: %v", s, err)
 		}
-		before := p.layout
+		before := p.layout.Load()
 		if before == nil {
 			t.Fatalf("%q: no layout cached", s)
 		}

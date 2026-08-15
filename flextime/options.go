@@ -59,12 +59,18 @@ func NewWithOptions(t time.Time, opts ...Option) FlexTime {
 // Scanner is a pre-configured scanner for use with database rows.
 // Use this when you need non-default options for database scanning.
 //
-// The parse options are built once, here, and never written again, so a
-// Scanner is safe for concurrent use. They used to be rebuilt from the
-// configuration on every value scanned, which cost a configured Scanner four
-// allocations and 56 bytes per row for a list that could not change.
+// A Scanner is safe for concurrent use by multiple goroutines. It holds a
+// dateparsa.Parser, which caches the last detected layout in an atomic pointer
+// and is itself safe for concurrent use; the configuration behind it is fixed
+// when NewScanner returns and is never written again.
+//
+// The cache is why this type exists. A column of one format is detected once
+// and every later row runs the compiled layout, which is the difference
+// between about 160 ns and about 30 ns a row. A column whose format changes
+// partway through still parses correctly: a layout that does not fit the row
+// fails and detection runs again.
 type Scanner struct {
-	parseOpts []dateparsa.Option
+	p *dateparsa.Parser
 }
 
 // NewScanner creates a Scanner with the given options.
@@ -73,7 +79,7 @@ func NewScanner(opts ...Option) *Scanner {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &Scanner{parseOpts: o.parseOpts()}
+	return &Scanner{p: dateparsa.NewParser(o.parseOpts()...)}
 }
 
 // Scan parses src into the provided FlexTime using the scanner's configuration.
@@ -112,7 +118,7 @@ func (s *Scanner) scanString(ft *FlexTime, str string) error {
 	if str == "" {
 		return ft.Scan(str) // delegate for error
 	}
-	result, err := dateparsa.ParseWith(str, s.parseOpts...)
+	result, err := s.p.Parse(str)
 	if err != nil {
 		// Report the configured parse's own failure. This used to call
 		// ft.Scan(str), which re-parses with default options "for error

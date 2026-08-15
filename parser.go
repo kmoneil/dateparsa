@@ -1,17 +1,33 @@
 package dateparsa
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // Parser is a stateful parser optimized for parsing many dates
 // with the same (or similar) format. It caches the last successful
 // Layout and tries it first on subsequent calls.
 //
-// A Parser is not safe for concurrent use by multiple goroutines.
-// To parse concurrently, create a separate Parser per goroutine,
-// or use Layout.Parse directly for the concurrent hot path.
+// A Parser is safe for concurrent use by multiple goroutines. The cached
+// layout is held in an atomic pointer and the Layout it points at is
+// immutable, so readers need no exclusion and a reader is never handed a
+// half-written cache.
+//
+// The cache is an optimization and not a coordination point. Two goroutines
+// that miss at the same time both detect, both store, and the last store wins;
+// a goroutine parsing one format while another parses a different one may find
+// the cache holding the other's layout and fall through to detection. Neither
+// costs correctness, because the time returned always comes from parsing that
+// call's own input: a layout that does not fit the input fails and the slow
+// path runs. What concurrency costs is cache hits, so a column per goroutine
+// is still the arrangement that parses fastest.
+//
+// Do not copy a Parser. NewParser returns a pointer for this reason and
+// go vet's copylocks check reports a copy as an error.
 type Parser struct {
 	cfg    config
-	layout *Layout
+	layout atomic.Pointer[Layout]
 }
 
 // NewParser creates a parser with the given options.
@@ -52,15 +68,21 @@ func (p *Parser) Parse(s string) (ParseResult, error) {
 	// answer cannot be trusted, and on nothing else: every format whose fields
 	// are fixed by its shape is unaffected, which is every trie format bar the
 	// numeric slash family. Measured in the commit that made this change.
-	if p.layout != nil && !p.layout.ambiguityProne {
-		t, err := p.layout.Parse(s)
+	//
+	// The load is atomic and the value loaded is used for the whole fast path,
+	// rather than reading p.layout three times: a concurrent Reset or a
+	// concurrent miss can replace the cache between two reads, and this way the
+	// instant, the layout returned beside it and the Ambiguous flag over it all
+	// describe the same layout.
+	if l := p.layout.Load(); l != nil && !l.ambiguityProne {
+		t, err := l.Parse(s)
 		if err == nil {
 			return ParseResult{
 				Time:   t,
-				Layout: p.layout,
+				Layout: l,
 				// Carried from the layout, not left at false. Detection said
 				// this format was a guess; reusing it does not make it certain.
-				Ambiguous: p.layout.ambiguous,
+				Ambiguous: l.ambiguous,
 				Kind:      KindAbsolute,
 			}, nil
 		}
@@ -72,7 +94,7 @@ func (p *Parser) Parse(s string) (ParseResult, error) {
 		return ParseResult{}, err
 	}
 
-	p.layout = result.Layout
+	p.layout.Store(result.Layout)
 	return result, nil
 }
 
@@ -108,6 +130,10 @@ func (p *Parser) ParseColumn(values []string) ([]time.Time, []error) {
 }
 
 // Reset clears the cached layout, forcing re-detection on the next call.
+//
+// Safe to call while other goroutines are parsing. It does not stop a Parse
+// already past the load from using the layout it loaded, which is sound: that
+// layout parses that goroutine's input or fails and re-detects.
 func (p *Parser) Reset() {
-	p.layout = nil
+	p.layout.Store(nil)
 }

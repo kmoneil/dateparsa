@@ -1,6 +1,7 @@
 package flextime
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -61,6 +62,82 @@ func TestScannerConfiguredCostsNoMorePerRow(t *testing.T) {
 		t.Errorf("configured Scanner allocates %.0f times per row, default allocates %.0f; "+
 			"configuration is fixed at NewScanner and may not cost anything per row", got, want)
 	}
+}
+
+// TestScannerColumnFormatChangesMidFile is the test the cache makes necessary.
+// A Scanner detects a column's format once and reuses it, so a column that
+// changes format partway through is where reuse could return a wrong instant
+// instead of an error. _plans/two-pass-column.md designs for this shape and
+// nothing in this package covered it.
+//
+// The rows alternate deliberately rather than switching once: a layout that
+// stuck would be caught on the row after it, not fifty rows later.
+func TestScannerColumnFormatChangesMidFile(t *testing.T) {
+	want := time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)
+	wantTime := time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)
+
+	rows := []struct {
+		in   string
+		want time.Time
+	}{
+		{"2024-03-15", want},
+		{"2024-03-15", want},
+		{"20240315", want},
+		{"2024-03-15 10:30:00", wantTime},
+		{"2024-03-15", want},
+		{"March 15, 2024", want},
+		{"2024-03-15T10:30:00Z", wantTime},
+		{"20240315", want},
+		{"2024-03-15", want},
+	}
+
+	s := NewScanner()
+	for i, row := range rows {
+		var ft FlexTime
+		if err := s.Scan(&ft, row.in); err != nil {
+			t.Fatalf("row %d, Scan(%q): %v", i, row.in, err)
+		}
+		if !ft.Time().Equal(row.want) {
+			t.Errorf("row %d, Scan(%q) = %v, want %v", i, row.in, ft.Time(), row.want)
+		}
+	}
+}
+
+// TestScannerConcurrentUse holds the promise on the Scanner doc comment. A
+// Scanner caches a layout now, and the type was safe for concurrent use before
+// it did.
+func TestScannerConcurrentUse(t *testing.T) {
+	rows := []struct {
+		in   string
+		want time.Time
+	}{
+		{"2024-03-15", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"20240315", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"2024-03-15 10:30:00", time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{"2024-03-15T10:30:00Z", time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+	}
+
+	s := NewScanner()
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			row := rows[g%len(rows)]
+			for range 400 {
+				var ft FlexTime
+				if err := s.Scan(&ft, row.in); err != nil {
+					t.Errorf("goroutine %d: Scan(%q): %v", g, row.in, err)
+					return
+				}
+				if !ft.Time().Equal(row.want) {
+					t.Errorf("goroutine %d: Scan(%q) = %v, want %v", g, row.in, ft.Time(), row.want)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
 }
 
 func TestScannerScanNil(t *testing.T) {

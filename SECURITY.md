@@ -79,9 +79,10 @@ upstream package to ride in on.
 **No global mutable state after init.** Locale data registers itself through
 `init()` and is read-only from then on. `Layout` holds a value-type `Program`
 and no pointers into caller memory, which is why it is safe to share across
-goroutines. `Parser` caches a layout on itself and is documented as not safe for
-concurrent use; that is a correctness constraint on the caller and not a
-defended boundary.
+goroutines. `Parser` holds one piece of mutable state, the cached layout, in an
+`atomic.Pointer[Layout]`; the layout it points at is immutable, so a reader is
+never handed a half-written value and sharing a `Parser` across goroutines is
+safe. It used to be a plain field and a documented constraint on the caller.
 
 ## Bounds
 
@@ -219,9 +220,13 @@ Said plainly, so it is not discovered later.
 - **A wrong but well-formed date.** `2024-02-30` is rejected, but `1970-01-01`
   in a field that should hold a recent timestamp parses fine. Range checks are
   the application's.
-- **Concurrent misuse of `Parser`.** Sharing one across goroutines is a data
-  race. `Layout` is the concurrent-safe type. `go test -race` runs in CI for
-  this library's own tests, not for yours.
+- **Concurrent use of `Parser` costs cache hits, not correctness.** Sharing one
+  across goroutines is safe: the cached layout is an atomic pointer to an
+  immutable `Layout`. What sharing costs is hits, because goroutines parsing
+  different formats evict each other, and every miss is a full detection. A
+  `Parser` per column is still the arrangement that parses fastest, and
+  `Layout.Parse` is still the floor. `go test -race` runs in CI for this
+  library's own tests, not for yours.
 - **Locale data correctness.** The month and weekday names in
   `internal/locale/data/` are derived from CLDR and are not independently
   verified per language. A wrong abbreviation in a locale means a failed parse
@@ -260,3 +265,4 @@ Update this document in the same change whenever you:
 - add a code path whose cost is not linear in input length
 - change how ambiguity is detected, reported, or resolved
 - change the timezone abbreviation table or the fallback in `lookupTZAbbr`
+- change what an exported type promises about concurrent use

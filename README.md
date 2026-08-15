@@ -246,10 +246,12 @@ median of the three runs in `benchmarks/baseline.txt`, which is the committed
 reference `make bench-compare` measures against. If you change one of these
 numbers, change the baseline in the same commit and say what produced it.
 
-**Allocs** is re-measured on `linux/arm64`, Go 1.26.4, at `e61660a`, because
-seven of these counts had drifted from the baseline and an allocation count does
-not depend on the machine: it is a property of the code. The ns column has not
-been re-run on the M2 Max since, and it is stale by an unknown amount on any row
+**Allocs** is re-measured on `linux/arm64`, Go 1.26.4: the whole column at
+`e61660a`, because seven of the counts had drifted from the baseline, and the
+natural-language rows again when `Option` became a value form, which took one
+allocation off every call that passes options. An allocation count does not
+depend on the machine: it is a property of the code. The ns column has not been
+re-run on the M2 Max since, and it is stale by an unknown amount on any row
 whose allocation count moved. Do not read the two columns as one measurement.
 
 ### Hot path (compiled Layout reuse)
@@ -296,12 +298,12 @@ no separators to fold. The allocation column is still 0 and still exact.
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| "yesterday"          | 714   | 3      |
-| "3 days ago"         | 803   | 3      |
-| "next friday"        | 834   | 3      |
-| "in 10 minutes"      | 936   | 3      |
-| "beginning of month" | 1,101 | 3      |
-| "yesterday at 5pm"   | 1,111 | 3      |
+| "yesterday"          | 714   | 2      |
+| "3 days ago"         | 803   | 2      |
+| "next friday"        | 834   | 2      |
+| "in 10 minutes"      | 936   | 2      |
+| "beginning of month" | 1,101 | 2      |
+| "yesterday at 5pm"   | 1,111 | 2      |
 
 ### Regression tracking
 

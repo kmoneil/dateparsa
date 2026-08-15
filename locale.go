@@ -67,7 +67,8 @@ func Locales() []string {
 // Default: [English]. Natural language parsing and month/day name
 // recognition use these locales.
 func WithLocales(locales ...Locale) Option {
-	return func(c *config) {
+	return func(c config) config {
 		c.locales = locales
+		return c
 	}
 }

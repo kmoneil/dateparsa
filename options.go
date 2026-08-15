@@ -16,52 +16,75 @@ type config struct {
 func buildConfig(opts []Option) config {
 	c := config{timezone: time.UTC}
 	for _, o := range opts {
-		o(&c)
+		c = o(c)
 	}
 	return c
 }
 
-// Option configures parsing behavior.
-type Option func(*config)
+// Option configures parsing behavior. Build one with a With function;
+// config is unexported, so this package is the only place an Option
+// can come from.
+//
+// An Option takes a config by value and returns the modified copy. It
+// does not take a pointer: handing the address of a local config to an
+// opaque func value forces that config onto the heap, which cost every
+// ParseWith, ParseTime and Detect call one 64-byte allocation.
+type Option func(config) config
 
 // WithBaseTime sets the reference time for relative date expressions.
 // Default: time.Now().
 func WithBaseTime(t time.Time) Option {
-	return func(c *config) { c.baseTime = t }
+	return func(c config) config {
+		c.baseTime = t
+		return c
+	}
 }
 
 // WithTimezone sets the assumed timezone when the input has no
 // timezone indicator. Default: time.UTC.
 func WithTimezone(loc *time.Location) Option {
-	return func(c *config) {
+	return func(c config) config {
 		if loc == nil {
 			loc = time.UTC
 		}
 		c.timezone = loc
+		return c
 	}
 }
 
 // WithPreferDayFirst treats ambiguous dates as DD/MM/YYYY.
 // Default: false (MM/DD/YYYY, American convention).
 func WithPreferDayFirst(b bool) Option {
-	return func(c *config) { c.preferDayFirst = b }
+	return func(c config) config {
+		c.preferDayFirst = b
+		return c
+	}
 }
 
 // WithPreferYearFirst treats ambiguous dates as YYYY/MM/DD.
 // Takes precedence over PreferDayFirst when applicable.
 func WithPreferYearFirst(b bool) Option {
-	return func(c *config) { c.preferYearFirst = b }
+	return func(c config) config {
+		c.preferYearFirst = b
+		return c
+	}
 }
 
 // WithPreferFuture makes relative dates without direction default
 // to the future. Default: false (prefer past).
 func WithPreferFuture(b bool) Option {
-	return func(c *config) { c.preferFuture = b }
+	return func(c config) config {
+		c.preferFuture = b
+		return c
+	}
 }
 
 // WithStrictMode controls whether ambiguous dates are rejected.
 // When true, ambiguous dates return an *AmbiguousDateError instead
 // of applying preference rules.
 func WithStrictMode(b bool) Option {
-	return func(c *config) { c.strictMode = b }
+	return func(c config) config {
+		c.strictMode = b
+		return c
+	}
 }

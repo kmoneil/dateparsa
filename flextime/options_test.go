@@ -33,6 +33,36 @@ func TestScannerScan(t *testing.T) {
 	}
 }
 
+// TestScannerConfiguredCostsNoMorePerRow is the gate on the option list being
+// built once. A Scanner that rebuilds it inside Scan allocates the slice and a
+// closure per option on every row, so a configured Scanner cost four
+// allocations a row more than a default one for configuration that was fixed
+// when NewScanner returned.
+//
+// It asserts equality against the default Scanner rather than a fixed count,
+// because the count that survives belongs to the root package and moves when
+// that package's allocation behaviour changes. What this package promises is
+// that configuring a Scanner is free per row, and that is the equality.
+func TestScannerConfiguredCostsNoMorePerRow(t *testing.T) {
+	loc := time.FixedZone("CET", 3600)
+	def := NewScanner()
+	cfg := NewScanner(WithPreferDayFirst(true), WithTimezone(loc))
+
+	var ft FlexTime
+	perRow := func(s *Scanner) float64 {
+		return testing.AllocsPerRun(100, func() {
+			if err := s.Scan(&ft, "2024-03-15"); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+		})
+	}
+
+	if got, want := perRow(cfg), perRow(def); got != want {
+		t.Errorf("configured Scanner allocates %.0f times per row, default allocates %.0f; "+
+			"configuration is fixed at NewScanner and may not cost anything per row", got, want)
+	}
+}
+
 func TestScannerScanNil(t *testing.T) {
 	scanner := NewScanner()
 	var ft FlexTime

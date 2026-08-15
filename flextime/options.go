@@ -58,8 +58,13 @@ func NewWithOptions(t time.Time, opts ...Option) FlexTime {
 
 // Scanner is a pre-configured scanner for use with database rows.
 // Use this when you need non-default options for database scanning.
+//
+// The parse options are built once, here, and never written again, so a
+// Scanner is safe for concurrent use. They used to be rebuilt from the
+// configuration on every value scanned, which cost a configured Scanner four
+// allocations and 56 bytes per row for a list that could not change.
 type Scanner struct {
-	opts options
+	parseOpts []dateparsa.Option
 }
 
 // NewScanner creates a Scanner with the given options.
@@ -68,7 +73,7 @@ func NewScanner(opts ...Option) *Scanner {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &Scanner{opts: o}
+	return &Scanner{parseOpts: o.parseOpts()}
 }
 
 // Scan parses src into the provided FlexTime using the scanner's configuration.
@@ -107,8 +112,7 @@ func (s *Scanner) scanString(ft *FlexTime, str string) error {
 	if str == "" {
 		return ft.Scan(str) // delegate for error
 	}
-	parseOpts := s.opts.parseOpts()
-	result, err := dateparsa.ParseWith(str, parseOpts...)
+	result, err := dateparsa.ParseWith(str, s.parseOpts...)
 	if err != nil {
 		// Report the configured parse's own failure. This used to call
 		// ft.Scan(str), which re-parses with default options "for error

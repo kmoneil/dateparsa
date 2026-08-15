@@ -896,6 +896,126 @@ func TestSkippedRunWithADigitIsRefused(t *testing.T) {
 	}
 }
 
+// TestSeparatorClassSeparatesTwoFormatsOfTheSameShape covers the last thing a
+// literal was not checking: which character class its byte belongs to.
+//
+// Refusing a digit is not enough. A bare numeric date and a time of day are
+// both DD?DD?DD, and ':' is no more a digit than '-' is, so each format's
+// layout accepted the other's input and answered with the wrong kind of value:
+//
+//	NUMERIC_MDY from "20-1-00" read "10:01:00" as 2000-01-10
+//	TIME_HMS    from "10:30:45" read "12/25/24" as 12:25:24
+//
+// Not a day out. A date where the input held a time, and a time where it held a
+// date, with no error either way. The class each position matched on was in the
+// trie signature all along; the literal carries it now.
+func TestSeparatorClassSeparatesTwoFormatsOfTheSameShape(t *testing.T) {
+	for _, tt := range []struct{ detectFrom, applyTo string }{
+		{"20-1-00", "10:01:00"},      // the crasher FuzzLayoutReuse minimised
+		{"12/25/24", "10:30:00"},     // a date layout against a time
+		{"3/15/24", "10:01:00"},      // the same, one-digit month
+		{"10:30:45", "12/25/24"},     // a time layout against a date
+		{"00:00:00", "12/25/24"},     // the same, from an all-zero time
+		{"10:30", "12/25"},           // two parts rather than three
+		{"2014:03:31", "2024-03-15"}, // EXIF colons against ISO dashes
+		{"2024-03-15", "2014:03:31"}, // and back the other way
+	} {
+		cached, err := Parse(tt.detectFrom)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tt.detectFrom, err)
+		}
+		if got, err := cached.Layout.Parse(tt.applyTo); err == nil {
+			t.Errorf("layout %v from %q accepted %q and returned %v",
+				cached.Layout, tt.detectFrom, tt.applyTo, got)
+		}
+	}
+
+	// The acceptance the loose check existed to protect. One trie entry serves
+	// every byte in a class, so a layout detected from one separator has to
+	// keep reading the others: naming '-' would refuse two inputs detection
+	// accepts. Narrowing to the class must not narrow past it.
+	iso, err := Parse("2024-03-15")
+	if err != nil {
+		t.Fatalf("Parse of the ISO sample: %v", err)
+	}
+	for _, in := range []string{"2024-03-15", "2024/03/15", "2024.03.15"} {
+		got, err := iso.Layout.Parse(in)
+		if err != nil {
+			t.Errorf("layout %v refused %q: %v", iso.Layout, in, err)
+			continue
+		}
+		if s := got.UTC().Format("2006-01-02"); s != "2024-03-15" {
+			t.Errorf("layout %v read %q as %s, want 2024-03-15", iso.Layout, in, s)
+		}
+	}
+}
+
+// TestNoCrossFormatDisagreement is the deterministic half of FuzzLayoutReuse:
+// every ordered pair of the formats this library advertises, checked for the
+// property the fuzzer looks for at random. A layout detected from one input,
+// applied to another, either refuses or agrees with what detection says the
+// second input means.
+//
+// It is here because the fuzzer took a corpus grown across weeks to reach the
+// pair that broke, and a sweep of the documented formats reaches all of them in
+// six milliseconds on every go test. It turned up no defect the fuzzer had not,
+// only more of the one it found: eight disagreeing pairs where the fuzzer had
+// minimised one. What the sweep does is stop them coming back.
+//
+// The corpus is coverageCases, so a format added there is swept against every
+// other one without anybody listing it twice.
+func TestNoCrossFormatDisagreement(t *testing.T) {
+	corpus := make([]string, 0, len(coverageCases))
+	for _, c := range coverageCases {
+		corpus = append(corpus, c.input)
+	}
+	// The same-shape inputs the disagreements have come from, which the
+	// coverage table has no reason to list: a bare numeric date against a time
+	// of day, a compact date against a run of digits, EXIF colons against ISO
+	// dashes.
+	corpus = append(corpus,
+		"20-1-00", "10:01:00", "1-2-00", "12/25/24", "25.12.24",
+		"00:00:00", "00000101", "0000-001", "1030", "103045", "171113",
+		"171113 14:14:20", "2014:03:31", "2014:04:08 22:05",
+		"2014:04:08 22:05:13", "2014-04", "2014",
+		"2014-12-16 06:20:00 UTC", "2014-04-26 05:24:37 PM",
+	)
+
+	// Detect once per input rather than once per pair. An ambiguous parse is
+	// excluded for the reason FuzzLayoutReuse excludes it: where detection says
+	// it had to guess, a layout that made the other choice is the other
+	// reading, and the caller was told on both calls.
+	type detected struct {
+		in     string
+		layout *Layout
+		want   time.Time
+	}
+	var known []detected
+	for _, in := range corpus {
+		r, err := Parse(in)
+		if err != nil || !reusable(r.Layout) || r.Ambiguous {
+			continue
+		}
+		known = append(known, detected{in, r.Layout, r.Time})
+	}
+
+	for _, a := range known {
+		for _, b := range known {
+			if a.in == b.in {
+				continue
+			}
+			// Refusing is always allowed: Parser falls back to detection.
+			got, err := a.layout.Parse(b.in)
+			if err != nil || got.Equal(b.want) {
+				continue
+			}
+			t.Errorf("layout %v from %q accepted %q and disagreed with detection:\n"+
+				"  reused %-14s = %v\n  fresh  %-14s = %v",
+				a.layout, a.in, b.in, a.layout.String(), got, b.layout.String(), b.want)
+		}
+	}
+}
+
 // TestCompileHonoursTheTokensItAccepts covers W5 and W6, which are one defect
 // wearing two shapes: ParseGoLayout accepted a token the rest of the pipeline
 // could not honour, and said nothing.

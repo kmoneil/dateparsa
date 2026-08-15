@@ -98,18 +98,11 @@ func numericW(s string, off, w int, aux uint16) (int, bool) {
 	if at >= len(s) {
 		return 0, false
 	}
-	c := s[at]
-	if aux == sepAnyNonDigit {
-		// A digit here is a numeric token, and which token sits where is what
-		// picks the format. TIME_HMS declares ':' at 2 and 5 and read
-		// "00000101" as one second past midnight, where detection reads
-		// COMPACT_DATE and the first of January in the year 0.
-		if c >= '0' && c <= '9' {
-			return 0, false
-		}
-		return w + 1, true
-	}
-	if c != byte(aux) {
+	// What the byte has to be is Aux's three readings, and litAccepts answers
+	// all three. The class reading is the one that carries a trie format's
+	// separator: TIME_HMS declares a colon at 2 and at 5, and asking only that
+	// those bytes were not digits let it read "12/25/24" as 12:25:24.
+	if !litAccepts(aux, s[at]) {
 		return 0, false
 	}
 	return w + 1, true
@@ -493,48 +486,33 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 		// ── Structural fields ────────────────────────────────────────
 
 		case OpLiteral:
-			// Aux carries the byte where one detector settled on one byte:
-			// ParseGoLayout, and the separators lit() emits. Those are checked
-			// exactly.
+			// Aux says what the byte has to be, under the three readings in
+			// instructions.go. ParseGoLayout and lit() name the exact byte,
+			// because both read it off an input they had in front of them.
 			//
-			// The trie entries in formats.go cannot be, because they match on a
+			// A trie entry cannot name a byte, because it matches on a
 			// signature of character classes and one entry serves every byte in
-			// the class. ISO8601_DATE reads "2024-03-15", "2024/03/15" and
-			// "2024.03.15", all three CSep at offsets 4 and 7, so an entry that
-			// named '-' would refuse two inputs detection accepts.
+			// the class: ISO8601_DATE reads "2024-03-15", "2024/03/15" and
+			// "2024.03.15", all three CSep at offsets 4 and 7. What it can name
+			// is that class, and buildTrie stamps it here from the signature
+			// position the literal sits at.
 			//
-			// What no class at a literal position contains is a digit, and that
-			// is the half worth enforcing, for the reason OpSkip gives above: a
-			// digit is a numeric token, and which token is where is what picks
-			// the format. TIME_HMS declares ':' at 2 and 5 and read "00000101"
-			// as one second past midnight, where detection reads COMPACT_DATE
-			// and the first of January in the year 0.
+			// The class is what separates two formats of the same shape.
+			// NUMERIC_MDY and TIME_HMS are both DD?DD?DD, so while this asked
+			// only that the byte was not a digit, a layout detected from
+			// "20-1-00" read "10:01:00" as the tenth of January 2000.
 			//
-			// The first byte is handled without a loop because this is the most
-			// common instruction in the trie formats and nearly all of them
-			// declare one byte. Only buildDatePartFields emits a wider literal,
-			// one spanning the whole run between two date parts.
-			if off >= slen {
+			// The loop covers the whole declared width. Only buildDatePartFields
+			// emits a literal wider than one byte, one spanning the run between
+			// two date parts, and the bound refuses nothing the coverage check
+			// below would have allowed: a literal running past the end leaves
+			// end > slen.
+			if off+w > slen {
 				return time.Time{}, fieldError("literal", off, slen)
 			}
-			c := s[off]
-			if inst.Aux != 0 {
-				if c != byte(inst.Aux) {
-					return time.Time{}, fieldError("literal", off, slen)
-				}
-				break
-			}
-			if c >= '0' && c <= '9' {
-				return time.Time{}, fieldError("literal", off, slen)
-			}
-			if w > 1 {
-				if off+w > slen {
-					return time.Time{}, fieldError("literal", off, slen)
-				}
-				for j := off + 1; j < off+w; j++ {
-					if s[j] >= '0' && s[j] <= '9' {
-						return time.Time{}, fieldError("literal", j, slen)
-					}
+			for j := off; j < off+w; j++ {
+				if !litAccepts(inst.Aux, s[j]) {
+					return time.Time{}, fieldError("literal", j, slen)
 				}
 			}
 

@@ -141,6 +141,15 @@ func FuzzLayoutReuse(f *testing.F) {
 		// and at 5 and accepted eight digits.
 		{"00:00:00", "00000101"},
 		{"10:30", "1030"},
+
+		// Refusing a digit was not enough at those same positions. A date and a
+		// time are both DD?DD?DD and ':' is not a digit, so each format read
+		// the other's input and answered with the wrong kind of value: a date
+		// layout returned 2000-01-10 for one minute past ten, and a time layout
+		// returned 12:25:24 for Christmas Day. The literal carries the
+		// character class its signature matched on now.
+		{"20-1-00", "10:01:00"},
+		{"10:30:45", "12/25/24"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

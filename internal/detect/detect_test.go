@@ -540,3 +540,129 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 		t.Errorf("corpus did not exercise both paths: fast=%v slow=%v", sawFast, sawSlow)
 	}
 }
+
+// TestTrieLiteralsCarryTheirClass holds the invariant stampLiteralClasses
+// depends on, over the trie Detect actually walks rather than a rebuilt copy.
+//
+// Every literal in a trie entry is one byte, and it sits at a signature
+// position whose class is not CDigit. Both halves matter. A wider literal would
+// need a class per byte and Aux holds one, so it is left at "not a digit" and
+// nobody notices. A literal at a digit position would be stamped ClassAny,
+// which is the one class that excludes digits, and the format would refuse the
+// input it matched on.
+func TestTrieLiteralsCarryTheirClass(t *testing.T) {
+	var walk func(n *trieNode)
+	seen := 0
+	walk = func(n *trieNode) {
+		if e := n.entry; e != nil {
+			for _, f := range e.fields {
+				if f.Kind != compile.FLiteral {
+					continue
+				}
+				seen++
+				if f.Len != 1 {
+					t.Errorf("%s: literal at offset %d is %d bytes wide, and a class covers one",
+						e.name, f.Offset, f.Len)
+					continue
+				}
+				if f.Offset >= len(e.sig) {
+					t.Errorf("%s: literal at offset %d is past its %d-class signature",
+						e.name, f.Offset, len(e.sig))
+					continue
+				}
+				cc := e.sig[f.Offset]
+				if cc == CDigit {
+					t.Errorf("%s: literal at offset %d sits at a CDigit position", e.name, f.Offset)
+					continue
+				}
+				if want := compile.AuxFor(litClassOf[cc]); f.Aux != want {
+					t.Errorf("%s: literal at offset %d has Aux %d, want %d for class %d",
+						e.name, f.Offset, f.Aux, want, cc)
+				}
+			}
+		}
+		for _, c := range n.children {
+			if c != nil {
+				walk(c)
+			}
+		}
+	}
+	walk(&globalTrie.root)
+
+	// A stamping pass that silently stopped matching anything would pass every
+	// assertion above.
+	if seen < 100 {
+		t.Errorf("walked %d trie literals, want the ~105 the formats declare", seen)
+	}
+}
+
+// TestLitClassSupersetsScan holds the direction that decides whether the class
+// check can refuse an input detection accepted.
+//
+// A trie entry matches because Scan gave every byte the class the signature
+// names. The literal at one of those positions now asks compile whether the
+// byte is in that class, and compile answers from a context-free table while
+// Scan reads three of its classes from context: 'T' between digits, 'Z' at the
+// end or before a sign, '-' after a time. If the table were narrower than Scan
+// anywhere, a format would refuse its own input.
+//
+// Refusing is the only failure worth testing for. The table being wider than
+// Scan costs over-acceptance, which is what the class was narrowing in the
+// first place, and the cross-format sweep in the root package is what measures
+// that.
+func TestLitClassSupersetsScan(t *testing.T) {
+	// Contexts that between them reach every arm of Scan's switch.
+	contexts := []struct {
+		before, after string
+	}{
+		{"", ""},
+		{"1", "1"},
+		{"1", ""},
+		{"", "1"},
+		{"10:30:00", ""},
+		{"10:30:00", "05:00"},
+		{"2024-03-15", "10:30:00"},
+	}
+
+	for b := 0; b < 256; b++ {
+		c := byte(b)
+		for _, ctx := range contexts {
+			s := ctx.before + string(c) + ctx.after
+			sig := Scan(s)
+			at := len(ctx.before)
+			if at >= sig.Len() {
+				continue
+			}
+			cc := sig.At(at)
+			if cc == CDigit {
+				continue // never a literal position
+			}
+			if !compile.AuxAccepts(compile.AuxFor(litClassOf[cc]), c) {
+				t.Errorf("Scan(%q) gives byte %#x class %d, which compile refuses",
+					s, c, cc)
+			}
+		}
+	}
+}
+
+// TestLitClassOfIsComplete checks the map has an entry for every class a
+// literal can sit at. A class added to the scanner with no entry here maps to
+// the zero value, which is ClassAny, and the format goes back to accepting any
+// byte that is not a digit without anything failing.
+func TestLitClassOfIsComplete(t *testing.T) {
+	want := map[CharClass]compile.LitClass{
+		CLetter:  compile.ClassLetter,
+		CSep:     compile.ClassSep,
+		CSpace:   compile.ClassSpace,
+		CColon:   compile.ClassColon,
+		CSpecial: compile.ClassSpecial,
+	}
+	for cc := CharClass(0); cc < numClasses; cc++ {
+		if cc == CDigit {
+			continue
+		}
+		if litClassOf[cc] != want[cc] {
+			t.Errorf("litClassOf[%d] = %d, want %d", cc, litClassOf[cc], want[cc])
+		}
+	}
+}

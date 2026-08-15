@@ -82,7 +82,7 @@ type Field struct {
 	Kind   FieldKind
 	Offset int    // Byte offset in the input
 	Len    int    // Expected length (0 = variable)
-	Aux    uint16 // Pre-resolved value (month number for MonthName, literal byte, etc.)
+	Aux    uint16 // Pre-resolved value: month number, literal byte, or class. See instructions.go
 }
 
 // FormatDef defines a date format as a sequence of fields.

@@ -519,7 +519,7 @@ func resolveAmbiguous(s string, cfg Config) (Result, bool) {
 		return Result{}, false
 	}
 
-	fields, ok := buildDatePartFields(parts, monthPart, dayPart)
+	fields, ok := buildDatePartFields(parts, sepChar, monthPart, dayPart)
 	if !ok {
 		return Result{}, false
 	}
@@ -620,7 +620,7 @@ func partIndex(offset int, parts []string) int {
 
 // buildDatePartFields constructs compile.Fields for a 3-part date, sorting by
 // input position and inserting literal separator fields between them.
-func buildDatePartFields(parts []string, month, day datePart) ([]compile.Field, bool) {
+func buildDatePartFields(parts []string, sepChar byte, month, day datePart) ([]compile.Field, bool) {
 	// Determine year part by elimination: whichever offset is not month or day.
 	// Both are assigned on every path below, so neither carries an initializer.
 	var yearOffset, yearLen int
@@ -698,11 +698,32 @@ func buildDatePartFields(parts []string, month, day datePart) ([]compile.Field, 
 	}
 
 	// Build fields with literal separators between them.
+	//
+	// The run between two parts is the byte the caller split on, and findSep
+	// only ever picks '-', '/' or '.', so it is a CSep whatever the input was.
+	// Saying so is what stops the layout reading another format of the same
+	// shape: while this literal asked only that the byte was not a digit, one
+	// built from "20-1-00" accepted "10:01:00" and answered the tenth of
+	// January 2000 for an input that means one minute past ten.
+	//
+	// The class rather than sepChar itself, for the reason a trie literal takes
+	// a class: a column written with one separator and read with another is a
+	// format this detector resolves the same way both times.
+	sepAux := compile.AuxFor(compile.ClassSep)
+	if sepChar != '-' && sepChar != '/' && sepChar != '.' {
+		sepAux = 0 // not a class this knows; fall back to "not a digit"
+	}
 	fields := make([]compile.Field, 0, 8)
 	prevEnd := 0
 	for _, info := range infos {
 		if info.offset > prevEnd {
-			fields = append(fields, compile.Field{Kind: compile.FLiteral, Offset: prevEnd, Len: info.offset - prevEnd})
+			aux := sepAux
+			if info.offset-prevEnd != 1 {
+				aux = 0 // a wider run needs a class per byte, and Aux holds one
+			}
+			fields = append(fields, compile.Field{
+				Kind: compile.FLiteral, Offset: prevEnd, Len: info.offset - prevEnd, Aux: aux,
+			})
 		}
 		fields = append(fields, info.field)
 		prevEnd = info.offset + info.field.Len

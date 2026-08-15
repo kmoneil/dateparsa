@@ -116,7 +116,7 @@ type FormatDef struct {
 // year, which is nearly all of them.
 func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, err error) {
 	// The error paths return the named results rather than a fresh Program{}.
-	// A Program is 216 bytes, and materialising a second zero one puts the cost
+	// A Program is 168 bytes, and materialising a second zero one puts the cost
 	// of the refusal on every call that does not refuse.
 	if n := len(def.Fields); n > MaxInstructions {
 		err = fmt.Errorf("compile: format %s needs %d instructions, the limit is %d",

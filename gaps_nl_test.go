@@ -213,6 +213,54 @@ func TestGaps_NL_LocalizedRelative(t *testing.T) {
 			locale:   DE,
 			expected: gapNLBase.Add(-5 * time.Minute),
 		},
+
+		// Phrases that hold a space. The scanner matches these against the
+		// locale table as one phrase, and every scheme that speeds it up by
+		// splitting the input into words loses them: "il y a" is four tokens
+		// of French and none of them mean "ago" alone. There are 22 of these
+		// across the twenty locales, and
+		// natural.TestScanLocale_MultiWordPhrases covers all 22 at the scanner.
+		// These are the ones that also have to survive evaluation.
+		{
+			name: "French 3 days ago", input: "il y a 3 jours",
+			locale:   FR,
+			expected: gapNLBase.AddDate(0, 0, -3),
+		},
+		{
+			name: "Spanish in 3 days", input: "dentro de 3 dias",
+			locale:   ES,
+			expected: gapNLBase.AddDate(0, 0, 3),
+		},
+		{
+			name: "Portuguese in 2 hours", input: "dentro de 2 horas",
+			locale:   PT,
+			expected: gapNLBase.Add(2 * time.Hour),
+		},
+		{
+			name: "Danish tomorrow", input: "i morgen",
+			locale:   DA,
+			expected: time.Date(2024, 3, 16, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "Danish today", input: "i dag",
+			locale:   DA,
+			expected: time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "Danish yesterday, accented", input: "i går",
+			locale:   DA,
+			expected: time.Date(2024, 3, 14, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "Swedish tomorrow", input: "i morgon",
+			locale:   SV,
+			expected: time.Date(2024, 3, 16, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "Hindi yesterday", input: "बीता कल",
+			locale:   HI,
+			expected: time.Date(2024, 3, 14, 0, 0, 0, 0, time.UTC),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

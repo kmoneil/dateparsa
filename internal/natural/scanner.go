@@ -562,6 +562,24 @@ type localeWord struct {
 	tok    Token
 }
 
+// localeWords is a locale's phrase table, bucketed by the first byte of the
+// phrase.
+//
+// A phrase can only match at a position whose byte equals its own first byte,
+// so bucketing on that byte is exact: the scanner visits the phrases that can
+// match and no others. Bucket b is words[index[b]:index[b+1]], and index has
+// 257 entries so that the last bucket has an end.
+type localeWords struct {
+	words []localeWord
+	index [257]int32
+}
+
+// bucket returns the phrases that can start with byte b, longest first.
+func (lw *localeWords) bucket(b byte) []localeWord {
+	i := int(b)
+	return lw.words[lw.index[i]:lw.index[i+1]]
+}
+
 // buildLocaleWords builds a word list from locale relative keywords.
 func buildLocaleWords(loc *locale.Data) []localeWord {
 	var words []localeWord
@@ -623,17 +641,67 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 	return words
 }
 
-// localeWordCache caches the built word list per locale Data pointer.
+// indexLocaleWords buckets a sorted word list by the first byte of each phrase.
+//
+// The bucketing is a counting sort, and it is stable: within a bucket the
+// phrases keep the order buildLocaleWords put them in, so the scanner still
+// sees them longest first, and two equal phrases carrying different tokens
+// still resolve the way they did before there was an index. There are five of
+// those across the twenty locales, "ora" in Italian among them, and which one
+// wins is decided by the length sort above, which is not stable. Reordering
+// here would change an answer.
+//
+// A phrase of zero length is dropped. Nothing in the locale data has one, and
+// if something did the scanner would match it at any position that is not a
+// word character, advance by its zero length, and never terminate.
+func indexLocaleWords(words []localeWord) *localeWords {
+	lw := &localeWords{}
+
+	var counts [256]int32
+	kept := 0
+	for _, w := range words {
+		if len(w.phrase) == 0 {
+			continue
+		}
+		counts[w.phrase[0]]++
+		kept++
+	}
+
+	var next [256]int32
+	sum := int32(0)
+	for b := range 256 {
+		lw.index[b] = sum
+		next[b] = sum
+		sum += counts[b]
+	}
+	lw.index[256] = sum
+
+	lw.words = make([]localeWord, kept)
+	for _, w := range words {
+		if len(w.phrase) == 0 {
+			continue
+		}
+		b := w.phrase[0]
+		lw.words[next[b]] = w
+		next[b]++
+	}
+
+	return lw
+}
+
+// localeWordCache caches the indexed word list per locale Data pointer.
 // Built once per locale on first use, reused thereafter. Safe for concurrent access
 // since sync.Map handles concurrent reads and writes.
-var localeWordCache sync.Map // map[*locale.Data][]localeWord
+var localeWordCache sync.Map // map[*locale.Data]*localeWords
 
-// getLocaleWords returns the cached word list for a locale, building it on first use.
-func getLocaleWords(loc *locale.Data) []localeWord {
+// getLocaleWords returns the cached, first-byte-indexed word list for a locale,
+// building it on first use. What it returns is read-only: a scan takes a bucket
+// out of it and never writes.
+func getLocaleWords(loc *locale.Data) *localeWords {
 	if v, ok := localeWordCache.Load(loc); ok {
-		return v.([]localeWord)
+		return v.(*localeWords)
 	}
-	words := buildLocaleWords(loc)
+	words := indexLocaleWords(buildLocaleWords(loc))
 	localeWordCache.Store(loc, words)
 	return words
 }
@@ -660,9 +728,11 @@ func ScanLocale(s string, loc *locale.Data) []Token {
 			continue
 		}
 
-		// Try matching a locale phrase at current position.
+		// Try matching a locale phrase at current position. Only the phrases
+		// that begin with the byte under i can match, and the index holds
+		// those; for an English miss against a Russian table there are none.
 		matched := false
-		for _, w := range words {
+		for _, w := range words.bucket(lower[i]) {
 			wlen := len(w.phrase)
 			if i+wlen <= n && lower[i:i+wlen] == w.phrase {
 				// Check word boundary.

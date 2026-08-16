@@ -101,6 +101,22 @@ func BenchmarkParse_Miss_Locales(b *testing.B) {
 	}
 }
 
+// BenchmarkParse_Miss_Locales_NonLatin is the same miss against locales written
+// in another script.
+//
+// The phrase table is bucketed by the first byte of the phrase, and a Cyrillic
+// or CJK phrase starts with a UTF-8 lead byte that no ASCII input can carry, so
+// this is the case the index dismisses outright. It is also the case that
+// benefits least from the index when the input *is* in that script, since a
+// whole table shares two or three lead bytes between them: see
+// BenchmarkParse_Locale_RussianNL for that side of it.
+func BenchmarkParse_Miss_Locales_NonLatin(b *testing.B) {
+	opts := []Option{WithLocales(RU, ZH, JA)}
+	for b.Loop() {
+		_, _ = ParseWith(missText, opts...)
+	}
+}
+
 // BenchmarkLayout_Parse benchmarks the compiled Layout hot path.
 func BenchmarkLayout_Parse(b *testing.B) {
 	result, err := Parse("2024-03-15T10:30:00Z")

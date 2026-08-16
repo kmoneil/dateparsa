@@ -291,3 +291,15 @@ func BenchmarkParse_Locale_GermanMonth(b *testing.B) {
 		ParseWith("15 März 2024", opts...)
 	}
 }
+
+// BenchmarkParse_Locale_RussianNL is a relative expression in a non-Latin
+// script, which is the weak case for bucketing the phrase table on the first
+// byte of the phrase: all 60 Russian phrases start with one of two UTF-8 lead
+// bytes, so a Russian word still measures against about half the table where a
+// French word measures against a tenth of the French one.
+func BenchmarkParse_Locale_RussianNL(b *testing.B) {
+	opts := []Option{WithLocales(RU), WithBaseTime(localeBase)}
+	for b.Loop() {
+		ParseWith("3 дня назад", opts...)
+	}
+}

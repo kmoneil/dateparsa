@@ -186,6 +186,11 @@ func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, 
 		p.N++
 	}
 
+	// Rewrite into slot form where the format allows it, so Execute can run it
+	// straight-line instead of interpreting it. Refusing leaves p untouched and
+	// the interpreter runs it as before. See planFast.
+	planFast(&p)
+
 	return p, needsBaseYear, nil
 }
 

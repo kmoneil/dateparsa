@@ -107,7 +107,7 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
-		program.BaseYear = baseYear(cfg)
+		program.BaseYear = int32(baseYear(cfg))
 	}
 	t, err := program.Execute(s)
 	if err != nil {
@@ -163,7 +163,7 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		return nil, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
-		program.BaseYear = baseYear(cfg)
+		program.BaseYear = int32(baseYear(cfg))
 	}
 	return &Layout{
 		program:  program,
@@ -187,7 +187,7 @@ func buildAmbiguousError(s string, cfg config) error {
 			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
 		}
 		if needsBaseYear {
-			prog.BaseYear = baseYear(cfg)
+			prog.BaseYear = int32(baseYear(cfg))
 		}
 		t, err := prog.Execute(s)
 		if err == nil {
@@ -207,7 +207,7 @@ func buildAmbiguousError(s string, cfg config) error {
 			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
 		}
 		if needsBaseYear {
-			prog.BaseYear = baseYear(cfg)
+			prog.BaseYear = int32(baseYear(cfg))
 		}
 		t, err := prog.Execute(s)
 		if err == nil {

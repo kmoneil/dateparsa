@@ -29,6 +29,9 @@ const (
 	OpTZZOrOffset               // 'Z' → UTC, or parse ±offset of Len bytes
 	OpTail                      // Consume the rest of the input without reading it
 	OpDaySpacePad               // Extract a space-padded day: " 5" or "15"
+	OpNop                       // Reads nothing and covers nothing
+
+	numOpCodes // sentinel, must be last
 )
 
 // Inst is a single parse instruction.

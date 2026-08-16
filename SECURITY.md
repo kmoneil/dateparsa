@@ -126,6 +126,22 @@ answered year zero for every input: `ParseGoLayout` emits one instruction per
 unrecognised layout byte and 27 of them exhausted the count before the first
 field. Detection is unaffected, and never emits more than 16 fields.
 
+A format whose fields all sit at fixed offsets is executed without the loop at
+all. `planFast` proves at compile time that the fields tile the input exactly,
+using a 64-bit map with one bit per input byte, and records the single length
+the program describes; `executeFast` then reads the fields at constant indices
+in a straight line. The bound that comes with it is `fastMaxWidth`, which is 64:
+a format describing more than 64 bytes keeps the interpreter, which has no such
+bound. No input is refused because of it, and the two paths are held to the same
+answer by `TestFastAgreesWithInterpreter` and
+`FuzzFastAgreesWithInterpreter`.
+
+Both paths still prove the program covers the whole input, and the proof moved
+rather than weakened. The interpreter sums the widths it reads and compares the
+sum and the maximum against the input length, which a gap and an overlap of the
+same size defeat between them because they cancel in a sum. The bitmap cannot
+cancel, so a fast program is checked more strictly, once, when it is built.
+
 **A program addresses at most 256 bytes of input.** `Inst.Offset` and `Inst.Len`
 are single bytes, and the compiler refuses a format with a field past what they
 hold rather than narrowing it. Before that check, a field at offset 260 read

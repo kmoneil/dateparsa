@@ -109,6 +109,13 @@ func numericW(s string, off, w int, aux uint16) (int, bool) {
 }
 
 func (p *Program) executeInner(s string) (time.Time, error) {
+	// A program whose fields all sit at fixed offsets does not need
+	// interpreting, and interpreting it was costing more than the extractions.
+	// See planFast.
+	if p.isFast() {
+		return p.executeFast(s)
+	}
+
 	slen := len(s)
 	var (
 		year = 0
@@ -554,6 +561,13 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			// suffix ("m=+0.000000001") no fixed-width program can describe.
 			// Everything that decides the instant has already been read.
 			w = slen - off
+
+		case OpNop:
+			// An unused slot in a fast program. It reads nothing and covers
+			// nothing, which is what lets the interpreter run a program in slot
+			// form and reach the same answer. TestFastAgreesWithInterpreter
+			// depends on that and is the cross-check on the whole fast path.
+			w = 0
 		}
 
 		covered += w
@@ -573,7 +587,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 	// Zero means leave it unset, which is what the public Compile passes and
 	// what time.Parse does.
 	if !yearSet && p.BaseYear != 0 {
-		year = p.BaseYear
+		year = int(p.BaseYear)
 	}
 
 	// Apply AM/PM conversion.
@@ -601,7 +615,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			wd = time.Weekday(isoWeekDay % 7) // 1->1(Mon), 7->0(Sun)
 		}
 		t := isoWeekToDate(week1Monday, isoWeek, wd)
-		return time.Date(t.Year(), t.Month(), t.Day(), hour, minute, second, nsec, loc), nil
+		return makeTime(t.Year(), t.Month(), t.Day(), hour, minute, second, nsec, loc), nil
 	}
 
 	// Ordinal day: convert year + day-of-year to calendar date.
@@ -616,10 +630,10 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				"dateparsa: day-of-year %d does not exist in %d, which has %d days",
 				ordinalDay, year, daysInYear(year))
 		}
-		return time.Date(year, 1, ordinalDay, hour, minute, second, nsec, loc), nil
+		return makeTime(year, 1, ordinalDay, hour, minute, second, nsec, loc), nil
 	}
 
-	return time.Date(year, month, day, hour, minute, second, nsec, loc), nil
+	return makeTime(year, month, day, hour, minute, second, nsec, loc), nil
 }
 
 // parse2Digits parses two ASCII decimal digits at s[off:off+2].
@@ -912,4 +926,84 @@ func isoWeekToDate(week1Monday time.Time, isoWeek int, weekday time.Weekday) tim
 
 func fieldError(field string, off, slen int) error {
 	return fmt.Errorf("dateparsa: invalid %s at offset %d (input length %d)", field, off, slen)
+}
+
+// lengthError is what a fast program returns in place of the interpreter's
+// coverage check. It reports the same thing in the same shape: the program
+// describes a number of bytes and the input has a different number.
+func lengthError(slen, want int) error {
+	return fmt.Errorf("dateparsa: layout describes %d of %d bytes", want, slen)
+}
+
+// makeTime builds the result, and is time.Date with a shortcut for UTC.
+//
+// time.Date costs 8.3 ns of a parse that costs 22 to 29, which makes it the
+// largest single line in this package by some way. Most of that is work this
+// caller does not need: it normalises all six fields, then asks the location
+// what offset applies at the instant it just computed, and for a zone with no
+// transitions the answer never depended on the instant.
+//
+// For UTC the offset is zero by definition, so the whole of it reduces to a
+// day count and some arithmetic: 5.9 ns against 8.3, measured on linux/arm64.
+// Anything else keeps time.Date, which is the only thing that reads a zone's
+// transitions correctly, and getting that wrong would move an instant by an
+// hour rather than fail.
+//
+// The out-of-range values this still has to handle are real. A day is checked
+// against 1..31 without reference to the month, so "2024-02-31" reaches here,
+// and a second is checked against 0..60 for leap seconds. Both normalise here
+// exactly as time.Date normalises them, because both are a count added to a
+// running total rather than a field written into a slot.
+// TestMakeTimeMatchesTimeDate and FuzzMakeTimeMatchesTimeDate hold that.
+func makeTime(year int, month time.Month, day, hour, min, sec, nsec int, loc *time.Location) time.Time {
+	if loc != time.UTC {
+		return time.Date(year, month, day, hour, min, sec, nsec, loc)
+	}
+	unix := daysFromCivil(year, int(month), day)*secondsPerDay +
+		int64(hour)*3600 + int64(min)*60 + int64(sec)
+	return time.Unix(unix, int64(nsec)).UTC()
+}
+
+const secondsPerDay = 24 * 60 * 60
+
+// daysFromCivil returns the number of days from 1970-01-01 to the proleptic
+// Gregorian date year-month-day, which may be out of range in any field.
+//
+// This is Howard Hinnant's days_from_civil, shifting the year to start in March
+// so that the leap day lands at the end of it and the month-length pattern
+// becomes the linear (153*m+2)/5. It is exact for every year time.Date accepts
+// and has no table and no branch on leap years.
+//
+// The month is normalised first, so a month of 13 or 0 means the next or the
+// previous year, as time.Date reads them. The day is not normalised and does not
+// need to be: it is added to a day count, so the 31st of February is two days
+// after the 29th in a leap year and three in a common one, which is what
+// time.Date answers.
+func daysFromCivil(year, month, day int) int64 {
+	// Fold a month outside 1..12 into the year, the way time.Date's norm does.
+	if month < 1 || month > 12 {
+		m := month - 1
+		yAdj := m / 12
+		m %= 12
+		if m < 0 {
+			m += 12
+			yAdj--
+		}
+		year, month = year+yAdj, m+1
+	}
+
+	y := year
+	if month <= 2 {
+		y-- // March-based year: January and February belong to the one before
+	}
+	era := y
+	if y < 0 {
+		era = y - 399 // floor division towards negative infinity
+	}
+	era /= 400
+	yoe := y - era*400            // year of era, 0..399
+	mp := (month + 9) % 12        // March is 0
+	doy := (153*mp+2)/5 + day - 1 // day of the March-based year
+	doe := yoe*365 + yoe/4 - yoe/100 + doy
+	return int64(era)*146097 + int64(doe) - 719468
 }

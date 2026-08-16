@@ -6,7 +6,7 @@ High-performance date parsing for Go. Detect the format once, parse millions of 
 result, err := dateparsa.Parse("2024-03-15T10:30:00Z")
 fmt.Println(result.Time)   // 2024-03-15 10:30:00 +0000 UTC
 
-// Reuse the detected layout — zero allocations, near-stdlib speed
+// Reuse the detected layout — zero allocations, faster than stdlib
 t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 ```
 
@@ -18,7 +18,7 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 
 One `Parse()` call handles ISO 8601, RFC 3339, RFC 2822, RFC 850, ANSIC, SQL timestamps, syslog, Common Log Format, spreadsheet dates, compact formats, Unix timestamps, partial dates, and natural language expressions like "3 days ago" or "next friday at 2pm". In 20 languages.
 
-The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at about 37 ns with zero allocations, within 1.4x of `time.Parse` with a known format. A shorter format is faster than the stdlib outright: a compact date is 19 ns against 27.
+The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at about 25 ns with zero allocations, against 28 ns for `time.Parse` on the same format. A shorter format is further ahead: a compact date is 17 ns.
 
 ### When to use dateparsa
 
@@ -57,7 +57,7 @@ fmt.Println(result.Ambiguous) // false
 result, _ := dateparsa.Parse("2024-03-15T10:30:00Z")
 layout := result.Layout
 
-// Parse millions — zero alloc, ~37 ns/op for this format
+// Parse millions — zero alloc, ~25 ns/op for this format
 for _, row := range rows {
     t, err := layout.Parse(row)
     // ...
@@ -241,36 +241,75 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 
 ## Performance
 
-**ns/op** is measured on Apple M2 Max, Go 1.26.1, `darwin/arm64`, and is the
-median of the three runs in `benchmarks/baseline.txt`, which is the committed
-reference `make bench-compare` measures against. If you change one of these
-numbers, change the baseline in the same commit and say what produced it.
+**Two machines appear below and the sections say which.** "Hot path" and
+"Against `time.Parse`" are `linux/arm64`, Go 1.26.4, 10 cores. "Full detection +
+parse", "Bulk", and "Natural language" are Apple M2 Max, Go 1.26.1,
+`darwin/arm64`, taken as the median of the three runs in
+`benchmarks/baseline.txt`. Do not read a row from one against a row from
+another.
 
-**Allocs** is re-measured on `linux/arm64`, Go 1.26.4: the whole column at
-`e61660a`, because seven of the counts had drifted from the baseline, and the
-natural-language rows again when `Option` became a value form, which took one
-allocation off every call that passes options. An allocation count does not
-depend on the machine: it is a property of the code. The ns column has not been
-re-run on the M2 Max since, and it is stale by an unknown amount on any row
-whose allocation count moved. Do not read the two columns as one measurement.
+The split is not tidiness, it is what could actually be measured. The change
+that made the hot path what it is could not be run on the M2 Max, and
+`benchmarks/baseline.txt` was deliberately **not** overwritten with
+`linux/arm64` numbers, because that would silently retarget the committed
+reference and make every later `make bench-compare` on the M2 Max print deltas
+that are really just the difference between two machines. That is also the state
+`make bench-compare` is in today until somebody re-runs the suite there. If you
+change a number in a table, change it on the machine that table names, and say
+what produced it.
+
+**Allocs** is `linux/arm64` throughout, including in the M2 Max tables: the
+whole column was re-measured at `e61660a`, because seven of the counts had
+drifted from the baseline, and the natural-language rows again when `Option`
+became a value form, which took one allocation off every call that passes
+options. An allocation count does not depend on the machine, being a property of
+the code, which is why it is the one column that can be shared. In the M2 Max
+tables the ns column has not been re-run since, so it is stale by an unknown
+amount on any row whose allocation count moved.
 
 ### Hot path (compiled Layout reuse)
 
+`linux/arm64`, Go 1.26.4, 10 cores, benchstat over 12 runs, all within ±2%.
+
 | Operation                       | ns/op | Allocs | vs `time.Parse` |
 | ------------------------------- | ----- | ------ | --------------- |
-| `Layout.Parse` (compact date)   | 19.1  | 0      | 0.7x            |
-| `Layout.Parse` (ISO date)       | 21.7  | 0      | 0.8x            |
-| `time.Parse` (stdlib baseline)  | 26.7  | 0      | 1.0x            |
-| `Layout.Parse` (ISO datetime+Z) | 36.6  | 0      | 1.4x            |
-| `Parser` (cached layout)        | 38.7  | 0      | 1.4x            |
+| `Layout.Parse` (compact date)   | 17.2  | 0      | 0.6x            |
+| `Layout.Parse` (ISO date)       | 17.7  | 0      | 0.6x            |
+| `Layout.Parse` (ISO datetime+Z) | 24.7  | 0      | 0.9x            |
+| `Parser` (cached layout)        | 26.9  | 0      | 1.0x            |
+| `time.Parse` (stdlib baseline)  | 27.9  | 0      | 1.0x            |
 
-**These four `ns/op` figures are stale and low.** Every one of them got faster
-in the commit that folded a format's separators into the fields in front of
-them, and none of the movement is in this table because it cannot be measured
-on the machine the table names. On `linux/arm64` the same change measured
-`Layout.Parse` (ISO datetime+Z) at -8.4%, `Parser` (cached layout) at -18.5%,
-`Layout.Parse` (ISO date) at -4.1%, and the compact date flat, since it carries
-no separators to fold. The allocation column is still 0 and still exact.
+### Against `time.Parse` on the same format
+
+Both sides are given the format, so this is the fair comparison: `Compile` and
+`time.Parse` each get a layout and parse the same string. `BenchmarkCompiledLayout_vs_Stdlib`
+is the source, same machine and method as above.
+
+| Format       | dateparsa | `time.Parse` |          |
+| ------------ | --------- | ------------ | -------- |
+| SQL datetime | 24.2 ns   | 89.4 ns      | **3.7x** |
+| ISO date     | 17.9 ns   | 56.6 ns      | **3.2x** |
+| US slash     | 18.0 ns   | 55.0 ns      | **3.1x** |
+| RFC 3339     | 24.8 ns   | 27.9 ns      | **1.1x** |
+
+Zero allocations on every row, both sides. RFC 3339 is close because it is the
+one layout the standard library hand-writes a dedicated parser for; the other
+three go through its general layout scanner, which re-reads the layout string on
+every call. A compiled `Layout` never re-reads anything.
+
+A format whose fields all sit at fixed offsets is executed as straight-line code
+rather than interpreted, which is where most of that margin comes from. Twenty
+of the thirty-one supported formats qualify, including every one above;
+`TestFastPathCoverage` is the list. The rest are the ones carrying a month name,
+a weekday, a variable-width number, or an ISO week, and they run the instruction
+interpreter as before.
+
+The trade is that `Detect` on its own got **16% slower** (137 ns to 160 ns): it
+does the planning and never runs the program, so it pays and does not collect.
+`Parse`, which does run it, is flat to slightly faster, and anything that reuses
+the layout is a third to a half faster. For a library whose reason to exist is
+parsing the second row through the ten-millionth with the format found on the
+first, that is the right side of the trade.
 
 ### Full detection + parse (first call)
 
@@ -289,10 +328,17 @@ no separators to fold. The allocation column is still 0 and still exact.
 
 ### Bulk (10M rows, Apple M2 Max)
 
+
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
 | `Layout.Parse` 10M rows       | 366ms | 36.6 ns |
 | `Parser.ParseColumn` 10M rows | 403ms | 40.3 ns |
+
+**Both rows are stale and high.** They are the per-row cost of `Layout.Parse`
+and of the cached layout in `Parser`, and both of those got about 45% faster on
+`linux/arm64` when fixed-offset formats stopped being interpreted. Neither
+number has been re-run on the machine this table names. The shape of the claim
+is unchanged: a column costs one detection and then a compiled parse per row.
 
 ### Natural language
 
@@ -328,7 +374,9 @@ Instead of trying 100+ `time.Parse` calls, dateparsa:
 
 ### Compiled Layout
 
-The detected format is compiled into a `Layout` — a fixed sequence of extraction instructions (extract year at offset 0..4, month at 5..7, etc). Reusing the `Layout` bypasses all detection logic and extracts fields at known byte offsets. This is why it runs at near-`time.Parse` speed with zero allocations.
+The detected format is compiled into a `Layout` — a fixed sequence of extraction instructions (extract year at offset 0..4, month at 5..7, etc). Reusing the `Layout` bypasses all detection logic and extracts fields at known byte offsets. This is why it runs at `time.Parse` speed or better with zero allocations.
+
+Where a format's fields are all fixed-width, the `Layout` skips the instruction interpreter too. Its fields are placed in fixed slots when the layout is compiled, along with the one input length they describe, so parsing is straight-line code with no loop, no opcode dispatch, and one length check instead of a running byte count. That is worth about a third to a half of the parse.
 
 ```
 First parse:    input → signature → trie → compile → execute → time.Time + Layout

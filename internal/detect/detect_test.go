@@ -486,23 +486,18 @@ func TestEveryInputByteIsDescribedExactlyOnce(t *testing.T) {
 // leaves wordMatcher.words nil and find delegates to matchWordCI, so the
 // property has to hold on both sides of that cap.
 func TestWordMatcherAgreesWithScanning(t *testing.T) {
-	var names []string
+	var spellings []monthSpelling
 	for _, e := range defaultMonthNames {
-		names = append(names, e.name)
+		spellings = append(spellings, monthSpelling{
+			name: e.name, num: e.num, how: classifySpelling(e.name),
+		})
 	}
 	for _, tag := range locale.Tags() {
 		d := locale.Lookup(tag)
 		if d == nil {
 			continue
 		}
-		for i := range 12 {
-			for _, n := range [2]string{d.MonthsWide[i], d.MonthsAbbr[i]} {
-				if n == "" {
-					continue
-				}
-				names = append(names, n, strings.TrimRight(n, "."))
-			}
-		}
+		spellings = append(spellings, getLocaleMonths(d).spellings...)
 	}
 
 	inputs := []string{
@@ -516,9 +511,19 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 		strings.Repeat("word ", monthWordCap+40) + "march",
 		strings.Repeat(" ", 200) + "March 15, 2024",
 		"\xff\xfe march \xff", "1é2é3",
+
+		// The two ways a dotted spelling answered from the word list can
+		// disagree with the scan, both found by running one against the other.
+		// The first needs the byte after the dot checked, and the second needs
+		// the search to continue past a word that is spelled right and has no
+		// dot after it.
+		"x sept.y", "sept sept.", "sept.", "sept.. 2020", "sept.1",
+		"1 sept. 2020", "15 janv. 2024", "janv.2024", "SEPT. 1 2020",
+		"dic. dic dic.", "x dic.y dic.",
 	}
 
 	sawFast, sawSlow := false, false
+	sawList, sawDotted, sawScan := false, false, false
 	for _, in := range inputs {
 		var buf [monthWordCap]wordSpan
 		m := newWordMatcher(in, buf[:])
@@ -527,17 +532,93 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 		} else {
 			sawFast = true
 		}
-		for _, name := range names {
-			gs, ge, gok := m.find(name)
-			ws, we, wok := matchWordCI(in, name)
+		for i := range spellings {
+			sp := &spellings[i]
+			switch sp.how {
+			case lookupWordList:
+				sawList = true
+			case lookupDotted:
+				sawDotted = true
+			case lookupScan:
+				sawScan = true
+			}
+			gs, ge, gok := m.findSpelling(sp)
+			ws, we, wok := matchWordCI(in, sp.name)
 			if gs != ws || ge != we || gok != wok {
-				t.Errorf("find(%q) in %q = (%d,%d,%v), matchWordCI = (%d,%d,%v)",
-					name, in, gs, ge, gok, ws, we, wok)
+				t.Errorf("findSpelling(%q, how=%d) in %q = (%d,%d,%v), matchWordCI = (%d,%d,%v)",
+					sp.name, sp.how, in, gs, ge, gok, ws, we, wok)
 			}
 		}
 	}
 	if !sawFast || !sawSlow {
 		t.Errorf("corpus did not exercise both paths: fast=%v slow=%v", sawFast, sawSlow)
+	}
+	if !sawList || !sawDotted || !sawScan {
+		t.Errorf("corpus did not exercise every lookup: list=%v dotted=%v scan=%v",
+			sawList, sawDotted, sawScan)
+	}
+}
+
+// TestClassifySpelling pins the three lookups to the shapes they are for. A
+// spelling classified as lookupWordList that is not word characters throughout
+// stops matching entirely, which no format test would necessarily notice: the
+// input just fails to detect.
+func TestClassifySpelling(t *testing.T) {
+	tests := []struct {
+		name string
+		want spellingLookup
+	}{
+		{"march", lookupWordList},
+		{"mars", lookupWordList},
+		{"März", lookupWordList},  // non-ASCII bytes are word characters
+		{"марта", lookupWordList}, // so Cyrillic takes the word list too
+		{"sept.", lookupDotted},
+		{"janv.", lookupDotted},
+		{"1月", lookupScan}, // a digit is not a word character
+		{"1월", lookupScan},
+		{"s.p.", lookupScan}, // a dot that is not only trailing
+		{".", lookupScan},
+		{"", lookupWordList}, // vacuously; findKnown dismisses it on length
+	}
+	for _, tt := range tests {
+		if got := classifySpelling(tt.name); got != tt.want {
+			t.Errorf("classifySpelling(%q) = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestLocaleMonthsMatchesTheLocaleData checks the prepared table against the
+// data it is built from: same spellings, same order, same month numbers as the
+// wide, abbreviated, dot-stripped sequence findMonthNameCI documents.
+func TestLocaleMonthsMatchesTheLocaleData(t *testing.T) {
+	for _, tag := range locale.Tags() {
+		d := locale.Lookup(tag)
+		if d == nil {
+			continue
+		}
+		var want []monthSpelling
+		for i := range 12 {
+			if n := d.MonthsWide[i]; n != "" {
+				want = append(want, monthSpelling{name: n, num: i + 1})
+			}
+			if n := d.MonthsAbbr[i]; n != "" {
+				want = append(want, monthSpelling{name: n, num: i + 1})
+				if c := strings.TrimRight(n, "."); c != n {
+					want = append(want, monthSpelling{name: c, num: i + 1})
+				}
+			}
+		}
+		got := getLocaleMonths(d).spellings
+		if len(got) != len(want) {
+			t.Errorf("%s: prepared %d spellings, the data has %d", tag, len(got), len(want))
+			continue
+		}
+		for i := range want {
+			if got[i].name != want[i].name || got[i].num != want[i].num {
+				t.Errorf("%s: spelling %d is (%q, %d), want (%q, %d)",
+					tag, i, got[i].name, got[i].num, want[i].name, want[i].num)
+			}
+		}
 	}
 }
 

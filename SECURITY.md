@@ -76,8 +76,20 @@ Nothing but the Go standard library reaches your binary through this library, so
 there is no transitive dependency to audit and nothing here for a compromised
 upstream package to ride in on.
 
-**No global mutable state after init.** Locale data registers itself through
-`init()` and is read-only from then on. `Layout` holds a value-type `Program`
+**No global mutable state a caller can observe.** Locale data registers itself
+through `init()` and is read-only from then on.
+
+Three caches are built lazily beside it, because deriving their contents at
+`init()` would pay for twenty locales a caller may never configure: the month
+spelling tables in `internal/detect`, the phrase tables in `internal/natural`,
+and the month index in `internal/locale`. Each is written once per key behind a
+`sync.Map` or a `sync.Once`, holds nothing but data derived from the compiled-in
+locale tables, and is never modified after it is stored. Two goroutines racing
+to fill the same key build equal values and one of them wins, so what a reader
+gets does not depend on who got there first. No input a caller passes reaches
+any of them as a key.
+
+`Layout` holds a value-type `Program`
 and no pointers into caller memory, which is why it is safe to share across
 goroutines. `Parser` holds one piece of mutable state, the cached layout, in an
 `atomic.Pointer[Layout]`; the layout it points at is immutable, so a reader is

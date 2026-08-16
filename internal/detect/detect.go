@@ -3,6 +3,7 @@ package detect
 import (
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kmoneil/dateparsa/internal/compile"
@@ -1344,6 +1345,87 @@ var defaultMonthNames = []monthEntry{
 	{name: "dec", num: 12},
 }
 
+// spellingLookup says how a month spelling has to be looked for. It is a
+// property of the spelling, so it is computed when the locale's table is built
+// and not on the way past it.
+type spellingLookup uint8
+
+const (
+	// lookupWordList: every byte is a word character, so the spelling can only
+	// match a whole word of its own length and the word list answers it.
+	lookupWordList spellingLookup = iota
+	// lookupDotted: word characters and one trailing dot. See findDotted.
+	lookupDotted
+	// lookupScan: anything else, which means the input is scanned. 60 of the
+	// 584 spellings across the twenty locales land here, and they are all
+	// Japanese, Korean or Chinese: those write a month as a digit and a
+	// character, and a digit is not a word character.
+	lookupScan
+)
+
+// monthSpelling is one spelling from a locale's month tables, prepared.
+type monthSpelling struct {
+	name string
+	num  int
+	how  spellingLookup
+}
+
+// localeMonths holds a locale's month spellings in the order findMonthNameCI
+// tries them, which is wide, abbreviated, then the abbreviation without its
+// trailing dot, month by month.
+//
+// The order is load bearing and it is not input order: see findMonthNameCI.
+type localeMonths struct {
+	spellings []monthSpelling
+}
+
+// localeMonthCache caches the prepared table per locale Data pointer, built
+// once on first use. sync.Map handles the concurrent access, and what it holds
+// never changes after it is built.
+var localeMonthCache sync.Map // map[*locale.Data]*localeMonths
+
+func getLocaleMonths(loc *locale.Data) *localeMonths {
+	if v, ok := localeMonthCache.Load(loc); ok {
+		return v.(*localeMonths)
+	}
+	lm := buildLocaleMonths(loc)
+	localeMonthCache.Store(loc, lm)
+	return lm
+}
+
+func buildLocaleMonths(loc *locale.Data) *localeMonths {
+	lm := &localeMonths{spellings: make([]monthSpelling, 0, 36)}
+	add := func(name string, num int) {
+		lm.spellings = append(lm.spellings, monthSpelling{
+			name: name,
+			num:  num,
+			how:  classifySpelling(name),
+		})
+	}
+	for i := range 12 {
+		if name := loc.MonthsWide[i]; name != "" {
+			add(name, i+1)
+		}
+		if name := loc.MonthsAbbr[i]; name != "" {
+			add(name, i+1)
+			if clean := strings.TrimRight(name, "."); clean != name {
+				add(clean, i+1)
+			}
+		}
+	}
+	return lm
+}
+
+func classifySpelling(name string) spellingLookup {
+	if allWordChars(name) {
+		return lookupWordList
+	}
+	if len(name) >= 2 && name[len(name)-1] == '.' && allWordChars(name[:len(name)-1]) {
+		return lookupDotted
+	}
+	return lookupScan
+}
+
 // wordSpan is one maximal run of word characters in the input.
 type wordSpan struct{ start, end int32 }
 
@@ -1410,21 +1492,62 @@ func allWordChars(word string) bool {
 	return true
 }
 
-// find returns the first whole-word occurrence of word in input order, which is
-// the answer matchWordCI gives.
-func (m wordMatcher) find(word string) (int, int, bool) {
-	// The guards are repeated here rather than left to findKnown, because an
-	// argument is evaluated before the call: writing this as
-	// findKnown(word, allWordChars(word)) scans every spelling before the
-	// length check inside findKnown can dismiss it. That cost 56% on a locale
-	// miss, where "hier" is measured against names like "septembre".
-	if m.words == nil {
-		return matchWordCI(m.s, word)
+// findSpelling returns the first whole-word occurrence of a prepared spelling
+// in input order, which is the answer matchWordCI gives for the same spelling.
+//
+// It replaced a find(word) that computed allWordChars on every call. That
+// question is a property of a constant string in compiled-in locale data, and
+// with three locales configured it was asked a hundred times per parse before
+// any of the answers looked at the input. The guards it repeated in order to
+// dismiss a spelling before paying for that scan came with it: there is nothing
+// left to dismiss early, so findKnown's own guards are enough.
+func (m wordMatcher) findSpelling(sp *monthSpelling) (int, int, bool) {
+	if sp.how == lookupDotted {
+		return m.findDotted(sp.name)
 	}
-	if len(word) == 0 || len(word) > len(m.s) {
+	return m.findKnown(sp.name, sp.how == lookupWordList)
+}
+
+// findDotted answers matchWordCI(m.s, name) for a name that is word characters
+// followed by one dot, without scanning the input.
+//
+// Such a name can only match where its dotless part is a whole word: every byte
+// before the dot is a word character, and a dot is not, so the word run that a
+// match starts at ends exactly where the dot begins. The word list holds those
+// runs already. What it does not hold is the dot or what follows it, so both are
+// checked here.
+//
+// Two ways to get this wrong, both found by testing it against the scan rather
+// than by reading it. The dot is not the end of the match, so the byte after it
+// still has to be a boundary: "sept." does not occur in "x sept.y", and a
+// version that stopped at the dot said it did. And a failed dot check is not a
+// failed search: "sept." occurs in "sept sept." at offset 5, so a version that
+// gave up on the first word spelled "sept" missed it.
+func (m wordMatcher) findDotted(name string) (int, int, bool) {
+	if m.words == nil {
+		return matchWordCI(m.s, name)
+	}
+	if len(name) > len(m.s) {
 		return 0, 0, false
 	}
-	return m.findKnown(word, allWordChars(word))
+	clean := name[:len(name)-1]
+	wlen := len(clean)
+	for _, w := range m.words {
+		if int(w.end-w.start) != wlen {
+			continue
+		}
+		end := int(w.end)
+		if end >= len(m.s) || m.s[end] != '.' {
+			continue
+		}
+		if end+1 < len(m.s) && isWordChar(m.s[end+1]) {
+			continue
+		}
+		if equalsFoldASCII(m.s[w.start:w.end], clean) {
+			return int(w.start), end + 1, true
+		}
+	}
+	return 0, 0, false
 }
 
 // findKnown is find for a caller that already knows whether the word is made
@@ -1478,25 +1601,15 @@ func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
 			return entry.num, idx, end
 		}
 	}
-	// Search locale-specific names.
+	// Search locale-specific names. The spelling list is the same one the loop
+	// here used to build per call, wide then abbreviated then the abbreviation
+	// without its dot, in the same order, prepared once per locale.
 	for _, loc := range locales {
-		for i := 0; i < 12; i++ {
-			if name := loc.MonthsWide[i]; name != "" {
-				if idx, end, ok := m.find(name); ok {
-					return i + 1, idx, end
-				}
-			}
-			if name := loc.MonthsAbbr[i]; name != "" {
-				if idx, end, ok := m.find(name); ok {
-					return i + 1, idx, end
-				}
-				// Try without trailing dot.
-				clean := strings.TrimRight(name, ".")
-				if clean != name {
-					if idx, end, ok := m.find(clean); ok {
-						return i + 1, idx, end
-					}
-				}
+		lm := getLocaleMonths(loc)
+		for i := range lm.spellings {
+			sp := &lm.spellings[i]
+			if idx, end, ok := m.findSpelling(sp); ok {
+				return sp.num, idx, end
 			}
 		}
 	}

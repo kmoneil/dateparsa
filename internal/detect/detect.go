@@ -1292,26 +1292,31 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 	return fields
 }
 
-// monthEntry pairs a lowercase month name with its month number.
+// monthEntry pairs a lowercase month name with its month number. It is what the
+// English table is written as; init turns it into the same prepared form the
+// locale tables use, so there is one lookup and not two.
 //
-// wordOnly is whether every byte of name is a word character, computed once in
-// init rather than per lookup. These 24 spellings are tried on every call to
-// findMonthNameCI, before any locale, so asking the question there cost 12% on
-// BenchmarkParse_Miss_Short: a three-byte cell is dismissed by the length guard
-// almost immediately, and a per-spelling scan is then most of what is left.
+// The lookup and the length are computed once in init rather than per call.
+// These 24 spellings are tried on every call to findMonthNameCI, before any
+// locale, so asking allWordChars there cost 12% on BenchmarkParse_Miss_Short: a
+// three-byte cell is dismissed by the length guard almost immediately, and a
+// per-spelling scan is then most of what is left.
 //
 // It is not a formality. 140 of the registered locale month names carry a byte
 // that is not a word character, and they are not all trailing dots: the CJK
 // locales spell months with digits.
 type monthEntry struct {
-	name     string
-	num      int
-	wordOnly bool
+	name string
+	num  int
 }
 
+// defaultMonths is defaultMonthNames prepared, in the same order.
+var defaultMonths []monthSpelling
+
 func init() {
-	for i := range defaultMonthNames {
-		defaultMonthNames[i].wordOnly = allWordChars(defaultMonthNames[i].name)
+	defaultMonths = make([]monthSpelling, len(defaultMonthNames))
+	for i, e := range defaultMonthNames {
+		defaultMonths[i] = newMonthSpelling(e.name, e.num)
 	}
 }
 
@@ -1354,7 +1359,8 @@ const (
 	// lookupWordList: every byte is a word character, so the spelling can only
 	// match a whole word of its own length and the word list answers it.
 	lookupWordList spellingLookup = iota
-	// lookupDotted: word characters and one trailing dot. See findDotted.
+	// lookupDotted: word characters and one trailing dot, which the word list
+	// answers too. See findSpelling.
 	lookupDotted
 	// lookupScan: anything else, which means the input is scanned. 60 of the
 	// 584 spellings across the twenty locales land here, and they are all
@@ -1363,11 +1369,49 @@ const (
 	lookupScan
 )
 
-// monthSpelling is one spelling from a locale's month tables, prepared.
+// monthSpelling is one spelling from a month table, prepared.
+//
+// lenBit is the length prefilter. A spelling answered from the word list can
+// only match a whole word of one exact length, so it has nothing to do in an
+// input holding no word of that length, and one AND against wordMatcher.lenMask
+// says so before the lookup is called at all. A spelling that scans is not
+// bound to a word length, so its lenBit is every bit and the filter never
+// dismisses it: see wordMatcher.lenMask for why that is safe when the input has
+// no words in it.
 type monthSpelling struct {
-	name string
-	num  int
-	how  spellingLookup
+	name   string
+	num    int
+	how    spellingLookup
+	lenBit uint64
+}
+
+// newMonthSpelling prepares one spelling: which lookup answers it, and the
+// length that lookup matches on.
+func newMonthSpelling(name string, num int) monthSpelling {
+	sp := monthSpelling{name: name, num: num, how: classifySpelling(name)}
+	switch sp.how {
+	case lookupScan:
+		sp.lenBit = ^uint64(0)
+	case lookupDotted:
+		sp.lenBit = lenBitFor(len(name) - 1)
+	default:
+		sp.lenBit = lenBitFor(len(name))
+	}
+	return sp
+}
+
+// lenBitFor maps a word length to its bit. Lengths at or above 63 share the top
+// bit, so a spelling that long is only dismissed when the input holds no word
+// that long either. No month name comes close: the longest across the twenty
+// locales is 21 bytes.
+func lenBitFor(n int) uint64 {
+	if n < 0 {
+		return 0
+	}
+	if n >= 63 {
+		n = 63
+	}
+	return 1 << uint(n)
 }
 
 // localeMonths holds a locale's month spellings in the order findMonthNameCI
@@ -1396,11 +1440,7 @@ func getLocaleMonths(loc *locale.Data) *localeMonths {
 func buildLocaleMonths(loc *locale.Data) *localeMonths {
 	lm := &localeMonths{spellings: make([]monthSpelling, 0, 36)}
 	add := func(name string, num int) {
-		lm.spellings = append(lm.spellings, monthSpelling{
-			name: name,
-			num:  num,
-			how:  classifySpelling(name),
-		})
+		lm.spellings = append(lm.spellings, newMonthSpelling(name, num))
 	}
 	for i := range 12 {
 		if name := loc.MonthsWide[i]; name != "" {
@@ -1445,17 +1485,33 @@ const monthWordCap = 48
 // English spellings before it reaches any locale, and each one walked every
 // position in the input. That was 47% of a failed parse.
 //
-// words is nil for an input holding more words than the cap, and find falls back
-// to scanning. Correct either way, and it keeps the cost linear in the input
-// length rather than putting a slice on the heap for a path that is about to
-// fail anyway.
+// words is nil for an input holding more words than the cap, and the lookup
+// falls back to scanning. Correct either way, and it keeps the cost linear in
+// the input length rather than putting a slice on the heap for a path that is
+// about to fail anyway.
+//
+// lenMask has bit k set when the input holds a word of k bytes, saturating at
+// 63, and bit 0 set always. Bit 0 is the one no word can claim, so a spelling
+// that must not be filtered carries every bit and meets it there.
+//
+// That sentinel is for the input with no word characters at all, "2024-03-15"
+// among them, whose mask would otherwise be zero and dismiss every spelling
+// including the ones that scan rather than match a word. Nothing in the locale
+// data notices today, because every scanning spelling holds a character that is
+// a word character, "1月" its own 月, so an input with no words cannot contain
+// one anyway. The sentinel is what keeps that from being load bearing.
+//
+// The mask is a filter and never an answer. A set bit means a word of that
+// length exists, not that it is the spelling being looked for.
 type wordMatcher struct {
-	s     string
-	words []wordSpan
+	s       string
+	words   []wordSpan
+	lenMask uint64
 }
 
 func newWordMatcher(s string, buf []wordSpan) wordMatcher {
 	n := 0
+	mask := uint64(1)
 	for i := 0; i < len(s); {
 		if !isWordChar(s[i]) {
 			i++
@@ -1466,12 +1522,18 @@ func newWordMatcher(s string, buf []wordSpan) wordMatcher {
 			i++
 		}
 		if n == len(buf) {
-			return wordMatcher{s: s}
+			// Over the cap: no word list, so every spelling scans, and the
+			// mask has to let all of them through. A zero mask here dismissed
+			// every spelling instead, and an input of fifty words with a month
+			// name in it stopped being a date. TestWordMatcherAgreesWithScanning
+			// found that on the first run.
+			return wordMatcher{s: s, lenMask: ^uint64(0)}
 		}
 		buf[n] = wordSpan{int32(start), int32(i)}
+		mask |= lenBitFor(i - start)
 		n++
 	}
-	return wordMatcher{s: s, words: buf[:n]}
+	return wordMatcher{s: s, words: buf[:n], lenMask: mask}
 }
 
 // allWordChars reports whether every byte of word is a word character, which is
@@ -1495,86 +1557,57 @@ func allWordChars(word string) bool {
 // findSpelling returns the first whole-word occurrence of a prepared spelling
 // in input order, which is the answer matchWordCI gives for the same spelling.
 //
-// It replaced a find(word) that computed allWordChars on every call. That
-// question is a property of a constant string in compiled-in locale data, and
-// with three locales configured it was asked a hundred times per parse before
-// any of the answers looked at the input. The guards it repeated in order to
-// dismiss a spelling before paying for that scan came with it: there is nothing
-// left to dismiss early, so findKnown's own guards are enough.
-func (m wordMatcher) findSpelling(sp *monthSpelling) (int, int, bool) {
-	if sp.how == lookupDotted {
-		return m.findDotted(sp.name)
-	}
-	return m.findKnown(sp.name, sp.how == lookupWordList)
-}
-
-// findDotted answers matchWordCI(m.s, name) for a name that is word characters
-// followed by one dot, without scanning the input.
+// It is one function and not a dispatcher over three, because it is called once
+// per spelling and neither it nor anything it called would inline: two calls per
+// spelling and 248 calls per parse put 9.4% of a failed parse in function
+// prologues, which was more than either the loop or the comparisons underneath
+// them. The receiver is a pointer for the same reason, since wordMatcher is 48
+// bytes and was being copied at every one of those calls.
 //
-// Such a name can only match where its dotless part is a whole word: every byte
-// before the dot is a word character, and a dot is not, so the word run that a
-// match starts at ends exactly where the dot begins. The word list holds those
-// runs already. What it does not hold is the dot or what follows it, so both are
-// checked here.
+// A spelling that is word characters followed by one dot is answered from the
+// word list too. Such a name can only match where its dotless part is a whole
+// word: every byte before the dot is a word character, and a dot is not, so the
+// word run a match starts at ends exactly where the dot begins. What the list
+// does not hold is the dot or what follows it, so both are checked here.
 //
-// Two ways to get this wrong, both found by testing it against the scan rather
+// Two ways to get that wrong, both found by testing it against the scan rather
 // than by reading it. The dot is not the end of the match, so the byte after it
 // still has to be a boundary: "sept." does not occur in "x sept.y", and a
 // version that stopped at the dot said it did. And a failed dot check is not a
 // failed search: "sept." occurs in "sept sept." at offset 5, so a version that
 // gave up on the first word spelled "sept" missed it.
-func (m wordMatcher) findDotted(name string) (int, int, bool) {
-	if m.words == nil {
-		return matchWordCI(m.s, name)
+func (m *wordMatcher) findSpelling(sp *monthSpelling) (int, int, bool) {
+	if m.words == nil || sp.how == lookupScan {
+		return matchWordCI(m.s, sp.name)
 	}
-	if len(name) > len(m.s) {
+	// The length guard is what makes a short input cheap, and it is the one
+	// matchWordCI opens with for the same reason. A spelling wider than the
+	// whole input cannot occur in it, and against "N/A" that dismisses 12 of
+	// the 24 English spellings before anything looks at a byte.
+	if len(sp.name) == 0 || len(sp.name) > len(m.s) {
 		return 0, 0, false
 	}
-	clean := name[:len(name)-1]
-	wlen := len(clean)
+	wlen := len(sp.name)
+	dotted := sp.how == lookupDotted
+	if dotted {
+		wlen--
+	}
 	for _, w := range m.words {
 		if int(w.end-w.start) != wlen {
 			continue
 		}
 		end := int(w.end)
-		if end >= len(m.s) || m.s[end] != '.' {
-			continue
+		if dotted {
+			if end >= len(m.s) || m.s[end] != '.' {
+				continue
+			}
+			if end+1 < len(m.s) && isWordChar(m.s[end+1]) {
+				continue
+			}
+			end++
 		}
-		if end+1 < len(m.s) && isWordChar(m.s[end+1]) {
-			continue
-		}
-		if equalsFoldASCII(m.s[w.start:w.end], clean) {
-			return int(w.start), end + 1, true
-		}
-	}
-	return 0, 0, false
-}
-
-// findKnown is find for a caller that already knows whether the word is made
-// only of word characters. The English table computes that once in init.
-func (m wordMatcher) findKnown(word string, wordOnly bool) (int, int, bool) {
-	if m.words == nil {
-		return matchWordCI(m.s, word)
-	}
-	// The length guard comes first because it is what makes a short input
-	// cheap, and it is the one matchWordCI opens with for the same reason. A
-	// spelling wider than the whole input cannot occur in it, and against "N/A"
-	// that dismisses 12 of the 24 English spellings before anything looks at a
-	// byte. Testing allWordChars ahead of this instead cost 25% on
-	// BenchmarkParse_Miss_Short, which is the shape an empty-ish CSV cell takes.
-	wlen := len(word)
-	if wlen == 0 || wlen > len(m.s) {
-		return 0, 0, false
-	}
-	if !wordOnly {
-		return matchWordCI(m.s, word)
-	}
-	for _, w := range m.words {
-		if int(w.end-w.start) != wlen {
-			continue
-		}
-		if equalsFoldASCII(m.s[w.start:w.end], word) {
-			return int(w.start), int(w.end), true
+		if equalsFoldASCII(m.s[w.start:w.end], sp.name[:wlen]) {
+			return int(w.start), end, true
 		}
 	}
 	return 0, 0, false
@@ -1590,15 +1623,23 @@ func (m wordMatcher) findKnown(word string, wordOnly bool) (int, int, bool) {
 // of September, because "september" is tried before "mar". Restructuring this
 // into one pass over the input reverses that and answers March. The word list
 // changes how each spelling is looked for, never the order they are tried in.
+//
+// The lenMask test in both loops is the same kind of thing: it decides whether a
+// spelling can match, never which one wins, so it dismisses without disturbing
+// the order. It sits here rather than inside findSpelling because a spelling it
+// dismisses should cost no call either, and the call was the larger half.
 func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
 	var buf [monthWordCap]wordSpan
 	m := newWordMatcher(s, buf[:])
 
 	// Search English names (case-insensitive), longest first.
-	for i := range defaultMonthNames {
-		entry := &defaultMonthNames[i]
-		if idx, end, ok := m.findKnown(entry.name, entry.wordOnly); ok {
-			return entry.num, idx, end
+	for i := range defaultMonths {
+		sp := &defaultMonths[i]
+		if sp.lenBit&m.lenMask == 0 {
+			continue
+		}
+		if idx, end, ok := m.findSpelling(sp); ok {
+			return sp.num, idx, end
 		}
 	}
 	// Search locale-specific names. The spelling list is the same one the loop
@@ -1608,6 +1649,9 @@ func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
 		lm := getLocaleMonths(loc)
 		for i := range lm.spellings {
 			sp := &lm.spellings[i]
+			if sp.lenBit&m.lenMask == 0 {
+				continue
+			}
 			if idx, end, ok := m.findSpelling(sp); ok {
 				return sp.num, idx, end
 			}

@@ -486,12 +486,7 @@ func TestEveryInputByteIsDescribedExactlyOnce(t *testing.T) {
 // leaves wordMatcher.words nil and find delegates to matchWordCI, so the
 // property has to hold on both sides of that cap.
 func TestWordMatcherAgreesWithScanning(t *testing.T) {
-	var spellings []monthSpelling
-	for _, e := range defaultMonthNames {
-		spellings = append(spellings, monthSpelling{
-			name: e.name, num: e.num, how: classifySpelling(e.name),
-		})
-	}
+	spellings := append([]monthSpelling(nil), defaultMonths...)
 	for _, tag := range locale.Tags() {
 		d := locale.Lookup(tag)
 		if d == nil {
@@ -524,6 +519,7 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 
 	sawFast, sawSlow := false, false
 	sawList, sawDotted, sawScan := false, false, false
+	sawFiltered := false
 	for _, in := range inputs {
 		var buf [monthWordCap]wordSpan
 		m := newWordMatcher(in, buf[:])
@@ -542,8 +538,21 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 			case lookupScan:
 				sawScan = true
 			}
-			gs, ge, gok := m.findSpelling(sp)
 			ws, we, wok := matchWordCI(in, sp.name)
+
+			// The pair findMonthNameCI uses is the prefilter and the lookup,
+			// so the pair is what has to agree with the scan. A filtered
+			// spelling has to be one the scan does not find, or the filter is
+			// deciding an answer instead of dismissing work.
+			if sp.lenBit&m.lenMask == 0 {
+				sawFiltered = true
+				if wok {
+					t.Errorf("lenMask dismissed %q (how=%d), but matchWordCI finds it in %q at (%d,%d)",
+						sp.name, sp.how, in, ws, we)
+				}
+				continue
+			}
+			gs, ge, gok := m.findSpelling(sp)
 			if gs != ws || ge != we || gok != wok {
 				t.Errorf("findSpelling(%q, how=%d) in %q = (%d,%d,%v), matchWordCI = (%d,%d,%v)",
 					sp.name, sp.how, in, gs, ge, gok, ws, we, wok)
@@ -557,6 +566,69 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 		t.Errorf("corpus did not exercise every lookup: list=%v dotted=%v scan=%v",
 			sawList, sawDotted, sawScan)
 	}
+	if !sawFiltered {
+		t.Error("corpus never had a spelling dismissed by lenMask")
+	}
+}
+
+// TestLenMaskNeverHidesAMatch is the prefilter's own property, stated without
+// the lookup in the way: a spelling the mask dismisses cannot occur in the
+// input as a whole word.
+//
+// The mask is a length filter over the input's word runs, and the bit a
+// spelling carries is the length its lookup matches on, which is one shorter
+// than the name for a dotted abbreviation. Getting that off by one would
+// dismiss every dotted spelling in an input that holds the word, and every test
+// above would still pass, because a dismissed spelling and an absent one look
+// the same from outside.
+func TestLenMaskNeverHidesAMatch(t *testing.T) {
+	spellings := append([]monthSpelling(nil), defaultMonths...)
+	for _, tag := range locale.Tags() {
+		d := locale.Lookup(tag)
+		if d == nil {
+			continue
+		}
+		spellings = append(spellings, getLocaleMonths(d).spellings...)
+	}
+
+	// Inputs built from the spellings themselves, so a match is present far
+	// more often than in a corpus of hand-written dates.
+	var inputs []string
+	for i := range spellings {
+		n := spellings[i].name
+		inputs = append(inputs, n, n+" 1, 2024", "1 "+n+" 2024", "x "+n+" y",
+			strings.ToUpper(n), n+".", "."+n, n+n)
+	}
+	inputs = append(inputs, "", " ", ".", "N/A", "2024-03-15", "1月1日",
+		// Over the word cap, where there is no word list and every spelling
+		// falls back to scanning. The mask has to let all of them through.
+		strings.Repeat("word ", monthWordCap+2)+"march",
+		strings.Repeat("word ", monthWordCap+2)+"sept. 1",
+	)
+
+	dismissed, present := 0, 0
+	for _, in := range inputs {
+		var buf [monthWordCap]wordSpan
+		m := newWordMatcher(in, buf[:])
+		for i := range spellings {
+			sp := &spellings[i]
+			if _, _, ok := matchWordCI(in, sp.name); ok {
+				present++
+				if sp.lenBit&m.lenMask == 0 {
+					t.Fatalf("lenMask dismissed %q (how=%d, lenBit=%#x) which occurs in %q (lenMask=%#x)",
+						sp.name, sp.how, sp.lenBit, in, m.lenMask)
+				}
+				continue
+			}
+			if sp.lenBit&m.lenMask == 0 {
+				dismissed++
+			}
+		}
+	}
+	if present == 0 || dismissed == 0 {
+		t.Errorf("corpus proved nothing: %d present, %d dismissed", present, dismissed)
+	}
+	t.Logf("%d occurrences kept, %d spellings dismissed", present, dismissed)
 }
 
 // TestClassifySpelling pins the three lookups to the shapes they are for. A

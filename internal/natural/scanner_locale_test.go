@@ -125,3 +125,111 @@ func TestScanLocale_LongestPhraseWins(t *testing.T) {
 		}
 	}
 }
+
+// duplicateSpelling is one phrase that a locale registers twice with different
+// meanings, together with the token the scanner returns for it today.
+//
+// Today is the operative word. Nothing chose these answers: the phrase table is
+// sorted by length with sort.Slice, which is not stable, so among equal-length
+// phrases the winner is whatever pdqsort leaves in front. Three of the five
+// change under sort.SliceStable, measured. What this table does is stop that
+// from moving silently, so a toolchain upgrade fails a test instead of changing
+// a date.
+//
+// The entries are recorded, not endorsed. Hindi lists कल under both yesterday
+// and tomorrow because Hindi uses one word for both, and it answers tomorrow
+// here for no better reason than the sort. Italian "ora" is the hour rather
+// than "now" the same way. Deciding what they should be is W13 in the backlog;
+// changing one of these lines is that decision, so make it deliberately and
+// give it a BREAKING CHANGE footer, because a caller's database is what records
+// the difference.
+type duplicateSpelling struct {
+	tag    string
+	phrase string
+	want   Token // Pos and Raw are ignored
+}
+
+var duplicateSpellings = []duplicateSpelling{
+	{"hi", "कल", Token{Kind: TokRelWord, RelVal: RelTomorrow}},
+	{"it", "ora", Token{Kind: TokUnit, UnitVal: UnitHour}},
+	{"ja", "今", Token{Kind: TokSelector, SelVal: SelThis}},
+	{"ja", "日", Token{Kind: TokUnit, UnitVal: UnitDay}},
+	{"ko", "일", Token{Kind: TokUnit, UnitVal: UnitDay}},
+}
+
+// TestScanLocale_DuplicateSpellingsArePinned holds each of those answers.
+func TestScanLocale_DuplicateSpellingsArePinned(t *testing.T) {
+	for _, d := range duplicateSpellings {
+		loc := locale.Lookup(d.tag)
+		if loc == nil {
+			t.Errorf("locale %s is not registered", d.tag)
+			continue
+		}
+		tokens := ScanLocale(d.phrase, loc)
+		if len(tokens) != 1 {
+			t.Errorf("%s: ScanLocale(%q) = %d tokens, want 1: %+v",
+				d.tag, d.phrase, len(tokens), tokens)
+			continue
+		}
+		got := tokens[0]
+		got.Pos, got.Raw = 0, ""
+		if got != d.want {
+			t.Errorf("%s: ScanLocale(%q) = %+v, pinned to %+v.\n"+
+				"If this is a deliberate change, update duplicateSpellings and see W13. "+
+				"If nothing here was meant to change, the length sort reordered under you: "+
+				"it is sort.Slice, and equal-length phrases have no defined order.",
+				d.tag, d.phrase, got, d.want)
+		}
+	}
+}
+
+// TestScanLocale_NoUnpinnedDuplicates is the half that keeps working after
+// somebody adds a locale.
+//
+// A phrase registered twice in one locale with different tokens gets its
+// meaning from the sort, which decides nothing on purpose. The five that exist
+// are pinned above. This finds any others, so a new locale cannot quietly
+// inherit an arbitrary answer, and so a phrase that stops being duplicated does
+// not leave a pin behind claiming to hold something.
+func TestScanLocale_NoUnpinnedDuplicates(t *testing.T) {
+	pinned := map[string]bool{}
+	for _, d := range duplicateSpellings {
+		pinned[d.tag+"\x00"+d.phrase] = true
+	}
+
+	found := map[string]bool{}
+	for _, tag := range locale.Tags() {
+		loc := locale.Lookup(tag)
+		byPhrase := map[string][]Token{}
+		for _, w := range getLocaleWords(loc).words {
+			tok := w.tok
+			tok.Pos, tok.Raw = 0, ""
+			byPhrase[w.phrase] = append(byPhrase[w.phrase], tok)
+		}
+		for phrase, toks := range byPhrase {
+			differs := false
+			for _, tok := range toks[1:] {
+				if tok != toks[0] {
+					differs = true
+				}
+			}
+			if !differs {
+				continue
+			}
+			key := tag + "\x00" + phrase
+			found[key] = true
+			if !pinned[key] {
+				t.Errorf("%s: %q is registered %d times with different meanings and nothing pins it, "+
+					"so which one wins is decided by an unstable sort. "+
+					"Decide what it should mean, then add it to duplicateSpellings. See W13.",
+					tag, phrase, len(toks))
+			}
+		}
+	}
+	for _, d := range duplicateSpellings {
+		if !found[d.tag+"\x00"+d.phrase] {
+			t.Errorf("%s: %q is pinned but is no longer registered twice with different meanings. "+
+				"The locale data changed; drop the pin.", d.tag, d.phrase)
+		}
+	}
+}

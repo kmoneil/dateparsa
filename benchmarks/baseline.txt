@@ -1,255 +1,202 @@
-PASS: 1. ISO date                                   -> 2024-03-15 00:00:00 +0000
-PASS: 2. ISO datetime                               -> 2024-03-15 10:30:00 +0000
-PASS: 3. ISO datetime UTC                           -> 2024-03-15 10:30:00 +0000
-PASS: 4. RFC 3339                                   -> 2024-03-15 10:30:00 +0530
-PASS: 5. RFC 3339 negative                          -> 2024-03-15 10:30:00 -0800
-PASS: 6. RFC 3339 nano                              -> 2024-03-15 10:30:00.123456789 +0000
-PASS: 7. RFC 3339 frac + tz                         -> 2024-03-15 10:30:00.123 +0530
-PASS: 8. RFC 2822                                   -> 2024-03-15 10:30:00 +0000
-PASS: 9. RFC 850                                    -> 2024-03-15 10:30:00 +0000
-PASS: 10. ANSIC                                     -> 2024-03-15 10:30:00 +0000
-PASS: 11. Unix date                                 -> 2024-03-15 10:30:00 +0000
-PASS: 12. US slash                                  -> 2024-03-15 00:00:00 +0000
-PASS: 13. US short                                  -> 2024-03-15 00:00:00 +0000
-PASS: 14. US variable width                         -> 2024-03-15 00:00:00 +0000
-PASS: 15. US long                                   -> 2024-03-15 00:00:00 +0000
-PASS: 16. US abbreviated                            -> 2024-03-15 00:00:00 +0000
-PASS: 17. European slash (PreferDayFirst)           -> 2024-03-15 00:00:00 +0000
-PASS: 18. European dot                              -> 2024-03-15 00:00:00 +0000
-PASS: 19. European long                             -> 2024-03-15 00:00:00 +0000
-PASS: 20. European dash abbreviated                 -> 2024-03-15 00:00:00 +0000
-PASS: 21. Asian slash                               -> 2024-03-15 00:00:00 +0000
-PASS: 22. Asian dot                                 -> 2024-03-15 00:00:00 +0000
-PASS: 23. time HH:MM                                -> 0000-01-01 10:30:00 +0000
-PASS: 24. time HH:MM:SS                             -> 0000-01-01 10:30:00 +0000
-PASS: 25. time 12h                                  -> 0000-01-01 22:30:00 +0000
-PASS: 26. time 12h with seconds                     -> 0000-01-01 22:30:00 +0000
-PASS: 27. time with millis                          -> 0000-01-01 10:30:00.123 +0000
-PASS: 28. time with micros                          -> 0000-01-01 10:30:00.123456 +0000
-PASS: 29. partial month day                         -> 0000-03-15 00:00:00 +0000
-PASS: 30. partial day month                         -> 0000-03-15 00:00:00 +0000
-PASS: 31. partial month year                        -> 2024-03-01 00:00:00 +0000
-PASS: 32. unix seconds                              -> 2024-03-15 10:53:20 +0000
-PASS: 33. unix millis                               -> 2024-03-15 10:53:20 +0000
-PASS: 34. unix fractional                           -> 2024-03-15 10:53:20.123 +0000
-PASS: 35. compact date                              -> 2024-03-15 00:00:00 +0000
-PASS: 36. compact datetime                          -> 2024-03-15 10:30:00 +0000
-PASS: 37. compact datetime no sep                   -> 2024-03-15 10:30:00 +0000
-PASS: 38. compact datetime UTC                      -> 2024-03-15 10:30:00 +0000
-PASS: 39. ISO week date                             -> 2024-03-15 00:00:00 +0000
-PASS: 40. ISO week                                  -> 2024-03-11 00:00:00 +0000
-PASS: 41. ISO ordinal                               -> 2024-03-14 00:00:00 +0000
-PASS: 42. syslog                                    -> 0000-03-15 10:30:00 +0000
-PASS: 43. common log format                         -> 2024-03-15 10:30:00 +0000
-PASS: 44. SQL datetime                              -> 2024-03-15 10:30:00 +0000
-PASS: 45. SQL millis                                -> 2024-03-15 10:30:00 +0000
-PASS: 46. SQL micros                                -> 2024-03-15 10:30:00 +0000
-PASS: 47. SQL short tz                              -> 2024-03-15 10:30:00 +0000
-PASS: 48. SQL full tz                               -> 2024-03-15 10:30:00 +0530
-PASS: 49. spreadsheet US                            -> 2024-03-15 10:30:00 +0000
-PASS: 50. spreadsheet EU                            -> 2024-03-15 10:30:00 +0000
-PASS: 51. Go reference time                         -> 2024-03-15 10:30:00 -0400
-PASS: 52. RFC 822                                   -> 2024-03-15 10:30:00 +0000
-PASS: 53. RFC 1123                                  -> 2024-03-15 10:30:00 +0000
-PASS: 1. ISO date                                   -> 2024-03-15 00:00:00 +0000
-PASS: 2. ISO datetime                               -> 2024-03-15 10:30:00 +0000
-PASS: 3. ISO datetime UTC                           -> 2024-03-15 10:30:00 +0000
-PASS: 4. RFC 3339                                   -> 2024-03-15 10:30:00 +0530
-PASS: 5. RFC 3339 negative                          -> 2024-03-15 10:30:00 -0800
-PASS: 6. RFC 3339 nano                              -> 2024-03-15 10:30:00.123456789 +0000
-PASS: 7. RFC 3339 frac + tz                         -> 2024-03-15 10:30:00.123 +0530
-PASS: 8. RFC 2822                                   -> 2024-03-15 10:30:00 +0000
-PASS: 9. RFC 850                                    -> 2024-03-15 10:30:00 +0000
-PASS: 10. ANSIC                                     -> 2024-03-15 10:30:00 +0000
-PASS: 11. Unix date                                 -> 2024-03-15 10:30:00 +0000
-PASS: 12. US slash                                  -> 2024-03-15 00:00:00 +0000
-PASS: 13. US short                                  -> 2024-03-15 00:00:00 +0000
-PASS: 14. US variable width                         -> 2024-03-15 00:00:00 +0000
-PASS: 15. US long                                   -> 2024-03-15 00:00:00 +0000
-PASS: 16. US abbreviated                            -> 2024-03-15 00:00:00 +0000
-PASS: 17. European slash (PreferDayFirst)           -> 2024-03-15 00:00:00 +0000
-PASS: 18. European dot                              -> 2024-03-15 00:00:00 +0000
-PASS: 19. European long                             -> 2024-03-15 00:00:00 +0000
-PASS: 20. European dash abbreviated                 -> 2024-03-15 00:00:00 +0000
-PASS: 21. Asian slash                               -> 2024-03-15 00:00:00 +0000
-PASS: 22. Asian dot                                 -> 2024-03-15 00:00:00 +0000
-PASS: 23. time HH:MM                                -> 0000-01-01 10:30:00 +0000
-PASS: 24. time HH:MM:SS                             -> 0000-01-01 10:30:00 +0000
-PASS: 25. time 12h                                  -> 0000-01-01 22:30:00 +0000
-PASS: 26. time 12h with seconds                     -> 0000-01-01 22:30:00 +0000
-PASS: 27. time with millis                          -> 0000-01-01 10:30:00.123 +0000
-PASS: 28. time with micros                          -> 0000-01-01 10:30:00.123456 +0000
-PASS: 29. partial month day                         -> 0000-03-15 00:00:00 +0000
-PASS: 30. partial day month                         -> 0000-03-15 00:00:00 +0000
-PASS: 31. partial month year                        -> 2024-03-01 00:00:00 +0000
-PASS: 32. unix seconds                              -> 2024-03-15 10:53:20 +0000
-PASS: 33. unix millis                               -> 2024-03-15 10:53:20 +0000
-PASS: 34. unix fractional                           -> 2024-03-15 10:53:20.123 +0000
-PASS: 35. compact date                              -> 2024-03-15 00:00:00 +0000
-PASS: 36. compact datetime                          -> 2024-03-15 10:30:00 +0000
-PASS: 37. compact datetime no sep                   -> 2024-03-15 10:30:00 +0000
-PASS: 38. compact datetime UTC                      -> 2024-03-15 10:30:00 +0000
-PASS: 39. ISO week date                             -> 2024-03-15 00:00:00 +0000
-PASS: 40. ISO week                                  -> 2024-03-11 00:00:00 +0000
-PASS: 41. ISO ordinal                               -> 2024-03-14 00:00:00 +0000
-PASS: 42. syslog                                    -> 0000-03-15 10:30:00 +0000
-PASS: 43. common log format                         -> 2024-03-15 10:30:00 +0000
-PASS: 44. SQL datetime                              -> 2024-03-15 10:30:00 +0000
-PASS: 45. SQL millis                                -> 2024-03-15 10:30:00 +0000
-PASS: 46. SQL micros                                -> 2024-03-15 10:30:00 +0000
-PASS: 47. SQL short tz                              -> 2024-03-15 10:30:00 +0000
-PASS: 48. SQL full tz                               -> 2024-03-15 10:30:00 +0530
-PASS: 49. spreadsheet US                            -> 2024-03-15 10:30:00 +0000
-PASS: 50. spreadsheet EU                            -> 2024-03-15 10:30:00 +0000
-PASS: 51. Go reference time                         -> 2024-03-15 10:30:00 -0400
-PASS: 52. RFC 822                                   -> 2024-03-15 10:30:00 +0000
-PASS: 53. RFC 1123                                  -> 2024-03-15 10:30:00 +0000
-PASS: 1. ISO date                                   -> 2024-03-15 00:00:00 +0000
-PASS: 2. ISO datetime                               -> 2024-03-15 10:30:00 +0000
-PASS: 3. ISO datetime UTC                           -> 2024-03-15 10:30:00 +0000
-PASS: 4. RFC 3339                                   -> 2024-03-15 10:30:00 +0530
-PASS: 5. RFC 3339 negative                          -> 2024-03-15 10:30:00 -0800
-PASS: 6. RFC 3339 nano                              -> 2024-03-15 10:30:00.123456789 +0000
-PASS: 7. RFC 3339 frac + tz                         -> 2024-03-15 10:30:00.123 +0530
-PASS: 8. RFC 2822                                   -> 2024-03-15 10:30:00 +0000
-PASS: 9. RFC 850                                    -> 2024-03-15 10:30:00 +0000
-PASS: 10. ANSIC                                     -> 2024-03-15 10:30:00 +0000
-PASS: 11. Unix date                                 -> 2024-03-15 10:30:00 +0000
-PASS: 12. US slash                                  -> 2024-03-15 00:00:00 +0000
-PASS: 13. US short                                  -> 2024-03-15 00:00:00 +0000
-PASS: 14. US variable width                         -> 2024-03-15 00:00:00 +0000
-PASS: 15. US long                                   -> 2024-03-15 00:00:00 +0000
-PASS: 16. US abbreviated                            -> 2024-03-15 00:00:00 +0000
-PASS: 17. European slash (PreferDayFirst)           -> 2024-03-15 00:00:00 +0000
-PASS: 18. European dot                              -> 2024-03-15 00:00:00 +0000
-PASS: 19. European long                             -> 2024-03-15 00:00:00 +0000
-PASS: 20. European dash abbreviated                 -> 2024-03-15 00:00:00 +0000
-PASS: 21. Asian slash                               -> 2024-03-15 00:00:00 +0000
-PASS: 22. Asian dot                                 -> 2024-03-15 00:00:00 +0000
-PASS: 23. time HH:MM                                -> 0000-01-01 10:30:00 +0000
-PASS: 24. time HH:MM:SS                             -> 0000-01-01 10:30:00 +0000
-PASS: 25. time 12h                                  -> 0000-01-01 22:30:00 +0000
-PASS: 26. time 12h with seconds                     -> 0000-01-01 22:30:00 +0000
-PASS: 27. time with millis                          -> 0000-01-01 10:30:00.123 +0000
-PASS: 28. time with micros                          -> 0000-01-01 10:30:00.123456 +0000
-PASS: 29. partial month day                         -> 0000-03-15 00:00:00 +0000
-PASS: 30. partial day month                         -> 0000-03-15 00:00:00 +0000
-PASS: 31. partial month year                        -> 2024-03-01 00:00:00 +0000
-PASS: 32. unix seconds                              -> 2024-03-15 10:53:20 +0000
-PASS: 33. unix millis                               -> 2024-03-15 10:53:20 +0000
-PASS: 34. unix fractional                           -> 2024-03-15 10:53:20.123 +0000
-PASS: 35. compact date                              -> 2024-03-15 00:00:00 +0000
-PASS: 36. compact datetime                          -> 2024-03-15 10:30:00 +0000
-PASS: 37. compact datetime no sep                   -> 2024-03-15 10:30:00 +0000
-PASS: 38. compact datetime UTC                      -> 2024-03-15 10:30:00 +0000
-PASS: 39. ISO week date                             -> 2024-03-15 00:00:00 +0000
-PASS: 40. ISO week                                  -> 2024-03-11 00:00:00 +0000
-PASS: 41. ISO ordinal                               -> 2024-03-14 00:00:00 +0000
-PASS: 42. syslog                                    -> 0000-03-15 10:30:00 +0000
-PASS: 43. common log format                         -> 2024-03-15 10:30:00 +0000
-PASS: 44. SQL datetime                              -> 2024-03-15 10:30:00 +0000
-PASS: 45. SQL millis                                -> 2024-03-15 10:30:00 +0000
-PASS: 46. SQL micros                                -> 2024-03-15 10:30:00 +0000
-PASS: 47. SQL short tz                              -> 2024-03-15 10:30:00 +0000
-PASS: 48. SQL full tz                               -> 2024-03-15 10:30:00 +0530
-PASS: 49. spreadsheet US                            -> 2024-03-15 10:30:00 +0000
-PASS: 50. spreadsheet EU                            -> 2024-03-15 10:30:00 +0000
-PASS: 51. Go reference time                         -> 2024-03-15 10:30:00 -0400
-PASS: 52. RFC 822                                   -> 2024-03-15 10:30:00 +0000
-PASS: 53. RFC 1123                                  -> 2024-03-15 10:30:00 +0000
 goos: darwin
 goarch: arm64
 pkg: github.com/kmoneil/dateparsa
 cpu: Apple M2 Max
-BenchmarkParse_ISO8601-12                	10057533	       114.5 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_ISO8601-12                	10940336	       110.9 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_ISO8601-12                	10835608	       112.0 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_ISO8601_DateTime-12       	 7400782	       165.2 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_ISO8601_DateTime-12       	 7582078	       158.5 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_ISO8601_DateTime-12       	 7233608	       164.6 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_RFC3339-12                	 5025778	       243.6 ns/op	     352 B/op	       4 allocs/op
-BenchmarkParse_RFC3339-12                	 4254388	       252.3 ns/op	     352 B/op	       4 allocs/op
-BenchmarkParse_RFC3339-12                	 5107543	       236.0 ns/op	     352 B/op	       4 allocs/op
-BenchmarkParse_SQLDatetime-12            	 7617582	       157.4 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_SQLDatetime-12            	 7744093	       159.4 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_SQLDatetime-12            	 7737466	       154.2 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_TextualMonth-12           	 1794409	       657.5 ns/op	    1040 B/op	       6 allocs/op
-BenchmarkParse_TextualMonth-12           	 1744798	       679.1 ns/op	    1040 B/op	       6 allocs/op
-BenchmarkParse_TextualMonth-12           	 1739802	       680.7 ns/op	    1040 B/op	       6 allocs/op
-BenchmarkParse_AmbiguousSlash-12         	 5130550	       237.8 ns/op	     576 B/op	       4 allocs/op
-BenchmarkParse_AmbiguousSlash-12         	 5249772	       229.1 ns/op	     576 B/op	       4 allocs/op
-BenchmarkParse_AmbiguousSlash-12         	 5289868	       239.4 ns/op	     576 B/op	       4 allocs/op
-BenchmarkLayout_Parse-12                 	33595173	        36.25 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse-12                 	33134182	        36.94 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse-12                 	33650442	        36.57 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse_ISODate-12         	55261339	        21.73 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse_ISODate-12         	55159626	        21.73 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse_ISODate-12         	55883050	        21.69 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetect_Only-12                  	 6642543	       159.6 ns/op	     256 B/op	       2 allocs/op
-BenchmarkDetect_Only-12                  	 7543557	       164.4 ns/op	     256 B/op	       2 allocs/op
-BenchmarkDetect_Only-12                  	 7915153	       154.1 ns/op	     256 B/op	       2 allocs/op
-BenchmarkVsStdlib-12                     	45552176	        26.73 ns/op	       0 B/op	       0 allocs/op
-BenchmarkVsStdlib-12                     	44975613	        26.25 ns/op	       0 B/op	       0 allocs/op
-BenchmarkVsStdlib-12                     	45460716	        26.82 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParser_Cached-12                	31272157	        39.39 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParser_Cached-12                	31375249	        38.20 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParser_Cached-12                	31813220	        38.67 ns/op	       0 B/op	       0 allocs/op
-Benchmark10M_Layout_Parse-12             	       3	 365587486 ns/op	       0 B/op	       0 allocs/op
-Benchmark10M_Layout_Parse-12             	       3	 366757722 ns/op	       0 B/op	       0 allocs/op
-Benchmark10M_Layout_Parse-12             	       3	 363367069 ns/op	       0 B/op	       0 allocs/op
-Benchmark10M_Parser_ParseColumn-12       	       3	 403366500 ns/op	400007650 B/op	      10 allocs/op
-Benchmark10M_Parser_ParseColumn-12       	       3	 396579500 ns/op	400007640 B/op	      10 allocs/op
-Benchmark10M_Parser_ParseColumn-12       	       3	 412176833 ns/op	400007640 B/op	      10 allocs/op
-BenchmarkParse_Compact-12                	11197590	       101.0 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_Compact-12                	12097490	       100.8 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_Compact-12                	12141769	       103.9 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_CompactDateTime-12        	 7530692	       136.5 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_CompactDateTime-12        	 8940716	       142.8 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_CompactDateTime-12        	 9169342	       138.3 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_UnixTimestamp-12          	12333212	        98.88 ns/op	      32 B/op	       1 allocs/op
-BenchmarkParse_UnixTimestamp-12          	12284173	        95.97 ns/op	      32 B/op	       1 allocs/op
-BenchmarkParse_UnixTimestamp-12          	12817168	        96.88 ns/op	      32 B/op	       1 allocs/op
-BenchmarkParse_ISOWeekDate-12            	 5959537	       194.7 ns/op	     352 B/op	       3 allocs/op
-BenchmarkParse_ISOWeekDate-12            	 6365408	       192.0 ns/op	     352 B/op	       3 allocs/op
-BenchmarkParse_ISOWeekDate-12            	 6349257	       194.9 ns/op	     352 B/op	       3 allocs/op
-BenchmarkParse_ISOOrdinal-12             	12486462	       102.6 ns/op	     320 B/op	       3 allocs/op
-BenchmarkParse_ISOOrdinal-12             	11348769	       101.8 ns/op	     320 B/op	       3 allocs/op
-BenchmarkParse_ISOOrdinal-12             	12278527	       104.2 ns/op	     320 B/op	       3 allocs/op
-BenchmarkParse_TimeAMPM-12               	 2530968	       477.8 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_TimeAMPM-12               	 2461170	       492.7 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_TimeAMPM-12               	 2472015	       479.6 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_SQLFrac6-12               	 6528022	       190.1 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_SQLFrac6-12               	 6477430	       189.3 ns/op	     192 B/op	       1 allocs/op
-BenchmarkParse_SQLFrac6-12               	 6444204	       184.9 ns/op	     192 B/op	       1 allocs/op
-BenchmarkLayout_Parse_Compact-12         	66095367	        19.13 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse_Compact-12         	65286726	        19.06 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLayout_Parse_Compact-12         	65553322	        18.91 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParse_NL_Yesterday-12           	 1705089	       714.3 ns/op	     832 B/op	       4 allocs/op
-BenchmarkParse_NL_Yesterday-12           	 1725714	       698.4 ns/op	     832 B/op	       4 allocs/op
-BenchmarkParse_NL_Yesterday-12           	 1575265	       753.1 ns/op	     832 B/op	       4 allocs/op
-BenchmarkParse_NL_3DaysAgo-12            	 1504929	       800.2 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_3DaysAgo-12            	 1472244	       814.1 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_3DaysAgo-12            	 1515976	       803.1 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_NextFriday-12          	 1455268	       822.0 ns/op	     928 B/op	       4 allocs/op
-BenchmarkParse_NL_NextFriday-12          	 1390023	       856.9 ns/op	     928 B/op	       4 allocs/op
-BenchmarkParse_NL_NextFriday-12          	 1440987	       834.1 ns/op	     928 B/op	       4 allocs/op
-BenchmarkParse_NL_YesterdayAt5pm-12      	 1000000	      1109 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_YesterdayAt5pm-12      	 1000000	      1111 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_YesterdayAt5pm-12      	  977848	      1144 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_BeginningOfMonth-12    	 1000000	      1123 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_BeginningOfMonth-12    	 1000000	      1083 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_BeginningOfMonth-12    	 1000000	      1101 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_In10Minutes-12         	 1340460	       892.5 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_In10Minutes-12         	 1281606	       936.3 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_NL_In10Minutes-12         	 1285273	       938.0 ns/op	    1024 B/op	       4 allocs/op
-BenchmarkParse_Locale_FrenchMonth-12     	 1000000	      1102 ns/op	    1112 B/op	       9 allocs/op
-BenchmarkParse_Locale_FrenchMonth-12     	 1154100	      1064 ns/op	    1112 B/op	       9 allocs/op
-BenchmarkParse_Locale_FrenchMonth-12     	 1000000	      1019 ns/op	    1112 B/op	       9 allocs/op
-BenchmarkParse_Locale_FrenchNL-12        	  164085	      7506 ns/op	   19368 B/op	      72 allocs/op
-BenchmarkParse_Locale_FrenchNL-12        	  167835	      7250 ns/op	   19368 B/op	      72 allocs/op
-BenchmarkParse_Locale_FrenchNL-12        	  154768	      7420 ns/op	   19368 B/op	      72 allocs/op
-BenchmarkParse_Locale_GermanMonth-12     	 1000000	      1069 ns/op	    1112 B/op	       9 allocs/op
-BenchmarkParse_Locale_GermanMonth-12     	 1000000	      1110 ns/op	    1112 B/op	       9 allocs/op
-BenchmarkParse_Locale_GermanMonth-12     	 1000000	      1076 ns/op	    1112 B/op	       9 allocs/op
+BenchmarkParse_ISO8601-12                           	 9114099	       132.5 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_ISO8601-12                           	 9231561	       133.0 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_ISO8601-12                           	 9271629	       134.2 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_ISO8601_DateTime-12                  	 6927688	       178.4 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_ISO8601_DateTime-12                  	 6823780	       175.5 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_ISO8601_DateTime-12                  	 6864590	       176.5 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_RFC3339-12                           	 5741570	       200.0 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_RFC3339-12                           	 5944288	       204.0 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_RFC3339-12                           	 6137006	       198.2 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_SQLDatetime-12                       	 6825349	       173.0 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_SQLDatetime-12                       	 6792860	       174.1 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_SQLDatetime-12                       	 6879580	       177.9 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_TextualMonth-12                      	 3515869	       345.0 ns/op	     448 B/op	       4 allocs/op
+BenchmarkParse_TextualMonth-12                      	 3559838	       339.3 ns/op	     448 B/op	       4 allocs/op
+BenchmarkParse_TextualMonth-12                      	 3530010	       349.1 ns/op	     448 B/op	       4 allocs/op
+BenchmarkParse_AmbiguousSlash-12                    	 4869296	       248.6 ns/op	     464 B/op	       4 allocs/op
+BenchmarkParse_AmbiguousSlash-12                    	 5009582	       243.1 ns/op	     464 B/op	       4 allocs/op
+BenchmarkParse_AmbiguousSlash-12                    	 4889005	       244.6 ns/op	     464 B/op	       4 allocs/op
+BenchmarkParse_Miss_Short-12                        	 3908505	       307.6 ns/op	     723 B/op	       4 allocs/op
+BenchmarkParse_Miss_Short-12                        	 3692260	       320.2 ns/op	     723 B/op	       4 allocs/op
+BenchmarkParse_Miss_Short-12                        	 3813331	       312.8 ns/op	     723 B/op	       4 allocs/op
+BenchmarkParse_Miss_Text-12                         	 2493350	       469.3 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_Miss_Text-12                         	 2574872	       465.8 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_Miss_Text-12                         	 2479491	       473.8 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_Miss_Long-12                         	  776176	      1527 ns/op	  44.52 MB/s	    4656 B/op	       4 allocs/op
+BenchmarkParse_Miss_Long-12                         	  824166	      1460 ns/op	  46.58 MB/s	    4656 B/op	       4 allocs/op
+BenchmarkParse_Miss_Long-12                         	  847983	      1509 ns/op	  45.06 MB/s	    4656 B/op	       4 allocs/op
+BenchmarkParse_Miss_Locales-12                      	  495363	      2633 ns/op	    5440 B/op	      16 allocs/op
+BenchmarkParse_Miss_Locales-12                      	  467410	      2563 ns/op	    5440 B/op	      16 allocs/op
+BenchmarkParse_Miss_Locales-12                      	  500196	      2733 ns/op	    5440 B/op	      16 allocs/op
+BenchmarkParse_Miss_Locales_NonLatin-12             	  478962	      2656 ns/op	    5416 B/op	      15 allocs/op
+BenchmarkParse_Miss_Locales_NonLatin-12             	  458618	      2762 ns/op	    5416 B/op	      15 allocs/op
+BenchmarkParse_Miss_Locales_NonLatin-12             	  443895	      2707 ns/op	    5416 B/op	      15 allocs/op
+BenchmarkLayout_Parse-12                            	48957360	        24.56 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse-12                            	48313230	        24.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse-12                            	47954042	        24.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_ISODate-12                    	67157445	        17.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_ISODate-12                    	67394118	        18.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_ISODate-12                    	68754444	        17.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetect_Only-12                             	 7904055	       154.3 ns/op	     208 B/op	       1 allocs/op
+BenchmarkDetect_Only-12                             	 7793193	       152.2 ns/op	     208 B/op	       1 allocs/op
+BenchmarkDetect_Only-12                             	 8019558	       153.3 ns/op	     208 B/op	       1 allocs/op
+BenchmarkVsStdlib-12                                	43279893	        27.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkVsStdlib-12                                	43222540	        28.06 ns/op	       0 B/op	       0 allocs/op
+BenchmarkVsStdlib-12                                	42972823	        27.99 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParser_Cached-12                           	45089966	        26.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParser_Cached-12                           	45138447	        26.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParser_Cached-12                           	46157174	        26.70 ns/op	       0 B/op	       0 allocs/op
+Benchmark10M_Layout_Parse-12                        	       5	 242986225 ns/op	       0 B/op	       0 allocs/op
+Benchmark10M_Layout_Parse-12                        	       5	 247508958 ns/op	       0 B/op	       0 allocs/op
+Benchmark10M_Layout_Parse-12                        	       5	 251371683 ns/op	       0 B/op	       0 allocs/op
+Benchmark10M_Parser_ParseColumn-12                  	       4	 295634438 ns/op	400007456 B/op	       4 allocs/op
+Benchmark10M_Parser_ParseColumn-12                  	       4	 300908584 ns/op	400007456 B/op	       4 allocs/op
+Benchmark10M_Parser_ParseColumn-12                  	       4	 294986500 ns/op	400007456 B/op	       4 allocs/op
+BenchmarkLayout_Parse_TZName_CET-12                 	36396079	        33.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_TZName_CET-12                 	36275785	        33.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_TZName_CET-12                 	35743806	        33.38 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompile_ISODate-12                         	 2547739	       476.2 ns/op	     512 B/op	       6 allocs/op
+BenchmarkCompile_ISODate-12                         	 2558647	       481.4 ns/op	     512 B/op	       6 allocs/op
+BenchmarkCompile_ISODate-12                         	 2517117	       478.9 ns/op	     512 B/op	       6 allocs/op
+BenchmarkCompiledLayout_Parse_ISODate-12            	69309406	        17.48 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_ISODate-12            	68721468	        17.79 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_ISODate-12            	68637614	        17.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_RFC3339-12            	48300201	        24.91 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_RFC3339-12            	49701103	        24.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_RFC3339-12            	43498090	        24.83 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_DateTime_Millis-12    	43759220	        28.62 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_DateTime_Millis-12    	42945844	        28.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_Parse_DateTime_Millis-12    	42532515	        28.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/ISO_date-12         	68282530	        18.14 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/ISO_date-12         	67553302	        18.13 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/ISO_date-12         	70354582	        18.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/ISO_date-12            	20550099	        56.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/ISO_date-12            	21563745	        55.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/ISO_date-12            	21390342	        57.54 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/RFC3339-12          	48206967	        24.64 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/RFC3339-12          	48286418	        25.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/RFC3339-12          	47754858	        25.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/RFC3339-12             	44305647	        27.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/RFC3339-12             	43081396	        28.64 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/RFC3339-12             	43794021	        28.43 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/SQL_datetime-12     	50829957	        24.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/SQL_datetime-12     	48875936	        24.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/SQL_datetime-12     	49522826	        24.16 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/SQL_datetime-12        	13353987	        91.22 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/SQL_datetime-12        	13344144	        90.71 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/SQL_datetime-12        	13382594	        93.18 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/US_slash-12         	64773393	        18.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/US_slash-12         	68436022	        17.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/dateparsa/US_slash-12         	66852214	        17.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/US_slash-12            	21843781	        54.57 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/US_slash-12            	21869607	        56.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompiledLayout_vs_Stdlib/stdlib/US_slash-12            	22432946	        54.32 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParse_Compact-12                                       	 9633014	       127.5 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_Compact-12                                       	 9168201	       129.8 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_Compact-12                                       	 7933770	       131.5 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_CompactDateTime-12                               	 7231005	       166.6 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_CompactDateTime-12                               	 7381682	       165.1 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_CompactDateTime-12                               	 6466352	       170.4 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_UnixTimestamp-12                                 	15170653	        81.05 ns/op	      32 B/op	       1 allocs/op
+BenchmarkParse_UnixTimestamp-12                                 	14972012	        79.64 ns/op	      32 B/op	       1 allocs/op
+BenchmarkParse_UnixTimestamp-12                                 	15200880	        80.13 ns/op	      32 B/op	       1 allocs/op
+BenchmarkParse_ISOWeekDate-12                                   	 5171948	       230.1 ns/op	     368 B/op	       3 allocs/op
+BenchmarkParse_ISOWeekDate-12                                   	 4827271	       233.9 ns/op	     368 B/op	       3 allocs/op
+BenchmarkParse_ISOWeekDate-12                                   	 5239852	       232.8 ns/op	     368 B/op	       3 allocs/op
+BenchmarkParse_ISOOrdinal-12                                    	 9872821	       122.1 ns/op	     320 B/op	       3 allocs/op
+BenchmarkParse_ISOOrdinal-12                                    	 9904874	       125.1 ns/op	     320 B/op	       3 allocs/op
+BenchmarkParse_ISOOrdinal-12                                    	 9885946	       121.8 ns/op	     320 B/op	       3 allocs/op
+BenchmarkParse_TimeAMPM-12                                      	 6875312	       171.6 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_TimeAMPM-12                                      	 7182405	       173.0 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_TimeAMPM-12                                      	 7187466	       169.1 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_SQLFrac6-12                                      	 6161618	       198.7 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_SQLFrac6-12                                      	 6195316	       195.2 ns/op	     208 B/op	       1 allocs/op
+BenchmarkParse_SQLFrac6-12                                      	 5682186	       198.4 ns/op	     208 B/op	       1 allocs/op
+BenchmarkLayout_Parse_Compact-12                                	71402713	        16.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_Compact-12                                	71206052	        16.79 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLayout_Parse_Compact-12                                	71514596	        16.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParse_NL_Yesterday-12                                  	 3766850	       301.5 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_Yesterday-12                                  	 3991767	       305.2 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_Yesterday-12                                  	 3946414	       296.6 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_3DaysAgo-12                                   	 2829687	       413.3 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_3DaysAgo-12                                   	 2971077	       415.0 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_3DaysAgo-12                                   	 2984978	       399.5 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_NextFriday-12                                 	 3453884	       357.2 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_NextFriday-12                                 	 3501807	       344.8 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_NextFriday-12                                 	 3266776	       352.1 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_YesterdayAt5pm-12                             	 3048110	       401.0 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_YesterdayAt5pm-12                             	 2970949	       403.5 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_YesterdayAt5pm-12                             	 3003720	       406.5 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_BeginningOfMonth-12                           	 3335014	       354.9 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_BeginningOfMonth-12                           	 3148918	       365.8 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_BeginningOfMonth-12                           	 3463910	       357.0 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_In10Minutes-12                                	 3619918	       329.9 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_In10Minutes-12                                	 3675301	       339.5 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_NL_In10Minutes-12                                	 3670568	       331.5 ns/op	     688 B/op	       2 allocs/op
+BenchmarkParse_Locale_FrenchMonth-12                            	 2764086	       421.6 ns/op	     456 B/op	       6 allocs/op
+BenchmarkParse_Locale_FrenchMonth-12                            	 2957092	       410.8 ns/op	     456 B/op	       6 allocs/op
+BenchmarkParse_Locale_FrenchMonth-12                            	 2935730	       410.2 ns/op	     456 B/op	       6 allocs/op
+BenchmarkParse_Locale_FrenchNL-12                               	 2607909	       473.4 ns/op	     792 B/op	       4 allocs/op
+BenchmarkParse_Locale_FrenchNL-12                               	 2610811	       462.3 ns/op	     792 B/op	       4 allocs/op
+BenchmarkParse_Locale_FrenchNL-12                               	 2491124	       470.7 ns/op	     792 B/op	       4 allocs/op
+BenchmarkParse_Locale_GermanMonth-12                            	 2873458	       429.9 ns/op	     456 B/op	       6 allocs/op
+BenchmarkParse_Locale_GermanMonth-12                            	 2885649	       416.2 ns/op	     456 B/op	       6 allocs/op
+BenchmarkParse_Locale_GermanMonth-12                            	 2868801	       444.8 ns/op	     456 B/op	       6 allocs/op
+BenchmarkParse_Locale_RussianNL-12                              	  926778	      1221 ns/op	    1368 B/op	       6 allocs/op
+BenchmarkParse_Locale_RussianNL-12                              	 1000000	      1274 ns/op	    1368 B/op	       6 allocs/op
+BenchmarkParse_Locale_RussianNL-12                              	  938379	      1279 ns/op	    1368 B/op	       6 allocs/op
 PASS
-ok  	github.com/kmoneil/dateparsa	114.312s
+ok  	github.com/kmoneil/dateparsa	186.100s
+goos: darwin
+goarch: arm64
+pkg: github.com/kmoneil/dateparsa/flextime
+cpu: Apple M2 Max
+BenchmarkScanTimeTime-12           	62152414	        19.58 ns/op	      24 B/op	       1 allocs/op
+BenchmarkScanTimeTime-12           	64526102	        22.69 ns/op	      24 B/op	       1 allocs/op
+BenchmarkScanTimeTime-12           	58604838	        19.30 ns/op	      24 B/op	       1 allocs/op
+BenchmarkScanString-12             	 6249331	       202.0 ns/op	     208 B/op	       1 allocs/op
+BenchmarkScanString-12             	 5770964	       196.4 ns/op	     208 B/op	       1 allocs/op
+BenchmarkScanString-12             	 5712396	       189.9 ns/op	     208 B/op	       1 allocs/op
+BenchmarkScanBytes-12              	 5674786	       219.2 ns/op	     256 B/op	       3 allocs/op
+BenchmarkScanBytes-12              	 5488184	       224.2 ns/op	     256 B/op	       3 allocs/op
+BenchmarkScanBytes-12              	 5479732	       222.0 ns/op	     256 B/op	       3 allocs/op
+BenchmarkScanInt64-12              	574324924	         2.034 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanInt64-12              	601377906	         2.023 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanInt64-12              	594852296	         2.018 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Default-12        	42122629	        28.66 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Default-12        	42433690	        28.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Default-12        	41609175	        30.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Configured-12     	40586817	        29.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Configured-12     	41471547	        28.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Configured-12     	42524100	        29.32 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Parallel-12       	339136731	         4.038 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Parallel-12       	328412467	         4.413 ns/op	       0 B/op	       0 allocs/op
+BenchmarkScanner_Parallel-12       	360843637	         3.668 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValue-12                  	1000000000	         0.3093 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValue-12                  	1000000000	         0.3062 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValue-12                  	1000000000	         0.3284 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMarshalJSON-12            	10213533	       117.7 ns/op	      64 B/op	       3 allocs/op
+BenchmarkMarshalJSON-12            	 9750550	       118.0 ns/op	      64 B/op	       3 allocs/op
+BenchmarkMarshalJSON-12            	10636003	       114.2 ns/op	      64 B/op	       3 allocs/op
+BenchmarkUnmarshalJSONString-12    	 3056768	       403.9 ns/op	     392 B/op	       4 allocs/op
+BenchmarkUnmarshalJSONString-12    	 2836302	       388.7 ns/op	     392 B/op	       4 allocs/op
+BenchmarkUnmarshalJSONString-12    	 3176066	       406.0 ns/op	     392 B/op	       4 allocs/op
+BenchmarkUnmarshalJSONNumber-12    	 8862582	       138.7 ns/op	     152 B/op	       2 allocs/op
+BenchmarkUnmarshalJSONNumber-12    	 8687134	       137.9 ns/op	     152 B/op	       2 allocs/op
+BenchmarkUnmarshalJSONNumber-12    	 8801008	       136.5 ns/op	     152 B/op	       2 allocs/op
+PASS
+ok  	github.com/kmoneil/dateparsa/flextime	45.286s
+PASS
+ok  	github.com/kmoneil/dateparsa/internal/compile	0.166s
+PASS
+ok  	github.com/kmoneil/dateparsa/internal/detect	0.148s
+PASS
+ok  	github.com/kmoneil/dateparsa/internal/epoch	0.148s
+?   	github.com/kmoneil/dateparsa/internal/locale	[no test files]
+?   	github.com/kmoneil/dateparsa/internal/locale/data	[no test files]
+PASS
+ok  	github.com/kmoneil/dateparsa/internal/natural	0.150s

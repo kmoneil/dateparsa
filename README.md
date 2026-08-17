@@ -12,7 +12,7 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 
 ## Why dateparsa
 
-**When you already know the format**, use `time.Parse`. It's about 27 ns, zero allocs, stdlib. Nothing should replace it.
+**When you already know the format**, use `time.Parse`. It's about 28 ns, zero allocs, stdlib. Nothing should replace it.
 
 **When you don't know the format** — CSV imports, log ingestion, API responses from third parties, user-submitted data, multi-source pipelines — that's where dateparsa comes in.
 
@@ -241,42 +241,36 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 
 ## Performance
 
-**Two machines appear below and the sections say which.** "Hot path" and
-"Against `time.Parse`" are `linux/arm64`, Go 1.26.4, 10 cores. "Full detection +
-parse", "Bulk", and "Natural language" are Apple M2 Max, Go 1.26.1,
-`darwin/arm64`, taken as the median of the three runs in
-`benchmarks/baseline.txt`. Do not read a row from one against a row from
-another.
+**One machine, and it is named here.** Every number below is an Apple M2 Max,
+`darwin/arm64`, 12 cores, Go 1.26.6. "Hot path" and "Against `time.Parse`" are
+benchstat over 12 runs; the rest are the median of the three runs in
+`benchmarks/baseline.txt`. Where the two methods cover the same benchmark they
+agree to within 3%.
 
-The split is not tidiness, it is what could actually be measured. The change
-that made the hot path what it is could not be run on the M2 Max, and
-`benchmarks/baseline.txt` was deliberately **not** overwritten with
-`linux/arm64` numbers, because that would silently retarget the committed
-reference and make every later `make bench-compare` on the M2 Max print deltas
-that are really just the difference between two machines. That is also the state
-`make bench-compare` is in today until somebody re-runs the suite there. If you
-change a number in a table, change it on the machine that table names, and say
-what produced it.
+The tables used to be split across two machines, and were labelled as such. The
+change that made the hot path what it is was measured on a `linux/arm64` box,
+and `benchmarks/baseline.txt` was deliberately not overwritten with its numbers,
+because retargeting the committed reference would have made every later
+`make bench-compare` on the M2 Max print deltas that were really the difference
+between two machines. The suite has since been re-run here and the baseline
+regenerated from it, so the split is gone and `make bench-compare` measures a
+change again rather than a machine. If you change a number in a table, change it
+on the machine the section names, and say what produced it.
 
-**Allocs** is `linux/arm64` throughout, including in the M2 Max tables: the
-whole column was re-measured at `e61660a`, because seven of the counts had
-drifted from the baseline, and the natural-language rows again when `Option`
-became a value form, which took one allocation off every call that passes
-options. An allocation count does not depend on the machine, being a property of
-the code, which is why it is the one column that can be shared. In the M2 Max
-tables the ns column has not been re-run since, so it is stale by an unknown
-amount on any row whose allocation count moved.
+**Allocs** is the one column that does not depend on the machine, an allocation
+count being a property of the code. It comes from the same run as everything
+else.
 
 ### Hot path (compiled Layout reuse)
 
-`linux/arm64`, Go 1.26.4, 10 cores, benchstat over 12 runs, all within ±2%.
+Apple M2 Max, Go 1.26.6, 12 cores, benchstat over 12 runs, all within ±2%.
 
 | Operation                       | ns/op | Allocs | vs `time.Parse` |
 | ------------------------------- | ----- | ------ | --------------- |
-| `Layout.Parse` (compact date)   | 17.2  | 0      | 0.6x            |
-| `Layout.Parse` (ISO date)       | 17.7  | 0      | 0.6x            |
-| `Layout.Parse` (ISO datetime+Z) | 24.7  | 0      | 0.9x            |
-| `Parser` (cached layout)        | 26.9  | 0      | 1.0x            |
+| `Layout.Parse` (compact date)   | 16.8  | 0      | 0.6x            |
+| `Layout.Parse` (ISO date)       | 17.9  | 0      | 0.6x            |
+| `Layout.Parse` (ISO datetime+Z) | 24.4  | 0      | 0.9x            |
+| `Parser` (cached layout)        | 26.6  | 0      | 1.0x            |
 | `time.Parse` (stdlib baseline)  | 27.9  | 0      | 1.0x            |
 
 ### Against `time.Parse` on the same format
@@ -287,10 +281,10 @@ is the source, same machine and method as above.
 
 | Format       | dateparsa | `time.Parse` |          |
 | ------------ | --------- | ------------ | -------- |
-| SQL datetime | 24.2 ns   | 89.4 ns      | **3.7x** |
-| ISO date     | 17.9 ns   | 56.6 ns      | **3.2x** |
-| US slash     | 18.0 ns   | 55.0 ns      | **3.1x** |
-| RFC 3339     | 24.8 ns   | 27.9 ns      | **1.1x** |
+| SQL datetime | 24.2 ns   | 91.9 ns      | **3.8x** |
+| ISO date     | 18.0 ns   | 57.3 ns      | **3.2x** |
+| US slash     | 18.2 ns   | 53.4 ns      | **2.9x** |
+| RFC 3339     | 24.7 ns   | 27.7 ns      | **1.1x** |
 
 Zero allocations on every row, both sides. RFC 3339 is close because it is the
 one layout the standard library hand-writes a dedicated parser for; the other
@@ -304,61 +298,75 @@ of the thirty-one supported formats qualify, including every one above;
 a weekday, a variable-width number, or an ISO week, and they run the instruction
 interpreter as before.
 
-The trade is that `Detect` on its own got **16% slower** (137 ns to 160 ns): it
-does the planning and never runs the program, so it pays and does not collect.
-`Parse`, which does run it, is flat to slightly faster, and anything that reuses
-the layout is a third to a half faster. For a library whose reason to exist is
-parsing the second row through the ten-millionth with the format found on the
-first, that is the right side of the trade.
+The trade is that `Detect` on its own got **16% slower**: it does the planning
+and never runs the program, so it pays and does not collect. That figure is the
+one measurement in this section still carrying `linux/arm64` numbers (137 ns to
+160 ns), because it is an A/B across two commits and only one of them is checked
+out here; `Detect` measures 153 ns on the M2 Max today. `Parse`, which does run
+the program, is flat to slightly faster, and anything that reuses the layout is
+a third to a half faster. For a library whose reason to exist is parsing the
+second row through the ten-millionth with the format found on the first, that is
+the right side of the trade.
 
 ### Full detection + parse (first call)
 
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| Unix timestamp       | 97    | 1      |
-| Compact date         | 101   | 1      |
-| ISO ordinal          | 103   | 3      |
-| ISO 8601 date        | 112   | 1      |
-| SQL datetime         | 157   | 1      |
-| ISO 8601 datetime    | 165   | 1      |
-| SQL datetime + frac6 | 189   | 1      |
-| ISO week date        | 195   | 3      |
-| Ambiguous slash      | 238   | 4      |
-| Textual month        | 679   | 4      |
+| Unix timestamp       | 80    | 1      |
+| ISO ordinal          | 122   | 3      |
+| Compact date         | 130   | 1      |
+| ISO 8601 date        | 133   | 1      |
+| SQL datetime         | 174   | 1      |
+| ISO 8601 datetime    | 177   | 1      |
+| SQL datetime + frac6 | 198   | 1      |
+| ISO week date        | 233   | 3      |
+| Ambiguous slash      | 245   | 4      |
+| Textual month        | 345   | 4      |
 
-### Bulk (10M rows, Apple M2 Max)
+Eight of these ten are slower than in the baseline this replaces, by 3% to 29%.
+The cause is the range and separator checking the correctness fixes added: a
+detection that describes every byte of its input and refuses a numeric part
+wider than the field that reads it does more work than one that does neither.
+It is paid once per column. The two rows that moved the other way moved
+further. A textual month is half what it was, because a month name is now
+matched against words rather than against every position, and a Unix timestamp
+is 17% quicker.
 
+### Bulk (10M rows)
 
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
-| `Layout.Parse` 10M rows       | 366ms | 36.6 ns |
-| `Parser.ParseColumn` 10M rows | 403ms | 40.3 ns |
+| `Layout.Parse` 10M rows       | 248ms | 24.8 ns |
+| `Parser.ParseColumn` 10M rows | 296ms | 29.6 ns |
 
-**Both rows are stale and high.** They are the per-row cost of `Layout.Parse`
-and of the cached layout in `Parser`, and both of those got about 45% faster on
-`linux/arm64` when fixed-offset formats stopped being interpreted. Neither
-number has been re-run on the machine this table names. The shape of the claim
-is unchanged: a column costs one detection and then a compiled parse per row.
+A column costs one detection and then a compiled parse per row. The difference
+between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
+`Layout.Parse` hands back one value and allocates nothing.
 
 ### Natural language
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| "yesterday"          | 714   | 2      |
-| "3 days ago"         | 803   | 2      |
-| "next friday"        | 834   | 2      |
-| "in 10 minutes"      | 936   | 2      |
-| "beginning of month" | 1,101 | 2      |
-| "yesterday at 5pm"   | 1,111 | 2      |
+| "yesterday"          | 302   | 2      |
+| "in 10 minutes"      | 332   | 2      |
+| "next friday"        | 352   | 2      |
+| "beginning of month" | 357   | 2      |
+| "yesterday at 5pm"   | 404   | 2      |
+| "3 days ago"         | 413   | 2      |
 
 ### Regression tracking
 
-Benchmark baselines are checked into `benchmarks/baseline.txt`. To check for regressions:
+The baseline is checked into `benchmarks/baseline.txt`. To check for
+regressions:
 
 ```bash
-go test -bench=. -benchmem -count=3 > benchmarks/current.txt
-benchstat benchmarks/baseline.txt benchmarks/current.txt
+make bench-compare
 ```
+
+That runs every benchmark in the tree, root package and `flextime` both, into
+`benchmarks/current.txt` and benchstats it against the baseline. Promote a run
+to the baseline with `make bench-update`, on the machine the baseline names, in
+a commit that says what moved and why.
 
 ## How It Works
 

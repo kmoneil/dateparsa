@@ -15,6 +15,39 @@ type goToken struct {
 	aux      uint16 // auxiliary data (e.g., literal byte value)
 }
 
+// longestGoToken is the widest token below, and maxLayoutLen is how long a
+// layout string can be and still have any chance of compiling.
+//
+// Every token this file recognises produces at least one Field, and so does
+// every byte it does not recognise, which becomes a literal. So a layout of L
+// bytes produces at least L/longestGoToken fields, and Compile refuses a def
+// with more than MaxInstructions of them. A layout past that product cannot
+// compile whatever it says, and the loop below used to find that out one Field
+// at a time: 88 bytes of Fields per layout byte, so a megabyte of prose with a
+// date token in it allocated 88MB and then returned an error.
+//
+// A layout string is source code rather than input, and SECURITY.md says so, so
+// this is not a hole. It becomes one the day a caller reads layouts from a
+// configuration file, which is a plausible thing for a tool to do.
+//
+// The product is derived rather than written down: 24 by 10 is 240 today, and a
+// token wider than ten bytes moves the bound with it instead of silently making
+// this refuse a layout that would have compiled. It is deliberately loose. The
+// longest layout that compiles in practice is nearer 144 bytes, because the
+// widest token produces two fields and the best ratio is six layout bytes per
+// field, and a bound that is provably safe beats one that is tight.
+var longestGoToken = func() int {
+	n := 1
+	for _, t := range goTokens {
+		if len(t.token) > n {
+			n = len(t.token)
+		}
+	}
+	return n
+}()
+
+var maxLayoutLen = MaxInstructions * longestGoToken
+
 // tokens is ordered longest-first for greedy matching.
 // Unsupported tokens (month/day names) are listed with a sentinel kind
 // so we can produce clear error messages.
@@ -72,6 +105,11 @@ const fieldKindUnsupported FieldKind = 255
 func ParseGoLayout(layout string) (*FormatDef, error) {
 	if layout == "" {
 		return nil, errors.New("compile: empty layout string")
+	}
+	if len(layout) > maxLayoutLen {
+		return nil, fmt.Errorf("compile: layout is %d bytes and nothing over %d can compile:"+
+			" %d instructions of at most %d layout bytes each is the whole budget",
+			len(layout), maxLayoutLen, MaxInstructions, longestGoToken)
 	}
 
 	var fields []Field

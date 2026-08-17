@@ -1,6 +1,9 @@
 package compile
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseGoLayout(t *testing.T) {
 	tests := []struct {
@@ -402,3 +405,56 @@ func fieldKindName(k FieldKind) string {
 	}
 	return "unknown"
 }
+
+// TestParseGoLayoutRefusesAnOverLongLayout is N9.2.
+//
+// The loop above appends one Field per token and one per unrecognised byte, and
+// Compile refuses the def afterwards, so a layout that could never compile was
+// described in full first: 88 bytes of Fields per layout byte, 88MB for a
+// megabyte of prose with a date token in it, and then an error.
+//
+// A layout string is source code and not input, which is why this is hardening
+// rather than a finding. It stops being hardening the day a caller exposes
+// layouts as configuration.
+func TestParseGoLayoutRefusesAnOverLongLayout(t *testing.T) {
+	// The bound has to refuse nothing that could compile. These are the widest
+	// layouts anybody writes, and the widest this package accepts at all.
+	for _, layout := range []string{
+		"2006-01-02T15:04:05.000000000Z07:00",
+		"2006-01-02 15:04:05.000000 -07:00 MST",
+		strings.Repeat("-07:00", MaxInstructions),
+	} {
+		if len(layout) > maxLayoutLen {
+			t.Errorf("maxLayoutLen is %d and refuses a %d-byte layout %q at the door",
+				maxLayoutLen, len(layout), layout)
+		}
+	}
+
+	// Past it, the work is constant rather than proportional. A count rather
+	// than a byte total because a count is the same on every machine: the loop
+	// grew a Field slice by doubling, so a megabyte of layout was 40
+	// allocations and 88MB before it produced its error.
+	huge := strings.Repeat("x", 1<<20)
+	allocs := testing.AllocsPerRun(3, func() { _, _ = ParseGoLayout(huge) })
+	if allocs > 8 {
+		t.Errorf("ParseGoLayout(%d bytes) allocated %.0f times; refusing a layout it cannot"+
+			" compile must not cost work proportional to its length", len(huge), allocs)
+	}
+
+	over := strings.Repeat("x", maxLayoutLen+1)
+	err := errOf(ParseGoLayout(over))
+	if err == nil || !strings.Contains(err.Error(), "nothing over") {
+		t.Errorf("ParseGoLayout(%d bytes) = %v, want the length refusal", len(over), err)
+	}
+
+	// At the bound it is still read, because the bound is deliberately loose:
+	// it proves that nothing longer can compile, not that everything shorter
+	// does. This one is refused for having no date field in it, which is the
+	// loop's own answer and not the check at the door.
+	err = errOf(ParseGoLayout(strings.Repeat("x", maxLayoutLen)))
+	if err == nil || strings.Contains(err.Error(), "nothing over") {
+		t.Errorf("ParseGoLayout(%d bytes) = %v, want the layout to be read", maxLayoutLen, err)
+	}
+}
+
+func errOf(_ *FormatDef, err error) error { return err }

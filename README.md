@@ -175,7 +175,7 @@ fmt.Println(u.DeletedAt.Valid()) // false (was NULL)
 // Works in JSON APIs with mixed date formats
 type APIResponse struct {
     Created flextime.FlexTime `json:"created"` // "2024-03-15T10:30:00Z"
-    Epoch   flextime.FlexTime `json:"epoch"`   // 1710505800
+    Epoch   flextime.FlexTime `json:"epoch"`   // 1710505800, or 1710505800000
     Deleted flextime.FlexTime `json:"deleted"` // null
 }
 
@@ -184,6 +184,19 @@ scanner := flextime.NewScanner(flextime.WithPreferDayFirst(true))
 var ft flextime.FlexTime
 scanner.Scan(&ft, "01/02/2024") // February 1, not January 2
 ```
+
+A numeric column or a bare JSON number takes its precision from how many digits it
+is written with, the same reading a string of those digits gets: 10 to 12 digits are
+seconds, 13 are milliseconds, 16 are microseconds, and 19 are nanoseconds. So
+`1710505800000` is March 2024 and not the year 56173. A digit count that names none
+of those is refused, as is a value landing more than about 3168 years either side of
+the epoch. A number written with a fraction or an exponent is seconds, because that
+is the only thing a fractional timestamp can mean.
+
+Fewer than ten digits is the one place a number and a string differ. `86400` from an
+INTEGER column is the second of January 1970, while `"86400"` as a string is refused,
+because a short string is far more likely to be a compact date or a bare year than a
+timestamp and there is no such ambiguity once a schema has typed it as a number.
 
 ### Options
 

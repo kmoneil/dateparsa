@@ -101,13 +101,13 @@ func (s *Scanner) Scan(ft *FlexTime, src interface{}) error {
 	case []byte:
 		return s.scanString(ft, string(v))
 
-	case int64:
-		ft.t = time.Unix(v, 0)
-		ft.valid = true
-		return nil
-
-	case float64:
-		return ft.Scan(v) // delegate to FlexTime.Scan for float64
+	case int64, float64:
+		// Delegated rather than duplicated. The int64 arm used to be its own copy
+		// of time.Unix(v, 0) here, so it kept reading a millisecond epoch as
+		// seconds after FlexTime.Scan stopped: one bug fixed in one of the two
+		// places that had it. Neither numeric form is affected by any option a
+		// Scanner carries, so there is nothing this arm could add.
+		return ft.Scan(v)
 
 	default:
 		return ft.Scan(src) // delegate for unsupported type error

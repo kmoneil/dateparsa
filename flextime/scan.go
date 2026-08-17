@@ -3,15 +3,26 @@ package flextime
 import (
 	"database/sql/driver"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/kmoneil/dateparsa"
+	"github.com/kmoneil/dateparsa/internal/epoch"
 )
 
 // Scan implements sql.Scanner.
-// Accepts: time.Time, string, []byte, int64 (Unix seconds),
-// float64 (Unix seconds with fractional), nil (SQL NULL).
+// Accepts: time.Time, string, []byte, int64 (Unix timestamp), float64 (Unix
+// seconds with fractional), nil (SQL NULL).
+//
+// An int64 takes its precision from how many decimal digits it is written with,
+// so 13 digits are milliseconds and 19 are nanoseconds, the same reading a string
+// of those digits gets. It used to be seconds whatever the magnitude, which made
+// 1710500000000 the year 56173 here and 2024-03-15 through the string arm two
+// cases above.
+//
+// A float64 is seconds, fraction included, because that is all a 53-bit mantissa
+// can carry and because it is what the column type means. NaN and the infinities
+// are refused rather than converted; the conversion was implementation-defined
+// and gave different instants on arm64 and amd64.
 func (ft *FlexTime) Scan(src interface{}) error {
 	switch v := src.(type) {
 	case nil:
@@ -31,14 +42,20 @@ func (ft *FlexTime) Scan(src interface{}) error {
 		return ft.scanString(string(v))
 
 	case int64:
-		ft.t = time.Unix(v, 0)
+		t, ok := epoch.FromInt(v)
+		if !ok {
+			return fmt.Errorf("flextime: %d is not a timestamp this package accepts", v)
+		}
+		ft.t = t
 		ft.valid = true
 		return nil
 
 	case float64:
-		sec, frac := math.Modf(v)
-		nsec := math.Round(frac * 1e9)
-		ft.t = time.Unix(int64(sec), int64(nsec))
+		t, ok := epoch.FromSeconds(v)
+		if !ok {
+			return fmt.Errorf("flextime: %v is not a timestamp this package accepts", v)
+		}
+		ft.t = t
 		ft.valid = true
 		return nil
 

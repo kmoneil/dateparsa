@@ -47,6 +47,52 @@ options, they control your program and dateparsa is not the boundary.
 date in the year 1900 is a correct answer. Range and plausibility checks belong
 to the application, which is the only layer that knows what a plausible date is.
 
+## The `flextime` boundary takes values that were never a string
+
+This section exists because the threat model above says "every byte of the input
+string" and `flextime` is where something other than a string arrives.
+
+`flextime.FlexTime` implements `sql.Scanner` and `json.Unmarshaler`, so it is
+handed whatever a driver or a JSON document produced: a `time.Time`, a `string`,
+a `[]byte`, an `int64`, a `float64`, or nil. The string and byte-slice forms go
+through `Parse` and everything above applies to them unchanged. The numeric forms
+do not, and they are their own surface.
+
+**A numeric timestamp is read at the precision its digit count names.** Ten to
+twelve digits are seconds, 13 are milliseconds, 16 are microseconds, 19 are
+nanoseconds, and a digit count naming none of those is refused. That is the same
+table `Detect` applies to a string, deliberately: until 2026-08-17 the numeric
+paths read every value as seconds whatever its magnitude, so `1710500000000` was
+2024-03-15 as a string and **year 56173** as a JSON number, with no error. A
+millisecond epoch is what `Date.now()` and `System.currentTimeMillis()` produce,
+so this was not an edge case, and `README.md` advertised the struct field shape
+that hit it.
+
+**Every numeric value is range-checked against the same bound as a string.** About
+3168 years either side of the epoch. `1e300` used to produce year 292277026596,
+`-1e300` the same *positive* year, and `NaN` came back as 1970-01-01 with no error.
+
+**NaN and the infinities are refused rather than converted, and this was
+architecture-dependent.** Go leaves the result of an out-of-range float-to-int
+conversion implementation-defined: arm64 saturates, amd64 yields the most negative
+`int64`. So the same JSON document parsed to two different instants on two
+different machines. The range is now checked against the float, before any
+conversion, so no out-of-range conversion happens at all.
+
+**A number with fewer than ten digits is read as seconds, where a string of the
+same digits is refused.** The one deliberate divergence. A short string is far more
+likely to be a compact date or a bare year, and reading `"20240315"` as a
+timestamp is the mistake the range bound was introduced to prevent; a value a
+schema has already typed as a number has no date reading to protect.
+
+**`flextime` does not report ambiguity, and cannot reach strict mode.** A
+`FlexTime` that scanned `"01/02/2024"` holds one of two honest readings and has no
+way to say so, and there is no `flextime` equivalent of `WithStrictMode`. If you
+are parsing dates across a trust boundary through this type and a wrong day has
+consequences, parse the string yourself with `ParseWith` and strict mode until
+that is fixed. It is tracked and it is a real gap in what this document promises
+under *Ambiguity is reported, never hidden* below.
+
 ## What is not possible, by construction
 
 These are properties of the code, not of the test suite. Each one is checkable

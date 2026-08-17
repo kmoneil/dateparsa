@@ -3,10 +3,11 @@ package flextime
 import (
 	"encoding/json"
 	"fmt"
-	"math"
+	"strconv"
 	"time"
 
 	"github.com/kmoneil/dateparsa"
+	"github.com/kmoneil/dateparsa/internal/epoch"
 )
 
 // MarshalJSON implements json.Marshaler.
@@ -49,13 +50,60 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 	}
 
 	// Try as number (Unix timestamp).
+	//
+	// The integer and fractional forms want different readings and a float64 has
+	// thrown the distinction away by the time you hold one. An integer takes its
+	// precision from its digit count, so 1710500000000 is the millisecond epoch it
+	// almost always is rather than the year 56173 it used to be. A value with a
+	// fraction or an exponent is seconds, because that is the only thing a
+	// fractional timestamp can mean.
+	//
+	// Which it is comes from looking at the bytes rather than from decoding into a
+	// json.Number, which was the first version and allocated the number's text:
+	// BenchmarkUnmarshalJSONNumber measured 172.6ns and 3 allocations with it
+	// against 150.0ns and 2 before, for a distinction the bytes answer directly.
+	if isJSONInteger(data) {
+		if v, err := strconv.ParseInt(string(data), 10, 64); err == nil {
+			t, ok := epoch.FromInt(v)
+			if !ok {
+				return fmt.Errorf("flextime: %d is not a timestamp this package accepts", v)
+			}
+			ft.t = t
+			ft.valid = true
+			return nil
+		}
+		// Out of int64 range. Fall through: the seconds arm refuses it on range,
+		// which is the right outcome by either route.
+	}
+
 	var f float64
 	if err := json.Unmarshal(data, &f); err != nil {
 		return fmt.Errorf("flextime: cannot parse JSON value: %s", string(data))
 	}
-	sec, frac := math.Modf(f)
-	nsec := math.Round(frac * 1e9)
-	ft.t = time.Unix(int64(sec), int64(nsec))
+	t, ok := epoch.FromSeconds(f)
+	if !ok {
+		return fmt.Errorf("flextime: %v is not a timestamp this package accepts", f)
+	}
+	ft.t = t
 	ft.valid = true
 	return nil
+}
+
+// isJSONInteger reports whether data is a JSON number written without a fraction
+// or an exponent, which is the form whose digit count names a precision.
+//
+// It only has to separate the two number forms, not validate the token: the
+// ParseInt on the other side of it settles whether the bytes really are an
+// integer, and encoding/json has already rejected anything that is not a JSON
+// value. A leading minus is part of the number and not a reason to look further.
+func isJSONInteger(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for _, c := range data {
+		if c == '.' || c == 'e' || c == 'E' {
+			return false
+		}
+	}
+	return true
 }

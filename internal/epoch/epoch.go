@@ -5,6 +5,7 @@
 package epoch
 
 import (
+	"math/bits"
 	"time"
 )
 
@@ -32,9 +33,16 @@ type Result struct {
 // a date in the year 643360.
 const maxSeconds = 1e11
 
-// maxInt64 is math.MaxInt64, written out so this package imports nothing but
-// time. See parseInt for what it is for.
-const maxInt64 = 1<<63 - 1
+// maxInt64 is math.MaxInt64 and minInt64 is math.MinInt64, written out rather
+// than imported from math, which would be one import for two constants. See
+// parseInt and FromInt for what they are for.
+//
+// math/bits is imported, for digitCount, and that is a different thing: it is an
+// algorithm and not a constant.
+const (
+	maxInt64 = 1<<63 - 1
+	minInt64 = -1 << 63
+)
 
 // Detect checks if the string is a Unix timestamp and parses it.
 // Returns nil if the string is not a valid timestamp.
@@ -84,26 +92,9 @@ func Detect(s string) *Result {
 }
 
 func parseInteger(s string, start int, neg bool) *Result {
-	digitLen := len(s) - start
-
-	// Determine precision by digit count.
-	var kind Kind
-	switch {
-	case digitLen == 10:
-		kind = KindSec
-	case digitLen == 13:
-		kind = KindMilli
-	case digitLen == 16:
-		kind = KindMicro
-	case digitLen == 19:
-		kind = KindNano
-	default:
-		// 11-12 digits could still be seconds if in range.
-		if digitLen >= 10 && digitLen <= 12 {
-			kind = KindSec
-		} else {
-			return nil
-		}
+	kind, ok := precisionFor(len(s) - start)
+	if !ok {
+		return nil
 	}
 
 	val, ok := parseInt(s[start:])
@@ -114,31 +105,205 @@ func parseInteger(s string, start int, neg bool) *Result {
 		val = -val
 	}
 
-	// Go's division truncates toward zero, so a negative val gives a negative
-	// remainder, and time.Unix documents that it accepts an nsec outside
-	// [0, 999999999] and normalises it. The two agree: -1710500000123 is
-	// sec -1710500000 and nsec -123000000, which is the instant it names.
-	//
-	// Each arm used to flip that remainder positive when the input carried a
-	// minus, which moved every negative sub-second timestamp forward by twice
-	// its remainder. -1710500000123 came back as -1710499999877.
-	var sec, nsec int64
-	switch kind {
-	case KindSec:
-		sec = val
-	case KindMilli:
-		sec, nsec = val/1e3, (val%1e3)*1e6
-	case KindMicro:
-		sec, nsec = val/1e6, (val%1e6)*1e3
-	case KindNano:
-		sec, nsec = val/1e9, val%1e9
-	}
-
-	t, ok := withinRange(sec, nsec)
+	t, ok := withinRange(split(val, kind))
 	if !ok {
 		return nil
 	}
 	return &Result{Time: t, Kind: kind}
+}
+
+// precisionFor returns the precision a decimal integer of digits digits names,
+// and reports whether that digit count names one at all.
+//
+// This is the only copy of the table. It used to be a switch inside
+// parseInteger, and FromInt needs the same answer for a value that arrives as an
+// int64 rather than as digits: two copies of it would let the string and numeric
+// paths drift apart in a band nobody would think to test, which is exactly the
+// defect FromInt exists to close.
+//
+// Nine digits and fewer name nothing here, deliberately. "20240315" is a compact
+// date and "2024" is a year, and reading either as a timestamp is the mistake
+// maxSeconds was introduced to prevent. FromInt overrides that one arm, because a
+// value the schema already typed as a number cannot be a date string; see the
+// comment there.
+func precisionFor(digits int) (Kind, bool) {
+	switch {
+	case digits == 13:
+		return KindMilli, true
+	case digits == 16:
+		return KindMicro, true
+	case digits == 19:
+		return KindNano, true
+	case digits >= 10 && digits <= 12:
+		// 11 and 12 digits are still seconds when they land in range.
+		return KindSec, true
+	}
+	return KindNone, false
+}
+
+// split converts a count at the given precision into seconds and nanoseconds.
+//
+// Go's division truncates toward zero, so a negative val gives a negative
+// remainder, and time.Unix documents that it accepts an nsec outside
+// [0, 999999999] and normalises it. The two agree: -1710500000123 is
+// sec -1710500000 and nsec -123000000, which is the instant it names.
+//
+// Each arm used to flip that remainder positive when the input carried a
+// minus, which moved every negative sub-second timestamp forward by twice
+// its remainder. -1710500000123 came back as -1710499999877.
+func split(val int64, kind Kind) (sec, nsec int64) {
+	switch kind {
+	case KindMilli:
+		return val / 1e3, (val % 1e3) * 1e6
+	case KindMicro:
+		return val / 1e6, (val % 1e6) * 1e3
+	case KindNano:
+		return val / 1e9, val % 1e9
+	}
+	return val, 0
+}
+
+// pow10 holds the smallest magnitude written with n+1 decimal digits, so a
+// magnitude's digit count is one more than the number of entries it is at or
+// above. Nineteen is every width a uint64 magnitude of an int64 can have, and
+// 1e19 fits a uint64 with room to spare.
+var pow10 = [20]uint64{
+	1, 10, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9,
+	1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+}
+
+// digitCount returns how many decimal digits v is written with, ignoring its
+// sign.
+//
+// The bit length gives an estimate of the decimal width, because 1233/4096 is
+// log10(2) to four decimal places, and one comparison against pow10 corrects it.
+// Two branches whatever the value.
+//
+// Both obvious versions are slower, and this was worth measuring rather than
+// assuming, because a numeric Scan is short enough that the digit count is most of
+// it. Dividing by ten until the value is gone costs up to nineteen 64-bit
+// divisions. A binary search over pow10 costs five data-dependent branches, and
+// mispredicting all five is worse than the divisions on this machine. Measured on
+// linux/arm64 against a ten-digit value, in a scratch benchmark deleted with the
+// measurement:
+//
+//	binary search over pow10   6.5 ns
+//	this                       0.58 ns
+//
+// FromInt as a whole went 8.7ns to 6.4ns with no other change, and
+// BenchmarkScanInt64 10.3ns to 7.3ns.
+//
+// The magnitude is taken in uint64 rather than by negating, because negating
+// math.MinInt64 overflows and the result would be counted as one digit.
+//
+// gosec reports the conversion below as G115, an int64 to uint64 overflow. The
+// reinterpretation is the point: Go defines the conversion as the two's-complement
+// bit pattern, and negating in uint64 then gives the exact magnitude for every
+// input including MinInt64, which is the one value the obvious version gets wrong.
+// Do not "fix" it by negating first. TestDigitCountMatchesStrconv is what holds
+// both of those claims, for every decimal width and both signs.
+func digitCount(v int64) int {
+	u := uint64(v)
+	if v < 0 {
+		u = -u
+	}
+	if u == 0 {
+		// bits.Len64(0) is 0, and the correction below would take the estimate
+		// to -1 and index pow10 out of range.
+		return 1
+	}
+	d := (bits.Len64(u) * 1233) >> 12
+	if u < pow10[d] {
+		d--
+	}
+	return d + 1
+}
+
+// FromInt reads v as a Unix timestamp and reports whether it names an instant
+// this package will accept.
+//
+// The precision comes from how many decimal digits v is written with, the same
+// table Detect applies to a string, so that a timestamp handed over as an int64
+// and the same timestamp written as digits name the same instant. Before this
+// existed, flextime read every numeric driver value and JSON number as seconds:
+// 1710500000000 is 2024-03-15 as a string and was year 56173 as a number, and a
+// millisecond epoch is the most common timestamp on the wire.
+//
+// It is more permissive than Detect in one place. A decimal string of fewer than
+// ten digits names no precision, because "20240315" is a date and "2024" is a
+// year; an int64 has already been typed as a number by whatever produced it, so
+// there is no date reading to protect and a small value is read as seconds. That
+// is the one input class where FromInt and Detect disagree, and it is checked by
+// TestFromIntAcceptsSmallValues.
+//
+// math.MinInt64 is refused, matching Detect: its nineteen digits are one past
+// what the positive side holds, so parseInt refuses the string and this refuses
+// the value. A real loss, and the same one C3 took.
+func FromInt(v int64) (time.Time, bool) {
+	if v == minInt64 {
+		return time.Time{}, false
+	}
+	digits := digitCount(v)
+	kind, ok := precisionFor(digits)
+	if !ok {
+		// Short values are seconds. Anything else precisionFor refuses is a
+		// digit count that names no precision, and guessing one for it would
+		// disagree with the string path.
+		if digits >= 10 {
+			return time.Time{}, false
+		}
+		kind = KindSec
+	}
+	return withinRange(split(v, kind))
+}
+
+// FromSeconds reads f as a count of seconds since the epoch, fraction included,
+// and reports whether it names an instant this package will accept.
+//
+// Unlike FromInt this does not read a precision off the magnitude. A float64
+// holds 53 bits of mantissa, so it cannot carry a nanosecond timestamp anyway,
+// and the documented contract for a float driver value has always been seconds.
+//
+// NaN and the infinities are refused rather than converted. Go leaves the result
+// of an out-of-range float-to-int conversion implementation-defined: on arm64 it
+// saturates, on amd64 it yields the most negative int64, so the same value
+// produced two different instants on two different machines. int64(NaN) was 0 on
+// arm64, which read NaN as the epoch itself.
+//
+// The magnitude is checked against the float, before any conversion, so no
+// out-of-range conversion happens at all rather than happening and being caught
+// afterwards. f != f is the NaN test, and it has to come first because every
+// comparison against NaN is false, so the bounds below would let it through.
+//
+// That check is deliberately not maxSeconds. It exists only to make int64(f)
+// defined; withinRange is the bound, and it is applied to the instant rather than
+// to the argument for the reason C3 recorded. Checking maxSeconds here instead
+// refused "100000000000.5", which Detect accepts, because the half second is past
+// the bound while the instant it belongs to is not.
+func FromSeconds(f float64) (time.Time, bool) {
+	// Comfortably inside int64 and far above anything withinRange will accept.
+	const convertible = 1 << 62
+	if f != f || f > convertible || f < -convertible {
+		return time.Time{}, false
+	}
+	// int64(f) truncates toward zero and is in range by the test above.
+	sec := int64(f)
+	nsf := (f - float64(sec)) * 1e9
+	// Round half away from zero, which is what math.Round does, without the
+	// import. The fraction carries the sign of the value it belongs to.
+	if nsf >= 0 {
+		nsf += 0.5
+	} else {
+		nsf -= 0.5
+	}
+	return withinRange(sec, int64(nsf))
+}
+
+// FromUnix builds an instant from a second and nanosecond count and reports
+// whether it lands inside the range this package accepts. It is withinRange,
+// exported for a caller holding a count it did not parse.
+func FromUnix(sec, nsec int64) (time.Time, bool) {
+	return withinRange(sec, nsec)
 }
 
 // withinRange builds the instant and reports whether it lands inside

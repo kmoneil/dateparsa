@@ -82,10 +82,30 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 			if nlr.Kind == natural.KindNow {
 				kind = KindNow
 			}
+			// A locale that spells two meanings the same way produces two
+			// readings, and this is the one place that can say so. Strict mode
+			// refuses with both, exactly as it does for DD/MM against MM/DD;
+			// otherwise the guess is reported and not hidden.
+			//
+			// Neither happened before: this path built a ParseResult with
+			// Ambiguous left false, and the strict-mode check below is past the
+			// return, so strict mode never saw a natural-language parse at all.
+			// Hindi "कल" is both yesterday and tomorrow, and it came back as
+			// tomorrow with Ambiguous false and no error.
+			if nlr.Ambiguous && cfg.strictMode {
+				return ParseResult{}, &AmbiguousDateError{
+					Input: s,
+					Interpretations: []Interpretation{
+						{Time: nlr.Time, Layout: LayoutNaturalLanguage, Label: nlr.Time.Format(nlLabelFormat)},
+						{Time: nlr.AltTime, Layout: LayoutNaturalLanguage, Label: nlr.AltTime.Format(nlLabelFormat)},
+					},
+				}
+			}
 			return ParseResult{
-				Time:   nlr.Time,
-				Kind:   kind,
-				Layout: LayoutNaturalLanguage,
+				Time:      nlr.Time,
+				Kind:      kind,
+				Layout:    LayoutNaturalLanguage,
+				Ambiguous: nlr.Ambiguous,
 			}, nil
 		}
 
@@ -174,6 +194,11 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		ambiguityProne: result.AmbigProne,
 	}, nil
 }
+
+// nlLabelFormat labels the two readings of an ambiguous natural-language
+// phrase. The readings differ by a day, so the date is what distinguishes them
+// and the word that produced each does not: "कल" is the label for both.
+const nlLabelFormat = "2006-01-02"
 
 func buildAmbiguousError(s string, cfg config) error {
 	// Build both interpretations (MDY and DMY).

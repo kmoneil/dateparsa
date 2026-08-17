@@ -24,6 +24,17 @@ type Result struct {
 	// That is the safe direction for a field whose whole job is to stop input
 	// being ignored.
 	Consumed int
+
+	// Ambiguous reports that the input used a phrase its locale lists under two
+	// meanings of the same kind, so this Time is one of two readings and
+	// AltTime is the other. Hindi "कल" is the case in the data: it is both
+	// yesterday and tomorrow.
+	//
+	// It is set by Parse and not by Eval, because it takes two evaluations to
+	// know: a phrase with a second reading is not ambiguous if that reading
+	// fails to parse or lands on the same instant.
+	Ambiguous bool
+	AltTime   time.Time
 }
 
 // Eval evaluates a token stream against a base time.

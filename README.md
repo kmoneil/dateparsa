@@ -239,6 +239,23 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
    format instead of applying the previous row's reading to it. Steps 1 and 2
    answer per value, so a layout cannot carry the answer forward.
 
+A word can be ambiguous too, and is reported the same way. Hindi writes both
+yesterday and tomorrow as `कल`, choosing between them with the verb, which a
+date string does not have:
+
+```go
+r, _ := dateparsa.ParseWith("कल", dateparsa.WithLocales(dateparsa.HI),
+    dateparsa.WithBaseTime(base))
+fmt.Println(r.Ambiguous) // true — it means either, and this is one of them
+
+_, err := dateparsa.ParseWith("कल", dateparsa.WithLocales(dateparsa.HI),
+    dateparsa.WithBaseTime(base), dateparsa.WithStrictMode(true))
+// *AmbiguousDateError carrying both days
+```
+
+Writing the qualifier resolves it, and those forms report nothing: `बीता कल` is
+yesterday and `आने वाला कल` is tomorrow.
+
 ## Performance
 
 **One machine, and it is named here.** Every number below is an Apple M2 Max,

@@ -67,9 +67,16 @@ type Token struct {
 	MonVal  int     // TokMonth: 1=January .. 12=December
 	SelVal  Selector
 	BndVal  Boundary
-	Hour    int // TokTime: hour (0-23)
-	Min     int // TokTime: minute (0-59)
-	AMPM    int // TokAMPM/TokTime: 1=AM, 2=PM
+
+	// Alt is the other reading of a phrase whose locale lists it under two
+	// meanings of this same kind, and is nil for every other token. Hindi "कल"
+	// is the one in the data: it is both yesterday and tomorrow, and nothing in
+	// a date string says which. Parse evaluates both and reports the pair
+	// rather than picking one and calling it certain.
+	Alt  *Token
+	Hour int // TokTime: hour (0-23)
+	Min  int // TokTime: minute (0-59)
+	AMPM int // TokAMPM/TokTime: 1=AM, 2=PM
 }
 
 // RelWord identifies a specific relative keyword.
@@ -557,9 +564,13 @@ func isAlpha(c byte) bool {
 }
 
 // localeWord maps a lowercase word/phrase to a token.
+//
+// alt is the other reading of a phrase a locale lists under two meanings of the
+// same kind, and is nil for everything else. See mergeSameKindDuplicates.
 type localeWord struct {
 	phrase string
 	tok    Token
+	alt    *Token
 }
 
 // localeWords is a locale's phrase table, bucketed by the first byte of the
@@ -580,8 +591,43 @@ func (lw *localeWords) bucket(b byte) []localeWord {
 	return lw.words[lw.index[i]:lw.index[i+1]]
 }
 
-// buildLocaleWords builds a word list from locale relative keywords.
+// buildLocaleWords builds the locale's phrase table: every spelling it knows,
+// duplicates resolved, longest first.
 func buildLocaleWords(loc *locale.Data) []localeWord {
+	// Fold the same-kind duplicates before sorting, so that which reading is
+	// primary is decided by the order the data lists them and not by where the
+	// sort happens to leave two entries it considers equal.
+	words := mergeSameKindDuplicates(buildLocaleWordsUnmerged(loc))
+
+	// Sort by length descending so longer phrases match first, and break a tie
+	// on kind rather than leaving it to the sort.
+	//
+	// sort.Slice is not stable, and five phrases across the twenty locales
+	// appear twice in one locale's table with different tokens, so which one
+	// the scanner returned was decided by an implementation detail of the sort.
+	// That is not a specification: it can change with a toolchain and it did not
+	// reflect anybody's decision.
+	//
+	// The order kindRank gives is what the sort happened to produce, kept
+	// deliberately because it is also the better answer. A phrase that can be a
+	// unit is nearly always written with a number in front of it, and preferring
+	// the unit is what keeps those compositional forms parsing. Making the sort
+	// stable instead was the obvious fix and is wrong: it hands "ora" to RelWord
+	// Now, and Italian "1 ora fa" stops parsing at all, which is a working
+	// expression traded for a bare word that is rarer.
+	sort.Slice(words, func(i, j int) bool {
+		if li, lj := len(words[i].phrase), len(words[j].phrase); li != lj {
+			return li > lj
+		}
+		return kindRank(words[i].tok.Kind) < kindRank(words[j].tok.Kind)
+	})
+
+	return words
+}
+
+// buildLocaleWordsUnmerged is the table as the data spells it, before duplicate
+// phrases are resolved. It exists so a test can see what was there to resolve.
+func buildLocaleWordsUnmerged(loc *locale.Data) []localeWord {
 	var words []localeWord
 
 	add := func(phrases []string, kind TokenKind, setFn func(*Token)) {
@@ -590,7 +636,7 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 			if setFn != nil {
 				setFn(&tok)
 			}
-			words = append(words, localeWord{strings.ToLower(p), tok})
+			words = append(words, localeWord{phrase: strings.ToLower(p), tok: tok})
 		}
 	}
 
@@ -614,12 +660,12 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 	// Weekdays.
 	for i, name := range loc.WeekdaysWide {
 		if name != "" {
-			words = append(words, localeWord{strings.ToLower(name), Token{Kind: TokWeekday, Raw: name, WdayVal: i}})
+			words = append(words, localeWord{phrase: strings.ToLower(name), tok: Token{Kind: TokWeekday, Raw: name, WdayVal: i}})
 		}
 	}
 	for i, name := range loc.WeekdaysAbbr {
 		if name != "" {
-			words = append(words, localeWord{strings.ToLower(name), Token{Kind: TokWeekday, Raw: name, WdayVal: i}})
+			words = append(words, localeWord{phrase: strings.ToLower(name), tok: Token{Kind: TokWeekday, Raw: name, WdayVal: i}})
 		}
 	}
 
@@ -628,17 +674,80 @@ func buildLocaleWords(loc *locale.Data) []localeWord {
 	for _, w := range words {
 		folded := foldAccents(w.phrase)
 		if folded != w.phrase {
-			extras = append(extras, localeWord{folded, w.tok})
+			extras = append(extras, localeWord{phrase: folded, tok: w.tok, alt: w.alt})
 		}
 	}
 	words = append(words, extras...)
 
-	// Sort by length descending so longer phrases match first.
-	sort.Slice(words, func(i, j int) bool {
-		return len(words[i].phrase) > len(words[j].phrase)
-	})
-
 	return words
+}
+
+// kindRank orders two readings of the same phrase. Lower wins.
+//
+// It only ever decides between the four different-kind duplicates in the locale
+// data, which TestLocaleDuplicatesAreClassified enumerates: "ora" is an hour or
+// "now", "今" is a selector or "now", and "日" and "일" are a day unit or a
+// weekday. Every one of those resolves the same way it did when the sort
+// decided, and now it resolves that way on purpose.
+func kindRank(k TokenKind) int {
+	switch k {
+	case TokUnit:
+		return 0
+	case TokSelector:
+		return 1
+	case TokWeekday:
+		return 2
+	case TokRelWord:
+		return 3
+	}
+	return 4
+}
+
+// mergeSameKindDuplicates folds a phrase a locale lists under two meanings of
+// the same kind into one entry carrying both.
+//
+// Hindi "कल" is the case, and the only one: it is listed under both
+// Relative.Yesterday and Relative.Tomorrow, which is correct, because the word
+// means either and Hindi picks between them with the verb. Nothing in a date
+// string does. Two entries of the same kind cannot be told apart by the
+// grammar, unlike the different-kind pairs kindRank settles, so leaving both in
+// the table meant the scanner returned whichever the sort put first and the
+// caller was told a day in one direction with no sign that the other was
+// equally available.
+//
+// The first insertion wins the primary reading, which for Hindi is yesterday,
+// because Relative.Yesterday is added before Relative.Tomorrow. That is a
+// decision and not an ordering accident, and it matters less than it looks: the
+// alternative travels with it and Parse reports the pair.
+func mergeSameKindDuplicates(words []localeWord) []localeWord {
+	type key struct {
+		phrase string
+		kind   TokenKind
+	}
+	first := make(map[key]int, len(words))
+	out := words[:0]
+	for _, w := range words {
+		k := key{w.phrase, w.tok.Kind}
+		if at, seen := first[k]; seen {
+			// Same phrase, same kind. If it is the same reading it is a
+			// duplicate of no consequence; if not, it is an ambiguity.
+			if out[at].alt == nil && !sameReading(out[at].tok, w.tok) {
+				alt := w.tok
+				out[at].alt = &alt
+			}
+			continue
+		}
+		first[k] = len(out)
+		out = append(out, w)
+	}
+	return out
+}
+
+// sameReading reports whether two tokens of the same kind mean the same thing.
+func sameReading(a, b Token) bool {
+	return a.UnitVal == b.UnitVal && a.DirVal == b.DirVal && a.RelVal == b.RelVal &&
+		a.WdayVal == b.WdayVal && a.MonVal == b.MonVal && a.SelVal == b.SelVal &&
+		a.BndVal == b.BndVal
 }
 
 // indexLocaleWords buckets a sorted word list by the first byte of each phrase.
@@ -746,6 +855,7 @@ func ScanLocale(s string, loc *locale.Data) []Token {
 					tok := w.tok
 					tok.Pos = i
 					tok.Raw = lower[i : i+wlen]
+					tok.Alt = w.alt
 					tokens = append(tokens, tok)
 					i += wlen
 					matched = true

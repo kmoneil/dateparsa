@@ -170,6 +170,22 @@ so the application decides. **If you are parsing dates that cross a trust
 boundary and a wrong day has consequences, use strict mode.** The default exists
 for convenience, not for safety.
 
+**A word can be ambiguous as well as a number.** Hindi writes both yesterday and
+tomorrow as `कल` and tells them apart with the verb, which a date string does not
+have. That word now reports `Ambiguous` and refuses under strict mode with both
+days attached, the same as `01/02/03`. It did neither until 2026-08-17: the
+natural-language path built its result without ever setting `Ambiguous`, and the
+strict-mode check sat after that path returned, so no natural-language parse was
+ever tested against it. `कल` came back as tomorrow, alone, with no error.
+
+That answer was not chosen either. Five phrases across the twenty locales are
+spelled the same as another phrase in the same locale, and which one won was
+decided by `sort.Slice`, which is not stable, so a toolchain upgrade could move a
+date with no line changing. Four of the five are two different kinds of token and
+the grammar tells them apart; those are settled by an explicit rank now. The
+fifth is `कल`, where both readings are the same kind and nothing can tell them
+apart, so both are carried and the caller is told.
+
 **A guess is never reused across rows.** `Parser` caches the layout it detected
 and skips detection for later values, which is the whole reason it exists. It
 does not do that for a format detection resolved by looking at the values, and

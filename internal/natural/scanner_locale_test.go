@@ -129,32 +129,42 @@ func TestScanLocale_LongestPhraseWins(t *testing.T) {
 // duplicateSpelling is one phrase that a locale registers twice with different
 // meanings, together with the token the scanner returns for it today.
 //
-// Today is the operative word. Nothing chose these answers: the phrase table is
-// sorted by length with sort.Slice, which is not stable, so among equal-length
-// phrases the winner is whatever pdqsort leaves in front. Three of the five
-// change under sort.SliceStable, measured. What this table does is stop that
-// from moving silently, so a toolchain upgrade fails a test instead of changing
-// a date.
+// These answers are now chosen rather than inherited from the sort, which is
+// what W13 was. The four different-kind pairs are settled by kindRank, and the
+// one same-kind pair, Hindi कल, is merged by mergeSameKindDuplicates into a
+// single entry carrying both readings, so its token has Alt set and Parse
+// reports the pair instead of picking one.
 //
-// The entries are recorded, not endorsed. Hindi lists कल under both yesterday
-// and tomorrow because Hindi uses one word for both, and it answers tomorrow
-// here for no better reason than the sort. Italian "ora" is the hour rather
-// than "now" the same way. Deciding what they should be is W13 in the backlog;
-// changing one of these lines is that decision, so make it deliberately and
-// give it a BREAKING CHANGE footer, because a caller's database is what records
-// the difference.
+// The table still exists for the same reason: a phrase whose meaning is decided
+// anywhere but in the data is a date that can move without anybody editing a
+// date. Changing one of these lines is a decision about what an input parses
+// to, so make it deliberately and give it a BREAKING CHANGE footer, because a
+// caller's database is what records the difference.
 type duplicateSpelling struct {
 	tag    string
 	phrase string
-	want   Token // Pos and Raw are ignored
+	want   Token // Pos, Raw and Alt are ignored
+
+	// wantAlt is the other reading for a merged same-kind pair, and zero when
+	// the entry is a different-kind pair with no alternative to carry.
+	wantAlt RelWord
 }
 
 var duplicateSpellings = []duplicateSpelling{
-	{"hi", "कल", Token{Kind: TokRelWord, RelVal: RelTomorrow}},
-	{"it", "ora", Token{Kind: TokUnit, UnitVal: UnitHour}},
-	{"ja", "今", Token{Kind: TokSelector, SelVal: SelThis}},
-	{"ja", "日", Token{Kind: TokUnit, UnitVal: UnitDay}},
-	{"ko", "일", Token{Kind: TokUnit, UnitVal: UnitDay}},
+	// Same kind, so no grammar can pick: merged, and both readings travel.
+	// Yesterday is primary because Relative.Yesterday is listed before
+	// Relative.Tomorrow, which is a decision about insertion order and not
+	// about which one a Hindi speaker meant. Parse says it guessed.
+	{"hi", "कल", Token{Kind: TokRelWord, RelVal: RelYesterday}, RelTomorrow},
+
+	// Different kinds, so the grammar picks by position and kindRank picks
+	// which one is in the table. Every one of these is the answer the unstable
+	// sort used to give, kept because it is also the one that keeps the
+	// compositional forms parsing: "1 ora fa" needs ora to be the hour.
+	{"it", "ora", Token{Kind: TokUnit, UnitVal: UnitHour}, 0},
+	{"ja", "今", Token{Kind: TokSelector, SelVal: SelThis}, 0},
+	{"ja", "日", Token{Kind: TokUnit, UnitVal: UnitDay}, 0},
+	{"ko", "일", Token{Kind: TokUnit, UnitVal: UnitDay}, 0},
 }
 
 // TestScanLocale_DuplicateSpellingsArePinned holds each of those answers.
@@ -172,13 +182,29 @@ func TestScanLocale_DuplicateSpellingsArePinned(t *testing.T) {
 			continue
 		}
 		got := tokens[0]
-		got.Pos, got.Raw = 0, ""
+		gotAlt := got.Alt
+		got.Pos, got.Raw, got.Alt = 0, "", nil
 		if got != d.want {
 			t.Errorf("%s: ScanLocale(%q) = %+v, pinned to %+v.\n"+
-				"If this is a deliberate change, update duplicateSpellings and see W13. "+
-				"If nothing here was meant to change, the length sort reordered under you: "+
-				"it is sort.Slice, and equal-length phrases have no defined order.",
+				"If this is a deliberate change, update duplicateSpellings. "+
+				"If nothing here was meant to change, the length sort reordered "+
+				"under you, or kindRank did.",
 				d.tag, d.phrase, got, d.want)
+		}
+
+		switch {
+		case d.wantAlt == 0 && gotAlt != nil:
+			t.Errorf("%s: ScanLocale(%q) now carries a second reading %+v, and "+
+				"this entry pins none. A different-kind pair became a same-kind "+
+				"one, so the grammar can no longer tell them apart.",
+				d.tag, d.phrase, *gotAlt)
+		case d.wantAlt != 0 && gotAlt == nil:
+			t.Errorf("%s: ScanLocale(%q) lost its second reading, pinned to %v. "+
+				"Parse can no longer report the ambiguity and will answer one "+
+				"of two days with no sign it guessed.", d.tag, d.phrase, d.wantAlt)
+		case d.wantAlt != 0 && gotAlt.RelVal != d.wantAlt:
+			t.Errorf("%s: ScanLocale(%q) second reading is %v, pinned to %v",
+				d.tag, d.phrase, gotAlt.RelVal, d.wantAlt)
 		}
 	}
 }
@@ -186,11 +212,15 @@ func TestScanLocale_DuplicateSpellingsArePinned(t *testing.T) {
 // TestScanLocale_NoUnpinnedDuplicates is the half that keeps working after
 // somebody adds a locale.
 //
-// A phrase registered twice in one locale with different tokens gets its
-// meaning from the sort, which decides nothing on purpose. The five that exist
-// are pinned above. This finds any others, so a new locale cannot quietly
-// inherit an arbitrary answer, and so a phrase that stops being duplicated does
-// not leave a pin behind claiming to hold something.
+// A phrase registered twice in one locale with different tokens has to be
+// resolved by something that decided on purpose: kindRank when the kinds
+// differ, mergeSameKindDuplicates when they do not. The five that exist are
+// pinned above. This finds any others, so a new locale cannot quietly inherit
+// an arbitrary answer, and so a phrase that stops being duplicated does not
+// leave a pin behind claiming to hold something.
+//
+// It reads the table before the merge, because the merge is what it is checking
+// has happened.
 func TestScanLocale_NoUnpinnedDuplicates(t *testing.T) {
 	pinned := map[string]bool{}
 	for _, d := range duplicateSpellings {
@@ -201,9 +231,9 @@ func TestScanLocale_NoUnpinnedDuplicates(t *testing.T) {
 	for _, tag := range locale.Tags() {
 		loc := locale.Lookup(tag)
 		byPhrase := map[string][]Token{}
-		for _, w := range getLocaleWords(loc).words {
+		for _, w := range buildLocaleWordsUnmerged(loc) {
 			tok := w.tok
-			tok.Pos, tok.Raw = 0, ""
+			tok.Pos, tok.Raw, tok.Alt = 0, "", nil
 			byPhrase[w.phrase] = append(byPhrase[w.phrase], tok)
 		}
 		for phrase, toks := range byPhrase {

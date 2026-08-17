@@ -50,6 +50,7 @@ func buildTrie() *trie {
 		for i := range formats {
 			if len(formats[i].sig) > 0 {
 				stampLiteralClasses(&formats[i])
+				formats[i].litOffsets, formats[i].nLits = literalOffsets(formats[i].goLayout)
 				// Pre-build the FormatDef so Detect doesn't allocate one per call.
 				if !formats[i].ambig && len(formats[i].fields) > 0 {
 					formats[i].def = &compile.FormatDef{
@@ -78,6 +79,77 @@ var litClassOf = [numClasses]compile.LitClass{
 	CSpace:   compile.ClassSpace,
 	CColon:   compile.ClassColon,
 	CSpecial: compile.ClassSpecial,
+}
+
+// literalOffsets returns the positions of the bytes a Go layout writes
+// verbatim, which are the ones an input may spell differently.
+//
+// Asked of the layout parser rather than guessed, because the punctuation that
+// looks like a separator is not always one: the "-" of "-07:00" and the "Z" of
+// "Z07:00" are the zone token's own bytes and an input writing "+" there is
+// writing a value, not a different separator. ParseGoLayout emits one FLiteral
+// per verbatim byte and folds the rest into fields, so the answer falls out of
+// it.
+//
+// A layout it refuses gets no offsets and no check, which leaves that entry
+// exactly as it was.
+// A layout with more literals than the array holds gets none and no check,
+// which leaves that entry exactly as it was. Eight covers every entry in the
+// tree: the widest is RFC3339_NANO with seven.
+func literalOffsets(goLayout string) (offs [8]uint8, n uint8) {
+	if goLayout == "" || len(goLayout) > 255 {
+		return offs, 0
+	}
+	def, err := compile.ParseGoLayout(goLayout)
+	if err != nil {
+		return offs, 0
+	}
+	for _, f := range def.Fields {
+		if f.Kind != compile.FLiteral {
+			continue
+		}
+		if int(n) == len(offs) {
+			return [8]uint8{}, 0
+		}
+		offs[n] = uint8(f.Offset)
+		n++
+	}
+	return offs, n
+}
+
+// goLayoutFor returns the Go layout describing s, given the entry that matched
+// it: the entry's own layout when s spells its literals the canonical way, and
+// a copy with s's spelling substituted when it does not.
+//
+// The copy is the only allocation on this path and it happens for
+// "2024/03/15" and not for "2024-03-15". A caller who takes GoLayout and hands
+// it to time.Parse for the next row of their column gets a layout that reads
+// it.
+// The rewrite is a second function so that this one stays inlinable. It was one
+// function at cost 81 against a budget of 80, the call cost 6.6ns on
+// Detect_Only, and splitting the branch nobody takes out of the branch everyone
+// takes is what C17's fraction check did for the same reason.
+func goLayoutFor(e *formatEntry, s string) string {
+	if e.nLits == 0 || len(s) != len(e.goLayout) {
+		return e.goLayout
+	}
+	for _, off := range e.litOffsets[:e.nLits] {
+		if s[off] != e.goLayout[off] {
+			return respellLiterals(e, s)
+		}
+	}
+	return e.goLayout
+}
+
+// respellLiterals copies the entry's layout with the input's literal bytes in
+// it. The one allocation on this path, and it happens for "2024/03/15" and not
+// for "2024-03-15".
+func respellLiterals(e *formatEntry, s string) string {
+	b := []byte(e.goLayout)
+	for _, off := range e.litOffsets[:e.nLits] {
+		b[off] = s[off]
+	}
+	return string(b)
 }
 
 // stampLiteralClasses gives every one-byte literal in a trie entry the

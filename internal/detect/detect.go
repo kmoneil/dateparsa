@@ -513,11 +513,23 @@ func Detect(s string, cfg Config) (Result, bool) {
 	}
 
 	// Step 5: Return the pre-built FormatDef (zero allocation for trie-matched formats).
+	//
+	// The pre-built def carries the entry's own goLayout, which describes the
+	// input only when the input spells its literals the way the layout does. A
+	// signature is a sequence of character classes, so one entry matches
+	// "2024-03-15", "2024/03/15" and "2024.03.15", and the layout names one of
+	// the three. goLayoutFor answers that question in a couple of byte compares
+	// for the canonical spelling, which is the one nearly every input uses, and
+	// builds a corrected def for the others.
 	if entry.def != nil {
-		return Result{Def: entry.def}, true
+		gl := goLayoutFor(entry, s)
+		if gl == entry.goLayout {
+			return Result{Def: entry.def}, true
+		}
+		return newResult(entry.name, gl, entry.fields, AmbigNone, false), true
 	}
 	// Fallback for entries without pre-built defs.
-	return newResult(entry.name, entry.goLayout, entry.fields, AmbigNone, false), true
+	return newResult(entry.name, goLayoutFor(entry, s), entry.fields, AmbigNone, false), true
 }
 
 // withTimeSuffix names the format that resolveAmbiguous's date and a trailing

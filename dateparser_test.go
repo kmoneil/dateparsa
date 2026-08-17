@@ -1602,3 +1602,123 @@ func TestLeapSecondIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestGoLayoutDescribesTheInputItCameFrom is W18.
+//
+// A signature is a sequence of character classes, so one trie entry matches
+// every spelling of its separators: "2024-03-15", "2024/03/15" and "2024.03.15"
+// are one entry, which is deliberate and is why all three parse. The entry
+// carries one Go layout, and GoLayout used to hand back the dashed spelling for
+// all three. A caller who took it and gave it to time.Parse for the next row of
+// their column got an error per row.
+//
+// The property is the one the accessor's name promises: the layout it returns
+// parses the input it was detected from.
+func TestGoLayoutDescribesTheInputItCameFrom(t *testing.T) {
+	inputs := []string{
+		// The canonical spellings.
+		"2024-03-15",
+		"2024-03-15T10:30:00",
+		"2024-03-15T10:30:00Z",
+		"2024-03-15T10:30:00+05:30",
+		"2024-03-15 10:30:00",
+		"2024-03-15 10:30:00.123",
+		"2024-03-15 10:30:00+05:30",
+		"10:30", "10:30:00", "10:30:00.123", "10:30 PM",
+		"20240315",
+
+		// The same formats, spelled the other ways the class admits. Each one
+		// used to report the dashed or dotted layout of its entry.
+		"2024/03/15",
+		"2024.03.15",
+		"2024/03/15 10:30:00",
+		"2024.03.15 10:30:00",
+		"2024/03/15T10:30:00Z",
+		"10:30:00/000",
+	}
+	for _, in := range inputs {
+		r, err := Parse(in)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", in, err)
+			continue
+		}
+		gl, ok := r.Layout.GoLayout()
+		if !ok {
+			continue // no stdlib equivalent claimed, so nothing to check
+		}
+		got, perr := time.Parse(gl, in)
+		if perr != nil {
+			t.Errorf("Parse(%q).Layout.GoLayout() = %q, which time.Parse refuses for that "+
+				"same input: %v", in, gl, perr)
+			continue
+		}
+		// A format with no year in it takes the base year here and year zero in
+		// the stdlib, which is W3's decision and not this card's business, so
+		// the comparison drops the year when the stdlib had none. The oracle
+		// does the same, for the same reason.
+		want := r.Time
+		if got.Year() == 0 {
+			got, want = flattenYear(got), flattenYear(want)
+		}
+		if !got.Equal(want) {
+			t.Errorf("Parse(%q) = %v but its own GoLayout %q reads %v", in, r.Time, gl, got)
+		}
+	}
+}
+
+// TestSeparatorClassIsDeliberatelyWide pins what the character classes accept,
+// which is more than any producer writes and is not an accident.
+//
+// A trie entry is keyed by a signature, and a signature is a sequence of
+// character classes rather than of bytes. That is what makes "2024/03/15" and
+// "2024.03.15" parse from the same entry as "2024-03-15", which is the point:
+// naming "-" in the entry would refuse the other two, and real systems emit
+// them. The cost is that a class holds bytes no format uses, so
+// "0000.01.01+00:00:00" is a datetime here.
+//
+// Narrowing it means splitting the class, which changes every signature holding
+// the byte and rekeys the trie. Nothing is wrong with the instants, so this is
+// written down rather than changed. If it is ever narrowed, this test is the
+// list of what stops parsing.
+func TestSeparatorClassIsDeliberatelyWide(t *testing.T) {
+	accepted := []struct{ in, want string }{
+		// The separator class is - / . at every position that holds one.
+		{"2024-03-15", "2024-03-15"},
+		{"2024/03/15", "2024-03-15"},
+		{"2024.03.15", "2024-03-15"},
+		{"2024-03/15", "2024-03-15"}, // and they need not agree with each other
+		{"2024/03.15", "2024-03-15"},
+
+		// The date and the time are told apart by a class that holds T, Z, -,
+		// + and a comma, so every one of them parses where the ISO T belongs.
+		{"2024-03-15T10:30:00", "2024-03-15"},
+		{"2024-03-15+10:30:00", "2024-03-15"},
+		{"2024-03-15,10:30:00", "2024-03-15"},
+		{"0000.01.01+00:00:00", "0000-01-01"},
+
+		// And the fraction's separator is the ordinary one.
+		{"10:30:00.123", "0000-01-01"},
+		{"10:30:00/123", "0000-01-01"},
+	}
+	base := time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, c := range accepted {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q): %v; the class this input relies on is deliberate,\n"+
+				"  so if it has been narrowed, say so here and in the commit", c.in, err)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("ParseWith(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+
+	// What the class does not hold. A letter is not a separator and a digit is
+	// not a literal, so these are refused and the class is wide rather than
+	// absent.
+	for _, in := range []string{"2024x03x15", "2024-03x15", "20240315T10:30:00"} {
+		if _, err := Parse(in); err == nil {
+			t.Errorf("Parse(%q) returned no error", in)
+		}
+	}
+}

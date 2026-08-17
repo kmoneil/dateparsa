@@ -4,13 +4,37 @@ import "github.com/kmoneil/dateparsa/internal/compile"
 
 // formatEntry pairs a signature pattern with the format definition it matches.
 // Signatures use the same CharClass values as the scanner.
+// The first four fields are the ones a trie hit reads, and they are first for
+// that reason: def is what a matched entry returns, and goLayout, litOffsets and
+// nLits are what decides whether it can be returned as it stands. Putting them
+// together keeps that decision inside one cache line, where spreading them
+// across the struct cost 5% of Detect_Only for two byte compares.
 type formatEntry struct {
-	name     string
-	goLayout string
-	sig      []CharClass // Expected signature pattern
-	fields   []compile.Field
-	ambig    bool               // True if this signature is ambiguous (DD/MM vs MM/DD)
 	def      *compile.FormatDef // Pre-built, set at init time
+	goLayout string
+
+	// litOffsets are the byte positions of goLayout that it writes verbatim,
+	// computed at init from goLayout itself. nLits is how many of them are
+	// used; the array is inline rather than a slice because this is read on
+	// every trie hit and a slice header costs a load before the first compare.
+	// Zero when there is no goLayout, or when the layout has no literals in it,
+	// as COMPACT_DATE does not.
+	//
+	// They exist because a signature is a sequence of character classes, so one
+	// entry matches every spelling of its separators: "2024-03-15",
+	// "2024/03/15" and "2024.03.15" are one signature and one entry, which is
+	// deliberate and is why all three parse. The entry carries one goLayout, and
+	// Layout.GoLayout used to hand back the dashed spelling for all three, which
+	// is a layout time.Parse refuses for two of them. Comparing the input at
+	// these positions is how the layout that comes back describes the input that
+	// was read.
+	litOffsets [8]uint8
+	nLits      uint8
+
+	name   string
+	sig    []CharClass // Expected signature pattern
+	fields []compile.Field
+	ambig  bool // True if this signature is ambiguous (DD/MM vs MM/DD)
 }
 
 // Phase 1 format definitions. Each entry maps a character-class signature

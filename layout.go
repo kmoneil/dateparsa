@@ -124,8 +124,21 @@ func (l *Layout) String() string {
 	return l.label
 }
 
-// GoLayout returns the equivalent Go time.Layout constant if applicable.
-// Returns ("", false) if no stdlib equivalent exists.
+// GoLayout returns the equivalent Go time layout, and reports whether there is
+// one. Returns ("", false) for a format with no stdlib equivalent, which is
+// every format the fallback detectors produce: the textual months, the
+// variable-width numeric ones and the Go time string.
+//
+// The layout it returns parses the input this Layout was detected from. That is
+// not free and it is worth knowing why: a trie entry is keyed by a sequence of
+// character classes rather than of bytes, so one entry matches "2024-03-15",
+// "2024/03/15" and "2024.03.15", and the entry names one spelling. The layout
+// is respelled to the input's separators at detection, so a caller who hands it
+// to time.Parse for the next row of their column gets one that reads it.
+//
+// It describes the input, not everything this Layout accepts. Layout.Parse
+// takes all three spellings; the returned Go layout takes the one that was
+// detected.
 func (l *Layout) GoLayout() (string, bool) {
 	if l.goLayout == "" {
 		return "", false

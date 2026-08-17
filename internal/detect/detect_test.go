@@ -3,6 +3,7 @@ package detect
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kmoneil/dateparsa/internal/compile"
 	"github.com/kmoneil/dateparsa/internal/locale"
@@ -937,5 +938,79 @@ func TestOrdinalSuffixEndsTheDayOrYearQuestion(t *testing.T) {
 		if !ok || !r.Ambig {
 			t.Errorf("test premise gone: Detect(%q) ok=%v Ambig=%v", in, ok, r.Ambig)
 		}
+	}
+}
+
+// TestDetectRefusesWhatNoProgramCanDescribe is W17.
+//
+// The trie reads the first 64 bytes and stops, but the fallback detectors
+// behind it are linear in the input and run once per configured locale.
+// Measured on linux/arm64 before this bound, for one Parse of a 1 MiB input of
+// words that is not a date:
+//
+//	no locales    68.7 ms
+//	one           115.5 ms
+//	five          423.7 ms
+//	twenty        1.271 s
+//
+// and no answer was available at the end of any of them. A field starts at byte
+// 255 at the latest and runs 255 bytes at the most, so a program cannot cover
+// an input longer than their sum, and the executor requires the whole input to
+// be covered.
+//
+// The assertion is a time budget, which is the only thing that separates this
+// from the behaviour before it: the bound refuses nothing that could have
+// parsed, so there is no input whose answer changes. The budget is 100ms
+// against a measured 3.1µs, which is four orders of magnitude of room, chosen
+// so that a loaded runner cannot fail it.
+func TestDetectRefusesWhatNoProgramCanDescribe(t *testing.T) {
+	long := strings.Repeat("ab 12 ", (1<<20)/6)
+	if _, ok := Detect(long, Config{}); ok {
+		t.Fatal("Detect accepted a 1 MiB input")
+	}
+
+	var locales []*locale.Data
+	for _, tag := range locale.Tags() {
+		if d := locale.Lookup(tag); d != nil {
+			locales = append(locales, d)
+		}
+	}
+	cfg := Config{Locales: locales}
+	Detect("zz", cfg) // warm the lazy per-locale caches
+
+	start := time.Now()
+	if _, ok := Detect(long, cfg); ok {
+		t.Fatal("Detect accepted a 1 MiB input with locales configured")
+	}
+	if el := time.Since(start); el > 100*time.Millisecond {
+		t.Errorf("Detect over 1 MiB with %d locales took %v; it used to take 1.271s and "+
+			"the bound is what stops it. Is the length check still there?", len(locales), el)
+	}
+}
+
+// TestTheBoundRefusesNothingReal is the other side of it: everything this
+// library advertises is far shorter than what a program can address, so the
+// bound cannot cost an input that used to parse.
+func TestTheBoundRefusesNothingReal(t *testing.T) {
+	longest := ""
+	for _, in := range []string{
+		"2024-03-15T10:30:00.123456789+05:30",
+		"Friday, 15-Mar-24 10:30:00 UTC",
+		"Fri, 15 Mar 2024 10:30:00 +0000",
+		"2024-03-15 10:30:00 +0000 UTC m=+9223372036.854775807",
+		"September 17, 2012 at 10:09am",
+		"15/Mar/2024:10:30:00 +0000",
+	} {
+		if len(in) > len(longest) {
+			longest = in
+		}
+		if _, ok := Detect(in, Config{}); !ok {
+			t.Errorf("Detect(%q) found no format", in)
+		}
+	}
+	if len(longest) > compile.MaxDescribableLen/4 {
+		t.Errorf("the longest advertised format is %d bytes against a bound of %d, which is "+
+			"closer than this test assumed; re-read the arithmetic before trusting it",
+			len(longest), compile.MaxDescribableLen)
 	}
 }

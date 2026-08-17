@@ -202,12 +202,25 @@ truncated for signature purposes. The signature scan and the trie lookup on it
 therefore do a fixed amount of work regardless of input size, and allocate
 nothing.
 
-The fallback detectors behind the trie are linear in input length, and always
-were: `detectTextualMonth` scans the whole string for numeric tokens. Since
-`91e9f7a`'s successor, one byte scan past the signature buffer decides whether
-that detector is offered the input at all, on the path where the trie already
-missed. Everything on that path was linear before and still is, and a program still
-cannot address past byte 255, so a long input is refused rather than parsed slowly.
+**Detection refuses an input longer than 510 bytes**, which is
+`compile.MaxDescribableLen`, before any of that runs. A field starts at byte 255
+at the latest and runs 255 bytes at the most, so a program cannot cover a longer
+input, and the executor requires the whole input to be covered. The bound
+refuses nothing that could have parsed.
+
+It is new, and the sentence it replaces said a long input was "refused rather
+than parsed slowly", which was half true: it was refused *and* parsed slowly.
+The fallback detectors behind the trie are linear in input length and run once
+per configured locale, so one `Parse` of a 1 MiB input of words measured, on
+linux/arm64:
+
+    no locales    68.7 ms          one locale     115.5 ms
+    five          423.7 ms         twenty         1.271 s
+
+Sixteen concurrent requests at twenty locales was twenty seconds of CPU. It is
+3.1µs now. The bound could not be relied on before W16, because `OpTail`'s width
+was whatever was left; that is 64 bytes now, so the arithmetic holds for every
+format.
 
 This used to add "nothing on it allocates per byte", which is not true.
 `buildTextualFields` grows a slice of 24-byte tokens, one per run of digits, so an

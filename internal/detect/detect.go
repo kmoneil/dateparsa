@@ -454,6 +454,23 @@ func Detect(s string, cfg Config) (Result, bool) {
 		return Result{}, false
 	}
 
+	// And nothing this package can describe is longer than two field widths,
+	// which is compile.MaxDescribableLen. The check above is about the int32
+	// conversions; this one is about the work: the trie reads the first 64
+	// bytes and stops, but the fallback detectors behind it are linear in the
+	// input and run once per configured locale, so a megabyte of prose cost
+	// 1.27 seconds of CPU with twenty locales and could not have produced an
+	// answer at the end of it.
+	//
+	// It refuses nothing that used to parse. A field starts at byte 255 at the
+	// latest and runs 255 bytes at the most, so a program cannot cover an input
+	// longer than their sum, and the executor requires the whole input to be
+	// covered. The one field whose width was unbounded was OpTail, which W16
+	// bounded at 64; until then this bound was not provable.
+	if len(s) > compile.MaxDescribableLen {
+		return Result{}, false
+	}
+
 	// Step 1: Try special formats that contain letters but aren't textual months.
 	if r, ok := detectISOWeekOrOrdinal(s); ok {
 		return r, true

@@ -24,6 +24,24 @@ const MaxInstructions = 24
 // rather than wrapping into the middle of the input.
 const maxFieldByte = 255
 
+// MaxDescribableLen is the longest input any program this package compiles can
+// describe, and therefore the longest one worth detecting.
+//
+// A field starts at maxFieldByte at the latest and runs maxFieldByte bytes at
+// the most, so the last byte any field can address is the sum of the two. An
+// input longer than that cannot be covered, whatever it says, and the executor
+// requires the program to cover the whole input.
+//
+// The tail was the exception until W16 and is the reason this constant could
+// not be relied on before: OpTail's width was whatever was left. It is bounded
+// at MaxTailLen now, and a tail begins at maxFieldByte at the latest, so the
+// widest input a tail-bearing format can describe is well under this.
+//
+// Exported for detect, which refuses a longer input rather than running its
+// fallback detectors over it. A megabyte of prose cost 1.27 seconds of CPU with
+// twenty locales configured, and no answer was available at the end of it.
+const MaxDescribableLen = 2 * maxFieldByte
+
 // Slot numbers for a fast program. See planFast.
 //
 // A fast program stores each of its fields at the matching constant index in

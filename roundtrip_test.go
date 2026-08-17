@@ -349,15 +349,44 @@ func renderSample(spec formatSpec, orig time.Time, rng *rand.Rand) string {
 }
 
 // randomTime generates a random time between 1970 and 2099.
+//
+// The day runs to the real length of the month it picked, not to 28. The cap
+// was there so that every generated date exists in every month, which is one
+// way to keep the corpus valid and has the side effect that **no format has
+// ever round-tripped the 29th, 30th or 31st of anything**. That is how C23
+// survived: the day was range-checked against the constant 31 and never against
+// its month, "2024-02-30" came back as the first of March, and no generated
+// input in this file could reach the shape. The zero-alloc gate draws from this
+// generator too, so the cap was holding two tests off the same ground.
+//
+// Asking the month how long it is keeps every generated date valid and reaches
+// the month ends. It cannot generate a date that does not exist, which is what
+// TestImpossibleDayIsRefused is written by hand for.
 func randomTime(rng *rand.Rand) time.Time {
 	year := 1970 + rng.Intn(130) // 1970-2099
 	month := 1 + rng.Intn(12)    // 1-12
-	day := 1 + rng.Intn(28)      // 1-28 (safe for all months)
-	hour := rng.Intn(24)         // 0-23
-	minute := rng.Intn(60)       // 0-59
-	second := rng.Intn(60)       // 0-59
-	ms := rng.Intn(1000)         // 0-999 milliseconds
+	day := 1 + rng.Intn(daysInMonth(year, month))
+	hour := rng.Intn(24)   // 0-23
+	minute := rng.Intn(60) // 0-59
+	second := rng.Intn(60) // 0-59
+	ms := rng.Intn(1000)   // 0-999 milliseconds
 	return time.Date(year, time.Month(month), day, hour, minute, second, ms*1e6, time.UTC)
+}
+
+// daysInMonth is the generator's own copy of the arithmetic the executor
+// checks with, written separately on purpose: a test that asks the code under
+// test how long February is proves nothing about February.
+func daysInMonth(year, month int) int {
+	switch month {
+	case 2:
+		if year%4 == 0 && (year%100 != 0 || year%400 == 0) {
+			return 29
+		}
+		return 28
+	case 4, 6, 9, 11:
+		return 30
+	}
+	return 31
 }
 
 // TestRoundTrip_Semantic runs the semantic round-trip fuzzer.

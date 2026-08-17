@@ -1,6 +1,9 @@
 package compile
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // fastMaxWidth is the longest input a fast program may describe.
 //
@@ -372,6 +375,15 @@ func (p *Program) executeFast(s string) (time.Time, error) {
 
 	if !yearSet && p.BaseYear != 0 {
 		year = int(p.BaseYear)
+	}
+	// The same refusal the interpreter makes, for the same reason, and the two
+	// paths have to make it on the same inputs: TestFastAgreesWithInterpreter
+	// and FuzzFastAgreesWithInterpreter are what hold them together, and a
+	// check in one and not the other is a disagreement they would report.
+	if !dayExists(year, int(month), day) {
+		return time.Time{}, fmt.Errorf(
+			"dateparsa: %d %s does not exist in %d",
+			day, month, year)
 	}
 	return makeTime(year, month, day, applyAMPM(hour, ampm), minute, second, nsec, loc), nil
 }

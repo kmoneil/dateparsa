@@ -1483,3 +1483,94 @@ func TestLiteralHoldingADigitIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestImpossibleDayIsRefused is C23, and the table is M10's third piece: a
+// corpus generator cannot produce these by construction, so they are written
+// out.
+//
+// The day was range-checked against the constant 31 and never against its
+// month, so "2024-02-30" came back as the first of March, with a nil error, on
+// every date-bearing format. time.Parse refuses all of it by name. The two
+// checks in the same function, for the ISO week and the ordinal day, are the
+// same defect fixed twice already; this is the third.
+func TestImpossibleDayIsRefused(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	refused := []struct{ in, why string }{
+		// February, which is where it matters most.
+		{"2024-02-30", "February has 29 days in 2024"},
+		{"2024-02-31", ""},
+		{"2023-02-29", "2023 is not a leap year"},
+		{"1900-02-29", "1900 is not a leap year, the century rule"},
+		{"2100-02-29", "nor is 2100"},
+
+		// The thirty-day months.
+		{"2024-04-31", "April has 30"},
+		{"2024-06-31", "June has 30"},
+		{"2024-09-31", "September has 30"},
+		{"2024-11-31", "November has 30"},
+
+		// The same date through every format family that carries one, because
+		// the check has to be in the executor and not in one detector.
+		{"2024-02-30T10:30:00Z", "ISO with a zone"},
+		{"2024-02-30T10:30:00+05:30", "RFC 3339"},
+		{"2024-02-30 10:30:00", "SQL"},
+		{"2024-02-30 10:30:00.123", "SQL with a fraction"},
+		{"20240230", "compact"},
+		{"20240230T103000", "compact with a time"},
+		{"02/30/2024", "US numeric"},
+		{"30.02.2024", "European numeric"},
+		{"2024/02/30", "Asian numeric"},
+		{"February 30, 2024", "textual month first"},
+		{"30 February 2024", "textual day first"},
+		{"Feb 30, 2024", "abbreviated"},
+		{"30-Feb-2024", "spreadsheet"},
+		{"Fri, 30 Feb 2024 10:30:00 +0000", "RFC 2822"},
+		{"30/Feb/2024:10:30:00 +0000", "common log format"},
+		{"2/30/2024 10:30:00 AM", "spreadsheet with a time"},
+		{"February 30", "no year, so it is the base year that decides"},
+	}
+	for _, c := range refused {
+		if _, err := ParseWith(c.in, WithBaseTime(base)); err == nil {
+			t.Errorf("ParseWith(%q) returned no error; that day does not exist (%s)", c.in, c.why)
+		}
+	}
+
+	// The boundary from the other side. A check that refuses too much is the
+	// same defect facing the other way, and February is where an off-by-one
+	// would land.
+	accepted := []struct{ in, want string }{
+		{"2024-02-29", "2024-02-29"}, // a leap year
+		{"2000-02-29", "2000-02-29"}, // and the century exception to the century rule
+		{"2023-02-28", "2023-02-28"},
+		{"2024-01-31", "2024-01-31"},
+		{"2024-04-30", "2024-04-30"},
+		{"2024-12-31", "2024-12-31"},
+		{"2024-02-30", ""}, // sentinel, replaced below
+	}
+	accepted = accepted[:len(accepted)-1]
+	for _, c := range accepted {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q): %v", c.in, err)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("ParseWith(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+
+	// A compiled layout has to refuse them too, not only the detecting call:
+	// the layout is what a caller keeps for the rest of the column.
+	lay, err := Detect("2024-03-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{"2024-02-30", "2023-02-29", "2024-04-31"} {
+		if _, err := lay.Parse(in); err == nil {
+			t.Errorf("Layout.Parse(%q) returned no error", in)
+		}
+	}
+	if _, err := lay.Parse("2024-02-29"); err != nil {
+		t.Errorf("Layout.Parse(\"2024-02-29\"): %v", err)
+	}
+}

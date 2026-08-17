@@ -634,6 +634,23 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 		return makeTime(year, 1, ordinalDay, hour, minute, second, nsec, loc), nil
 	}
 
+	// The day, against its month, which is the same defect as the two above and
+	// was the last one left. OpDay2 and OpDay1or2 check 1..31, which is a
+	// constant, and February is not 31 days long, so time.Date normalised and
+	// "2024-02-30" came back as the first of March with a nil error on every
+	// date-bearing format. time.Parse refuses all of them by name.
+	//
+	// makeTime is not the place for it. It exists to answer what time.Date
+	// answers and is pinned to that by FuzzMakeTimeMatchesTimeDate, and
+	// daysFromCivil's comment says what it does with an impossible day
+	// deliberately. The refusal belongs here, above it, where the year is
+	// resolved and the month is known.
+	if !dayExists(year, int(month), day) {
+		return time.Time{}, fmt.Errorf(
+			"dateparsa: %d %s does not exist in %d",
+			day, month, year)
+	}
+
 	return makeTime(year, month, day, hour, minute, second, nsec, loc), nil
 }
 
@@ -1004,6 +1021,30 @@ func daysInYear(y int) int {
 		return 366
 	}
 	return 365
+}
+
+// monthLengths is the length of each month in a common year, indexed 1..12.
+// February is the only one the year changes.
+var monthLengths = [13]int8{0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+
+// dayExists reports whether day is a day of that month in that year.
+//
+// The first comparison carries the common case: no month is shorter than 28
+// days, so every day up to the 28th exists in every month of every year and the
+// rest of this function is off the hot path for all but three days in twelve.
+//
+// It is called with a month already range-checked to 1..12 by the instruction
+// that read it, and with the year the executor resolved, which for a format
+// carrying no year field is the program's base year. February is why that
+// matters: whether the 29th exists is a question about the year.
+func dayExists(year, month, day int) bool {
+	if day <= 28 {
+		return true
+	}
+	if month == 2 {
+		return day == 29 && isLeap(year)
+	}
+	return day <= int(monthLengths[month])
 }
 
 // isoWeek1 returns the Monday of ISO week 1 of isoYear, and how many ISO weeks

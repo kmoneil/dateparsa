@@ -314,6 +314,24 @@ network, cap them before calling `Parse`. No real date is longer than about 64 b
 A panic is loud and gets fixed. A date that parses to the wrong day is silent
 and gets stored.
 
+**The largest instance of it found so far was a date that does not exist.** The
+day was range-checked against 31, which is a constant, and never against its
+month, so `2024-02-30` came back as the first of March with a nil error, on
+every date-bearing format: ISO, RFC 3339, SQL, compact, numeric, textual, RFC
+2822 and the common log format. `2023-02-29` was the first of March 2023 and
+`1900-02-29` the first of March 1900. `time.Parse` refuses all of them by name.
+The executor checks the day against its month now, after resolving the year,
+because February is a question about the year.
+
+It is worth knowing how it lasted as long as it did. The suite generates its
+round-trip corpus with a day capped at 28, so that every generated date exists
+in every month, which means no format had ever round-tripped the 29th, 30th or
+31st of anything. And the oracle that compares this library against `time.Parse`
+lets either side's refusal pass, deliberately, because the library is
+documented as the stricter of the two: this was the one direction it does not
+watch. The cap is gone and the refusals are a written table; the oracle's other
+half is still open.
+
 **Ambiguity is reported, never hidden.** `01/02/03` has more than one honest
 reading. `ParseResult.Ambiguous` is `true` when the answer came from a
 preference rule rather than from the input. `WithStrictMode(true)` refuses to

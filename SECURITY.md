@@ -219,6 +219,21 @@ are single bytes, and the compiler refuses a format with a field past what they
 hold rather than narrowing it. Before that check, a field at offset 260 read
 byte 4.
 
+**A fractional second is at most nine digits.** `compile.MaxFracDigits` is 9,
+which is what a nanosecond holds, and a field wider than that is **refused** at
+detection rather than truncated at execution. `parseFracSec` is inlined into both
+executors, so testing the width inside it cost the inline and every format
+carrying a fraction paid for a bound almost no input needs; the detectors carry
+it instead, in one constant both packages read.
+
+The refusal is stricter than `time.Parse`, which truncates, and staying stricter
+than the standard library is the decision: a library that exists to refuse a
+wrong day does not widen its acceptance to match a leniency the stdlib has never
+written down. Before the bound,
+`"2024-03-15 10:30:00.99999999999999999999999"` parsed to 2030-07-21, one second
+out at ten digits and six years out at twenty-three, on four format families
+while a fifth already had the check.
+
 **The natural language path refuses an input over 512 bytes.**
 `natural.MaxInputLen` is checked before anything is lowered or tokenised, so an
 over-long input costs one comparison. It runs only after structured detection and
@@ -249,6 +264,16 @@ megabyte that reaches the fallback detectors still takes about 35 ms, because
 tries 24 English spellings and each is linear. That is the "linear in input length"
 property above, with a constant of roughly 35 ns a byte, and it was measured at 51 ns
 a byte on 2026-08-14 before two performance changes moved it.
+
+**A relative quantity is at most six digits.** `maxQuantityDigits` in
+`internal/natural` bounds the digit run the scanner will read as a number, and
+six is the largest safe width rather than a round one: `addUnit`'s hour arm
+multiplies by 3.6e12, so seven digits reach 3.6e19 against an int64 ceiling of
+9.223e18 and wrap. Without it the arithmetic wrapped silently and an expression
+naming the past resolved to the future: `"9223372036854775807 days ago"` came
+back as tomorrow, with a nil error. A quantity over the bound is refused, and the
+property the tests assert is the one the bug violated, that a past expression
+never resolves to the future.
 
 **Bound the input length yourself anyway.** The 512-byte bound is on one path, after
 two others have already done work. If you are parsing strings that arrive over a
@@ -330,11 +355,20 @@ deterministically on every `go test`. A format that enters the trie without a
 round-trip spec is a format nothing checks for correctness, and that is treated
 as a defect.
 
-**Every extraction primitive checks bounds and returns `(value, ok)`.**
-`parse2Digits`, `parse4Digits`, `parse1or2Digits`, `parseFracSec`, and
-`parseTZOffset` each validate before reading. None of them assume a caller
-checked the length, because the compiled offsets come from a format definition
-and the input does not have to agree with it.
+**Every extraction primitive validates what it reads, and two of them rely on
+their caller for the length.** `parse1or2Bounded`, `parseFracSec` and
+`parseTZOffset` check the input length themselves and return `(value, ok)`.
+`parse2Digits` and `parse4Digits` do not: they index `s[off]` through
+`s[off+3]` and are called only from arms that have already established the
+length, `parse2Bounded` among them. All 26 call sites were checked, and no live
+path reaches either one unguarded.
+
+**A twenty-seventh call site has to do the same, and this paragraph is the only
+place that says so.** The compiled offsets come from a format definition and the
+input does not have to agree with it, so the length check is not optional
+anywhere; it is only located somewhere else for those two. This used to name a
+`parse1or2Digits`, which does not exist, and claim that none of the five assumed
+a caller had checked.
 
 ## Timezone resolution reads nothing
 
@@ -408,9 +442,15 @@ enforced rather than encouraged. There is no transitive tree to audit, no
 proxy-fetched module to verify beyond the toolchain itself, and no upstream
 maintainer whose account compromise becomes this library's problem.
 
-CI runs the test matrix across three Go versions and three operating systems,
-runs both fuzz targets for 30 seconds each, and fails a build whose linked
-binary exceeds 10MB. The size budget is a supply chain control as much as a
+CI runs the test suite on one Go version across three operating systems, and
+fails a build whose linked binary exceeds 10MB. The fuzz sweep is not on that
+path: `make fuzz` discovers every package holding a `Fuzz*` function and runs
+each target for `FUZZTIME`, 30 seconds by default and 10 minutes in the nightly
+workflow, after a merge rather than on a pull request. There are 19 targets
+today and the number is never written down anywhere but here, because the sweep
+finds them rather than being given a list. Every committed crasher and every
+seed still runs on every pull request under plain `go test`, with no fuzzing
+budget at all. The size budget is a supply chain control as much as a
 performance one: a sudden jump means something got linked in that nobody
 intended.
 

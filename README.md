@@ -130,6 +130,11 @@ Supported patterns: `now`, `today`, `yesterday`, `tomorrow`, `N units ago`,
 `last/next/this <month>`, `last/next week/month/year`,
 `beginning/end of day/week/month/year`, plus `at <time>` suffixes.
 
+Two bounds apply on this path and nowhere else. The expression is at most 512
+bytes, which admits about fifty terms, and `N` is at most six digits. Both refuse
+rather than truncate, and neither is reachable by a structured format: this path
+runs only after format and timestamp detection have both failed.
+
 ### Handle ambiguous dates
 
 ```go
@@ -223,11 +228,14 @@ dateparsa.ParseWith(s,
     dateparsa.WithBaseTime(t),          // Reference for relative dates
     dateparsa.WithTimezone(loc),        // Default timezone when none in input
     dateparsa.WithPreferDayFirst(true), // DD/MM/YYYY for ambiguous dates
-    dateparsa.WithPreferYearFirst(true),// YYYY/MM/DD for ambiguous dates
     dateparsa.WithPreferFuture(true),   // "Tuesday" = next Tuesday
-    dateparsa.WithStrictMode(true),         // Reject ambiguous dates
+    dateparsa.WithStrictMode(true),     // Reject ambiguous dates
 )
 ```
+
+`WithPreferYearFirst` exists, is accepted, and currently does nothing: no
+detector reads it, so `01/02/03` parses the same either way. It is listed here
+because the option compiles and a reader would otherwise assume it works.
 
 ## Supported Formats
 
@@ -263,7 +271,8 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 
 1. **Value-range check** — if one number exceeds 12, it must be the day
 2. **Separator heuristic** — dot separator (`.`) implies European DD.MM.YYYY
-3. **User preference** — `WithPreferDayFirst` / `WithPreferYearFirst`
+3. **User preference** — `WithPreferDayFirst` (`WithPreferYearFirst` is not
+   implemented; see Options)
 4. **Ambiguity flag** — `result.Ambiguous` tells you when the choice was a guess
 5. **Strict mode** — `WithStrictMode(true)` returns all interpretations as an error
 6. **No reuse of a guess** — `Parser` re-detects every row of an ambiguous

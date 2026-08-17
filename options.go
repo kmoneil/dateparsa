@@ -61,8 +61,18 @@ func WithPreferDayFirst(b bool) Option {
 	}
 }
 
-// WithPreferYearFirst treats ambiguous dates as YYYY/MM/DD.
-// Takes precedence over PreferDayFirst when applicable.
+// WithPreferYearFirst is accepted and does nothing.
+//
+// It is meant to read an ambiguous three-part numeric date as YYYY/MM/DD, and
+// no detector consults it: detect.Config carries the field, four call sites set
+// it, and nothing reads it, so "01/02/03" is the second of January 2003 with
+// the option on and with it off. It is documented rather than removed because
+// the behaviour is wanted, and it is not a one-liner: with a year-first reading
+// available, "01/02/03" has three honest readings and an *AmbiguousDateError
+// carries a pair, so what strict mode returns has to be decided first.
+//
+// Do not write code that depends on this option until this comment says it
+// works.
 func WithPreferYearFirst(b bool) Option {
 	return func(c config) config {
 		c.preferYearFirst = b

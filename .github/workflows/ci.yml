@@ -42,11 +42,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Three operating systems and one Go version, which is the axis that
-        # actually finds things here. time.LoadLocation reads a zoneinfo
-        # database that Windows does not have in the same place, and the
-        # library reaches it whenever an input carries a timezone abbreviation
-        # outside the ten pre-built ones.
+        # Three operating systems and one Go version. The reason written here
+        # used to be time.LoadLocation reading a zoneinfo database Windows
+        # keeps elsewhere, and that call is gone: lookupTZAbbr is a closed
+        # switch that touches no filesystem.
+        #
+        # Nothing specific replaces it. The whole non-test import set is time,
+        # fmt, strings, sync, sort, math, errors, strconv, unicode, and the two
+        # flextime needs, so the platform-dependent surface is small and the
+        # matrix is cheap insurance rather than a defence against a known
+        # divergence. Say that rather than leave a mechanism nobody can find:
+        # the stale reason is what somebody would cite when deciding whether to
+        # cut the matrix.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7

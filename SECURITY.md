@@ -176,9 +176,15 @@ The fallback detectors behind the trie are linear in input length, and always
 were: `detectTextualMonth` scans the whole string for numeric tokens. Since
 `91e9f7a`'s successor, one byte scan past the signature buffer decides whether
 that detector is offered the input at all, on the path where the trie already
-missed. Everything on that path was linear before and still is. Nothing on it
-allocates per byte, and a program still cannot address past byte 255, so a long
-input is refused rather than parsed slowly.
+missed. Everything on that path was linear before and still is, and a program still
+cannot address past byte 255, so a long input is refused rather than parsed slowly.
+
+This used to add "nothing on it allocates per byte", which is not true.
+`buildTextualFields` grows a slice of 24-byte tokens, one per run of digits, so an
+input of alternating digits and spaces allocates about twelve bytes per input byte on
+this path. It is linear and it is bounded by nothing here: the refusal comes later,
+when a field lands past byte 255. That is a smaller number than the one the natural
+language paragraph below records and it is the same shape, and it is not fixed.
 
 **A program is at most 24 instructions.** `compile.MaxInstructions` is 24 and
 the compiler **refuses** a format needing more, rather than stopping there.
@@ -213,15 +219,40 @@ are single bytes, and the compiler refuses a format with a field past what they
 hold rather than narrowing it. Before that check, a field at offset 260 read
 byte 4.
 
-**The natural language path is linear in input length and has no cap.** It runs
-only after structured detection and epoch detection have both failed. When it
-runs, the scanner allocates a lowercased copy of the input and grows a token
-slice. There is no quadratic behavior and no amplification, but there is also no
-internal limit: a 10MB string of words costs roughly 10MB of work.
+**The natural language path refuses an input over 512 bytes.**
+`natural.MaxInputLen` is checked before anything is lowered or tokenised, so an
+over-long input costs one comparison. It runs only after structured detection and
+epoch detection have both failed, so no date format is affected: 512 bytes admits a
+compound relative expression of about fifty terms, which is far past anything anybody
+writes, and no shorter input is refused that used to parse.
 
-**Bound the input length yourself.** If you are parsing strings that arrive over
-a network, cap them before calling `Parse`. No real date is longer than about
-64 bytes, and the library will not stop you from handing it a megabyte.
+**This paragraph used to say the path had "no amplification" and that "a 10MB string
+of words costs roughly 10MB of work", and both were wrong by two orders of
+magnitude.** It is worth saying what was measured, because that sentence was what a
+reader would have sized their own cap from. `natural.Token` is 104 bytes and the
+scanner appended one per whitespace-separated word, and Go grows a large slice by
+about 1.25x, so the intermediate arrays came to roughly five times the final one. On
+linux/arm64, Go 1.26.4:
+
+    1 MiB of words        135 MB peak heap, 281 MB allocated, 190 ms
+    4 MiB of words        665 MB peak heap, 1.35 GB allocated
+    16 x 1 MiB, at once   1.94 GiB peak heap
+    100 KB, 20 locales    348 MB allocated
+
+The last row is the per-locale cost: `ScanLocale` lowered its own copy of the input
+and built its own token slice once per configured locale. With the bound in place all
+four are a comparison and a return, and a 1 MiB input allocates 48 bytes.
+
+**The CPU cost of a long input is unchanged and is not this bound's to fix.** A
+megabyte that reaches the fallback detectors still takes about 35 ms, because
+`detect` scans it: `hasLetterPastSignature` walks the tail, and `findMonthNameCI`
+tries 24 English spellings and each is linear. That is the "linear in input length"
+property above, with a constant of roughly 35 ns a byte, and it was measured at 51 ns
+a byte on 2026-08-14 before two performance changes moved it.
+
+**Bound the input length yourself anyway.** The 512-byte bound is on one path, after
+two others have already done work. If you are parsing strings that arrive over a
+network, cap them before calling `Parse`. No real date is longer than about 64 bytes.
 
 ## The failure that matters: a confident wrong answer
 

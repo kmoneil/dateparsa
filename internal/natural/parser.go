@@ -13,9 +13,44 @@ type Config struct {
 	Locales      []*locale.Data
 }
 
+// MaxInputLen bounds the input this package will tokenise.
+//
+// It is the only bound on the path, and one check here covers every cost on it,
+// which is why it is here and not a token counter inside the two scanners. Both of
+// them lower a copy of the whole input before tokenising, and ScanLocale does it
+// once per configured locale, so a counter would bound the token slice and leave the
+// copies.
+//
+// The amplification it exists to stop was measured, not estimated. Token is 104
+// bytes and Scan appends one per whitespace-separated word, and Go grows a large
+// slice by about 1.25x, so the intermediate arrays come to roughly five times the
+// final one. On linux/arm64:
+//
+//	1 MiB of words   135 MB peak heap, 281 MB allocated, 190 ms
+//	4 MiB of words   665 MB peak heap, 1.35 GB allocated
+//	16 x 1 MiB       1.94 GiB peak, concurrently
+//	100 KB, 20 locales               348 MB allocated
+//
+// SECURITY.md said this path had "no amplification" and that "a 10MB string of words
+// costs roughly 10MB of work". It cost about 1.3 GB, and that sentence was what a
+// caller would have sized their own input cap from.
+//
+// 512 rather than something tighter because a compound relative expression is the one
+// legitimately long input: "1 day and " repeated is a valid parse, and 512 bytes
+// admits about fifty terms. Nothing shorter is refused that used to parse. The path
+// is reached only after structured and epoch detection have both failed, so no date
+// format is affected by it at all.
+const MaxInputLen = 512
+
 // Parse attempts to parse a natural language date expression.
 // Returns nil if the input is not a recognized NL expression.
 func Parse(s string, cfg Config) *Result {
+	// Checked before anything is lowered or tokenised, so an over-long input costs
+	// one comparison rather than a copy per locale. See MaxInputLen.
+	if len(s) > MaxInputLen {
+		return nil
+	}
+
 	// Try English tokenizer first (always available).
 	if r := tryParse(Scan(s), cfg); r != nil {
 		return r

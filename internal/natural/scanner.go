@@ -247,6 +247,34 @@ func convertAMPM(hour, ampm int) int {
 	return hour
 }
 
+// maxQuantityDigits bounds the digit run scanNumber will read as a number, and
+// six is not a round number, it is the largest safe one.
+//
+// eval.addUnit turns the value into a duration, and the hour arm multiplies by
+// 3.6e12, so the int64 it lands in wraps above 2,562,047. Seven digits reach
+// 3.6e19 against an int64 ceiling of 9.223e18 and wrap; six reach 3.6e18 and do
+// not. The second and minute arms are looser, the AddDate arms do not wrap at all,
+// and the tightest one decides.
+//
+// Without it the arithmetic wrapped and a past expression came back in the future:
+//
+//	"9223372036854775807 days ago"       tomorrow
+//	"10000000000 seconds ago"            the year 2294
+//	"99999999999999999999 years ago"     the year 247205617655
+//
+// The first is the one to remember. Nine quintillion days ago resolved to one day
+// after the base time, with a nil error, because scanNumber accumulated the digits
+// into an int and never checked.
+//
+// The scanner is the only bound needed, and this is why the range check that would
+// otherwise belong in addUnit is not there: with the value bounded here, no arm can
+// wrap, so there is nothing for a second check to catch. What six digits still
+// admits is arithmetic that is simply correct, "999999 years ago" being the year
+// -997973, and SECURITY.md puts that out of scope in as many words: "a correctly
+// parsed date in the year 1900 is a correct answer. Range and plausibility checks
+// belong to the application."
+const maxQuantityDigits = 6
+
 // scanNumber extracts a number token, handling suffixes like "pm", "am", "st", "nd", "rd", "th".
 func scanNumber(s string, start int) Token {
 	i := start
@@ -257,6 +285,15 @@ func scanNumber(s string, start int) Token {
 		i++
 	}
 	numEnd := i
+
+	// A run this long names no quantity and no time, so it is not a number as far
+	// as this grammar is concerned. Returned as TokUnknown rather than refused
+	// outright, so the surrounding patterns decline it the way they decline any
+	// word they do not know: "99999999999999999999 days ago" has no arm that
+	// matches UNKNOWN UNIT DIRECTION and Eval returns nil.
+	if numEnd-start > maxQuantityDigits {
+		return Token{Kind: TokUnknown, Pos: start, Raw: s[start:numEnd]}
+	}
 
 	// Check for time pattern: digits followed by ":" and more digits (e.g., "14:00", "5:30").
 	if tok, ok := tryTimePattern(s, start, val, i, n); ok {

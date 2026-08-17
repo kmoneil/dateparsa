@@ -61,18 +61,23 @@ func WithPreferDayFirst(b bool) Option {
 	}
 }
 
-// WithPreferYearFirst is accepted and does nothing.
+// WithPreferYearFirst reads a three-part numeric date as YY/MM/DD when the
+// input leaves the year's position open. Default: false, the year is last.
 //
-// It is meant to read an ambiguous three-part numeric date as YYYY/MM/DD, and
-// no detector consults it: detect.Config carries the field, four call sites set
-// it, and nothing reads it, so "01/02/03" is the second of January 2003 with
-// the option on and with it off. It is documented rather than removed because
-// the behaviour is wanted, and it is not a one-liner: with a year-first reading
-// available, "01/02/03" has three honest readings and an *AmbiguousDateError
-// carries a pair, so what strict mode returns has to be decided first.
+// It applies to a date whose three parts are all small, because that is the
+// only shape where nothing in the input says which end the year is at:
+// "01/02/03" is 2001-02-03 with this on and 2003-01-02 with it off. A written
+// four-digit year wins over it, so "01/02/2024" is unaffected, and so does a
+// value that cannot be what the reading needs: "01/13/03" has no month 13, so
+// the year stays last and the option stands aside rather than refusing the row.
 //
-// Do not write code that depends on this option until this comment says it
-// works.
+// Year-first means year, then month, then day. Every format that writes the
+// year first writes ISO order after it, so WithPreferDayFirst does not
+// participate in the reading this option selects.
+//
+// The result is reported as ambiguous, because it is: the year-last readings
+// still exist, and strict mode returns all three rather than the two every
+// other ambiguous input has.
 func WithPreferYearFirst(b bool) Option {
 	return func(c config) config {
 		c.preferYearFirst = b

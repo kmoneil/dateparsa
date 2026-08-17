@@ -67,6 +67,13 @@ const (
 	// name, read as the fifteenth because it is not over 31, and equally the
 	// year 2015.
 	AmbigDayOrYear
+
+	// AmbigYearPosition is "01/02/03" read year-first, which is what
+	// WithPreferYearFirst asks for. Three small parts and no way to tell from
+	// the input which one is the year, so the reading the preference picked is
+	// one of three rather than one of two: the year leads, or it trails and the
+	// month and the day are still to be told apart.
+	AmbigYearPosition
 )
 
 // Reading is one way to read an ambiguous input: the format that reads it that
@@ -80,15 +87,15 @@ type Reading struct {
 	Label string
 }
 
-// Readings returns both ways to read an ambiguous input: the one Detect chose,
-// and the one it did not.
+// Readings returns every way this input can be read: the one Detect chose,
+// first, and the ones it did not.
 //
-// Both are built by re-kinding the fields of the format already detected, not by
-// detecting a second time. Nothing about the input moves between them: the same
-// bytes are read at the same offsets, and the two programs differ in the one or
-// two instructions that decide which slot a number lands in.
+// All of them are built by re-kinding the fields of the format already
+// detected, not by detecting again. Nothing about the input moves between them:
+// the same bytes are read at the same offsets, and the programs differ in the
+// one to three instructions that decide which slot a number lands in.
 //
-// A second detection cannot produce the pair, and that is the bug this replaces.
+// A second detection cannot produce the set, and that is the bug this replaces.
 // The caller used to run Detect twice with PreferDayFirst flipped, which is a
 // preference two of the three heuristics ahead of it can overrule:
 //
@@ -100,26 +107,26 @@ type Reading struct {
 //     came back day-first both times and the copy labelled MM/DD/YYYY carried
 //     the third of February. That label reads as the second of March.
 //
-// It reports false when the input needed no guess, and when the fields do not
+// It returns nil when the input needed no guess, and when the fields do not
 // hold what the kind says they should, which is a detector bug rather than an
 // input the caller can be asked about.
-func (r Result) Readings() (chosen, alt Reading, ok bool) {
+func (r Result) Readings() []Reading {
 	if r.Def == nil {
-		return Reading{}, Reading{}, false
+		return nil
 	}
 	switch r.AmbigKind {
 	case AmbigDayOrYear:
 		return r.dayOrYearReadings()
-	case AmbigFieldOrder:
+	case AmbigFieldOrder, AmbigYearPosition:
 		return r.fieldOrderReadings()
 	}
-	return Reading{}, Reading{}, false
+	return nil
 }
 
 // dayOrYearReadings reads the bare number beside a month name as the day of the
 // month, which is what Detect chose, and as a two-digit year, which is what it
 // did not: "March 15" is the fifteenth of March or March 2015.
-func (r Result) dayOrYearReadings() (day, year Reading, ok bool) {
+func (r Result) dayOrYearReadings() []Reading {
 	dayAt, monthAt := -1, -1
 	for i := range r.Def.Fields {
 		switch r.Def.Fields[i].Kind {
@@ -130,7 +137,7 @@ func (r Result) dayOrYearReadings() (day, year Reading, ok bool) {
 		}
 	}
 	if dayAt < 0 || monthAt < 0 {
-		return Reading{}, Reading{}, false
+		return nil
 	}
 
 	// Which side of the month name the number sits on is what the labels differ
@@ -144,19 +151,24 @@ func (r Result) dayOrYearReadings() (day, year Reading, ok bool) {
 	fields := copyFields(r.Def.Fields)
 	fields[dayAt].Kind = compile.FYear2
 
-	return Reading{Def: r.Def, Label: dayLabel},
-		Reading{Def: &compile.FormatDef{Name: yearLabel, Fields: fields}, Label: yearLabel},
-		true
+	return []Reading{
+		{Def: r.Def, Label: dayLabel},
+		{Def: &compile.FormatDef{Name: yearLabel, Fields: fields}, Label: yearLabel},
+	}
 }
 
-// fieldOrderReadings reads the two small numeric parts in the order Detect
-// chose, and in the other order: "01/02/2024" is the second of January or the
-// first of February.
+// fieldOrderReadings reads the three numeric parts in the order Detect chose,
+// and in the other orders that describe the same bytes: "01/02/2024" is the
+// second of January or the first of February, and "01/02/03" is either of those
+// in 2003 or, for a caller who says their data can be year-first, the third of
+// February 2001.
 //
-// Both parts are 12 or under, because that is what made the input ambiguous, so
-// each is a valid month and a valid day and the swap cannot produce a date that
-// does not exist.
-func (r Result) fieldOrderReadings() (chosen, alt Reading, ok bool) {
+// The parts that swap are 12 or under, because that is what made the input
+// ambiguous, so each is a valid month and a valid day and no swap can produce a
+// date that does not exist. The year-first reading is only offered when Detect
+// took it, which is when the caller asked for it and the values allowed it;
+// yearFirstParts is where that is decided, and the arithmetic is there.
+func (r Result) fieldOrderReadings() []Reading {
 	monthAt, dayAt, yearAt := -1, -1, -1
 	for i := range r.Def.Fields {
 		switch r.Def.Fields[i].Kind {
@@ -169,45 +181,112 @@ func (r Result) fieldOrderReadings() (chosen, alt Reading, ok bool) {
 		}
 	}
 	if monthAt < 0 || dayAt < 0 || yearAt < 0 {
-		return Reading{}, Reading{}, false
+		return nil
 	}
 
-	monthAsDay, ok1 := swapDateRole(r.Def.Fields[monthAt].Kind)
-	dayAsMonth, ok2 := swapDateRole(r.Def.Fields[dayAt].Kind)
-	if !ok1 || !ok2 {
-		return Reading{}, Reading{}, false
+	out := []Reading{{Def: r.Def, Label: numericLabel(r.Def.Fields, monthAt, dayAt, yearAt)}}
+
+	if r.AmbigKind != AmbigYearPosition {
+		// The other order of the two parts Detect chose between, with the year
+		// where it is.
+		if alt, ok := r.rekinded(numericLabel(r.Def.Fields, dayAt, monthAt, yearAt),
+			roleAt{yearAt, 'Y'}, roleAt{dayAt, 'M'}, roleAt{monthAt, 'D'}); ok {
+			out = append(out, alt)
+		}
+		return out
 	}
-	fields := copyFields(r.Def.Fields)
-	fields[monthAt].Kind = monthAsDay
-	fields[dayAt].Kind = dayAsMonth
 
-	// The labels are the same three parts in the order the fields sit in, so a
-	// year-first shape says so rather than being called MM/DD/YYYY, and the
-	// alternative is the same call with the two roles exchanged.
-	chosenLabel := numericLabel(r.Def.Fields, monthAt, dayAt, yearAt)
-	altLabel := numericLabel(r.Def.Fields, dayAt, monthAt, yearAt)
+	// Year-first leaves no month-versus-day question to offer: a format that
+	// writes the year first writes ISO order after it, and YY/DD/MM is not a
+	// format anybody writes. So the alternatives are the two year-last
+	// readings, and both are new: the year moves out of the leading part and
+	// the other two move up.
 
-	return Reading{Def: r.Def, Label: chosenLabel},
-		Reading{Def: &compile.FormatDef{Name: altLabel, Fields: fields}, Label: altLabel},
-		true
+	// Written as the position each role takes rather than as a pair of swaps,
+	// because three roles over three positions is a permutation and naming it
+	// that way is what stops the second one being the first one with a typo in
+	// it. The chosen def is year, month, day at the three positions in input
+	// order, which yearFirstParts guarantees, so position 0 is yearAt,
+	// position 1 is monthAt and position 2 is dayAt.
+	for _, perm := range [2]struct {
+		roles [3]byte
+	}{
+		{[3]byte{'M', 'D', 'Y'}},
+		{[3]byte{'D', 'M', 'Y'}},
+	} {
+		at := [3]int{yearAt, monthAt, dayAt}
+		var m, d, y int
+		for i, role := range perm.roles {
+			switch role {
+			case 'M':
+				m = at[i]
+			case 'D':
+				d = at[i]
+			case 'Y':
+				y = at[i]
+			}
+		}
+		if rd, ok := r.rekinded(numericLabel(r.Def.Fields, m, d, y),
+			roleAt{y, 'Y'}, roleAt{m, 'M'}, roleAt{d, 'D'}); ok {
+			out = append(out, rd)
+		}
+	}
+	return out
 }
 
-// swapDateRole exchanges a month field for the day field of the same width, and
-// the other way round. The width has to survive the swap: the parts are one
-// digit or two, the kinds come in a pair for each width, and a field that
-// declares a width it does not read is C9.
-func swapDateRole(k compile.FieldKind) (compile.FieldKind, bool) {
-	switch k {
-	case compile.FMonth2:
-		return compile.FDay2, true
-	case compile.FMonth1or2:
-		return compile.FDay1or2, true
-	case compile.FDay2:
-		return compile.FMonth2, true
-	case compile.FDay1or2:
-		return compile.FMonth1or2, true
+// roleAt says which of year, month and day a field holds in some reading.
+type roleAt struct {
+	at   int
+	role byte
+}
+
+// rekinded builds one reading by giving the named fields the kinds their roles
+// need, at the widths they already have.
+//
+// It reports false when a role cannot take the width it is being given, which
+// is how a reading that does not exist is left out rather than compiled into a
+// field that reads two bytes and declares one. A year is the case: it is
+// written with exactly two digits or exactly four, so a one-digit part can be a
+// month or a day and never a year.
+func (r Result) rekinded(label string, roles ...roleAt) (Reading, bool) {
+	fields := copyFields(r.Def.Fields)
+	for _, ra := range roles {
+		kind, ok := kindForRole(ra.role, fields[ra.at].Len)
+		if !ok {
+			return Reading{}, false
+		}
+		fields[ra.at].Kind = kind
 	}
-	return k, false
+	return Reading{Def: &compile.FormatDef{Name: label, Fields: fields}, Label: label}, true
+}
+
+// kindForRole is the field kind that reads a part of the given width as a year,
+// a month or a day.
+func kindForRole(role byte, width int32) (compile.FieldKind, bool) {
+	switch role {
+	case 'Y':
+		switch width {
+		case 2:
+			return compile.FYear2, true
+		case 4:
+			return compile.FYear4, true
+		}
+	case 'M':
+		switch width {
+		case 1:
+			return compile.FMonth1or2, true
+		case 2:
+			return compile.FMonth2, true
+		}
+	case 'D':
+		switch width {
+		case 1:
+			return compile.FDay1or2, true
+		case 2:
+			return compile.FDay2, true
+		}
+	}
+	return 0, false
 }
 
 // numericLabel names a reading of a three-part numeric date by the order its
@@ -217,8 +296,13 @@ func swapDateRole(k compile.FieldKind) (compile.FieldKind, bool) {
 // name of an ordering rather than a description of the bytes, and it is the
 // string this library has always returned for the reading.
 func numericLabel(fields []compile.Field, monthAt, dayAt, yearAt int) string {
+	// From the width of the part rather than from its kind in the chosen
+	// reading, because in an alternative reading the year sits where the
+	// chosen one put a day, and asking that field what kind it is answers
+	// about the wrong reading. It said YYYY for the year-last readings of
+	// "01/02/03", which has no four-digit year in it anywhere.
 	year := "YYYY"
-	if fields[yearAt].Kind == compile.FYear2 {
+	if fields[yearAt].Len == 2 {
 		year = "YY"
 	}
 	parts := [3]struct {
@@ -966,6 +1050,20 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		v1, v2 = second, third
 		v1Offset = len(parts[0]) + 1
 		v2Offset = len(parts[0]) + 1 + len(parts[1]) + 1
+	} else if m, d, ok := yearFirstParts(parts, second, third, cfg); ok {
+		// All three parts are small, and the caller said their data can be
+		// year-first, so "01/02/03" is 2001-02-03 rather than 2003-01-02.
+		//
+		// Year-first means year, then month, then day, in that order and no
+		// other: every format that writes the year first writes ISO order
+		// after it, and nothing writes YY/DD/MM. So this arm decides both
+		// questions at once and step 2 does not run for it, where the other
+		// two arms leave the month and the day to be told apart by value.
+		//
+		// It is still ambiguous, and more so than the arm below: the input has
+		// a year-last reading as well, which is what the caller is refusing to
+		// choose between under strict mode.
+		return m, d, AmbigYearPosition, true
 	} else {
 		// All small numbers, truly ambiguous with 2-digit year last.
 		v1, v2 = first, second
@@ -1007,6 +1105,48 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		return datePart{}, datePart{}, AmbigNone, false
 	}
 	return month, day, ambig, true
+}
+
+// yearFirstParts reads an all-small three-part date as year, month, day, and
+// reports whether that reading exists at all.
+//
+// It is what WithPreferYearFirst does, and until now the option did nothing:
+// detect.Config declared PreferYearFirst, four call sites set it, and no
+// detector read it, so "01/02/03" was the second of January 2003 with the
+// option on and with it off. README documented it as a preference rule in two
+// places for the whole of that time.
+//
+// The reading has to be structurally possible before the preference can pick
+// it, and it is not always:
+//
+//	"01/02/03"  year 01, month 02, day 03    available
+//	"01/13/03"  month 13 does not exist      not available, so year-last stands
+//	"1/02/03"   a year field is two bytes    not available
+//
+// Falling back rather than refusing is the point. A caller who sets the option
+// because some of their rows are year-first still has to parse the rows that
+// are not, and a row the reading cannot describe is not an error, it is a row
+// the reading does not apply to.
+func yearFirstParts(parts []string, second, third int, cfg Config) (month, day datePart, ok bool) {
+	if !cfg.PreferYearFirst {
+		return datePart{}, datePart{}, false
+	}
+	// A year field reads exactly two bytes or exactly four, and four would have
+	// been taken by the arm above, so a one-digit leading part cannot be one.
+	if len(parts[0]) != 2 {
+		return datePart{}, datePart{}, false
+	}
+	if second < 1 || second > 12 || third < 1 || third > 31 {
+		return datePart{}, datePart{}, false
+	}
+	if len(parts[1]) > 2 || len(parts[2]) > 2 {
+		return datePart{}, datePart{}, false
+	}
+	monthOffset := len(parts[0]) + 1
+	dayOffset := monthOffset + len(parts[1]) + 1
+	return datePart{second, monthOffset, len(parts[1])},
+		datePart{third, dayOffset, len(parts[2])},
+		true
 }
 
 // partIndex returns which index (0, 1, or 2) a given byte offset corresponds to

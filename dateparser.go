@@ -227,20 +227,22 @@ const nlLabelFormat = "2006-01-02"
 // leaves nothing to choose between, so the ErrAmbiguous ParseError stands in
 // exactly where it did before.
 //
+// There are two readings for most ambiguous inputs and three for a year-first
+// one, because "01/02/03" read as 2001-02-03 was chosen against both orders of
+// the year-last reading rather than against one of them.
+//
 // The base year and the timezone come from cfg because the readings are the
 // caller's readings. "March 15" has no year field on either reading, and the
 // pair is only comparable if both take the same base.
 func buildAmbiguousError(s string, cfg config, result detect.Result) error {
 	var interps []Interpretation
-	if chosen, alt, ok := result.Readings(); ok {
-		for _, r := range [2]detect.Reading{chosen, alt} {
-			in, parsed, err := interpretation(s, cfg, r.Def, r.Label)
-			if err != nil {
-				return err
-			}
-			if parsed {
-				interps = append(interps, in)
-			}
+	for _, r := range result.Readings() {
+		in, parsed, err := interpretation(s, cfg, r.Def, r.Label)
+		if err != nil {
+			return err
+		}
+		if parsed {
+			interps = append(interps, in)
 		}
 	}
 

@@ -849,37 +849,44 @@ func TestAmbiguousResultCarriesItsReadings(t *testing.T) {
 			t.Errorf("Detect(%q): Ambig with no AmbigKind", in)
 			continue
 		}
-		chosen, alt, ok := r.Readings()
-		if !ok {
-			t.Errorf("Detect(%q): AmbigKind %d has no readings", in, r.AmbigKind)
+		readings := r.Readings()
+		if len(readings) < 2 {
+			t.Errorf("Detect(%q): AmbigKind %d offers %d reading(s); an input that needed a "+
+				"guess has at least two", in, r.AmbigKind, len(readings))
 			continue
 		}
-		if chosen.Label == alt.Label {
-			t.Errorf("Detect(%q): both readings are labelled %q", in, chosen.Label)
-		}
-		if chosen.Def == nil || alt.Def == nil {
-			t.Errorf("Detect(%q): a reading has no format", in)
-			continue
-		}
-		if len(chosen.Def.Fields) != len(alt.Def.Fields) {
-			t.Errorf("Detect(%q): the readings describe %d and %d fields; the alternative "+
-				"reads the same bytes differently and cannot read different bytes",
-				in, len(chosen.Def.Fields), len(alt.Def.Fields))
-			continue
-		}
-		differ := 0
-		for i := range chosen.Def.Fields {
-			c, a := chosen.Def.Fields[i], alt.Def.Fields[i]
-			if c.Offset != a.Offset || c.Len != a.Len {
-				t.Errorf("Detect(%q): field %d moved between the readings, %d+%d to %d+%d",
-					in, i, c.Offset, c.Len, a.Offset, a.Len)
+		chosen := readings[0]
+		seen := map[string]bool{}
+		for _, alt := range readings {
+			if alt.Def == nil {
+				t.Errorf("Detect(%q): reading %q has no format", in, alt.Label)
+				continue
 			}
-			if c.Kind != a.Kind {
-				differ++
+			if seen[alt.Label] {
+				t.Errorf("Detect(%q): two readings are labelled %q", in, alt.Label)
 			}
-		}
-		if differ == 0 {
-			t.Errorf("Detect(%q): the two readings are the same program", in)
+			seen[alt.Label] = true
+			if len(chosen.Def.Fields) != len(alt.Def.Fields) {
+				t.Errorf("Detect(%q): the readings describe %d and %d fields; an alternative "+
+					"reads the same bytes differently and cannot read different bytes",
+					in, len(chosen.Def.Fields), len(alt.Def.Fields))
+				continue
+			}
+			differ := 0
+			for i := range chosen.Def.Fields {
+				c, a := chosen.Def.Fields[i], alt.Def.Fields[i]
+				if c.Offset != a.Offset || c.Len != a.Len {
+					t.Errorf("Detect(%q): field %d moved between the readings, %d+%d to %d+%d",
+						in, i, c.Offset, c.Len, a.Offset, a.Len)
+				}
+				if c.Kind != a.Kind {
+					differ++
+				}
+			}
+			if differ == 0 && alt.Label != chosen.Label {
+				t.Errorf("Detect(%q): readings %q and %q are the same program",
+					in, chosen.Label, alt.Label)
+			}
 		}
 	}
 }
@@ -901,8 +908,8 @@ func TestUnambiguousResultHasNoReadings(t *testing.T) {
 		if r.Ambig || r.AmbigKind != AmbigNone {
 			t.Errorf("Detect(%q): Ambig=%v AmbigKind=%d, want neither", in, r.Ambig, r.AmbigKind)
 		}
-		if _, _, ok := r.Readings(); ok {
-			t.Errorf("Detect(%q): offers two readings of an input that needed no guess", in)
+		if got := r.Readings(); got != nil {
+			t.Errorf("Detect(%q): offers %d readings of an input that needed no guess", in, len(got))
 		}
 	}
 }

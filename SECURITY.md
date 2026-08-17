@@ -341,6 +341,9 @@ copies of one reading:
 
 A caller who wrote the obvious guard, that two interpretations agreeing means
 the guess was safe to take, was worse served than one who ignored the error.
+The same guard should not assume two either: with `WithPreferYearFirst`, a date
+whose three parts are all small leaves the year's position open as well as the
+month's, and the error carries three.
 Both readings are now built from the format that was detected, by re-reading the
 one or two fields the question is about, so a label cannot disagree with the
 instant beside it. An input whose second reading does not parse, such as

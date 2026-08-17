@@ -239,14 +239,17 @@ dateparsa.ParseWith(s,
     dateparsa.WithBaseTime(t),          // Reference for relative dates
     dateparsa.WithTimezone(loc),        // Default timezone when none in input
     dateparsa.WithPreferDayFirst(true), // DD/MM/YYYY for ambiguous dates
+    dateparsa.WithPreferYearFirst(true),// YY/MM/DD for ambiguous dates
     dateparsa.WithPreferFuture(true),   // "Tuesday" = next Tuesday
     dateparsa.WithStrictMode(true),     // Reject ambiguous dates
 )
 ```
 
-`WithPreferYearFirst` exists, is accepted, and currently does nothing: no
-detector reads it, so `01/02/03` parses the same either way. It is listed here
-because the option compiles and a reader would otherwise assume it works.
+`WithPreferYearFirst` applies where the input leaves the year's position open,
+which is a date whose three parts are all small: `01/02/03` is 2001-02-03 with
+it and 2003-01-02 without. A written four-digit year wins over it, and so does a
+value the reading cannot use, so `01/13/03` keeps its year last rather than
+being refused for having no month 13.
 
 ## Supported Formats
 
@@ -282,8 +285,7 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 
 1. **Value-range check** — if one number exceeds 12, it must be the day
 2. **Separator heuristic** — dot separator (`.`) implies European DD.MM.YYYY
-3. **User preference** — `WithPreferDayFirst` (`WithPreferYearFirst` is not
-   implemented; see Options)
+3. **User preference** — `WithPreferDayFirst` / `WithPreferYearFirst`
 4. **Ambiguity flag** — `result.Ambiguous` tells you when the choice was a guess
 5. **Strict mode** — `WithStrictMode(true)` returns all interpretations as an error
 6. **No reuse of a guess** — `Parser` re-detects every row of an ambiguous
@@ -293,6 +295,12 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 Each interpretation is labelled with the reading it carries, and the labels name
 the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, and
 `MM/DD/YY` where the year is written with two digits.
+
+Most ambiguous inputs have two readings. One has three: with
+`WithPreferYearFirst`, a date whose three parts are all small leaves the year's
+position open as well as the month's, so `01/02/03` is `YY/MM/DD` 2001-02-03,
+`MM/DD/YY` 2003-01-02, or `DD/MM/YY` 2003-02-01. Strict mode returns all three,
+with the one the preferences chose first.
 
 A month name and a bare number is the other ambiguous shape, and it is reported
 the same way. `March 15` is the fifteenth of March or March 2015, because

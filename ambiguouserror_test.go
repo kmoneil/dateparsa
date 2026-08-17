@@ -160,25 +160,32 @@ func TestStrictModeInterpretationsAlwaysDiffer(t *testing.T) {
 	cases := []struct {
 		in      string
 		locales []Locale
+		extra   []Option
 	}{
-		{"01/02/2024", nil},   // numeric field order
-		{"01/02/03", nil},     // numeric field order, two-digit year
-		{"01-02-03", nil},     // same, other separator
-		{"03.02.2024", nil},   // same, and the dot heuristic decides the reading
-		{"MAY 15", nil},       // textual day or two-digit year
-		{"March 15", nil},     // same
-		{"15 March", nil},     // same, number first
-		{"MAY15", nil},        // same, no separator
-		{"December 25", nil},  // same
-		{"Mar 15 10:30", nil}, // same, with a time
-		{"mai 15", []Locale{FR}},
-		{"15 mai", []Locale{FR}},
-		{"marzo 15", []Locale{ES}},
-		{"कल", []Locale{HI}}, // a word with two meanings
+		{in: "01/02/2024"},   // numeric field order
+		{in: "01/02/03"},     // numeric field order, two-digit year
+		{in: "01-02-03"},     // same, other separator
+		{in: "03.02.2024"},   // same, and the dot heuristic decides the reading
+		{in: "MAY 15"},       // textual day or two-digit year
+		{in: "March 15"},     // same
+		{in: "15 March"},     // same, number first
+		{in: "MAY15"},        // same, no separator
+		{in: "December 25"},  // same
+		{in: "Mar 15 10:30"}, // same, with a time
+		{in: "mai 15", locales: []Locale{FR}},
+		{in: "15 mai", locales: []Locale{FR}},
+		{in: "marzo 15", locales: []Locale{ES}},
+		{in: "कल", locales: []Locale{HI}}, // a word with two meanings
+
+		// The year's position, which is the one class that offers three
+		// readings rather than two.
+		{in: "01/02/03", extra: []Option{WithPreferYearFirst(true)}},
+		{in: "25/12/01", extra: []Option{WithPreferYearFirst(true)}},
 	}
 
 	for _, c := range cases {
-		opts := []Option{WithBaseTime(base), WithLocales(c.locales...), WithStrictMode(true)}
+		opts := append([]Option{WithBaseTime(base), WithLocales(c.locales...), WithStrictMode(true)},
+			c.extra...)
 		_, err := ParseWith(c.in, opts...)
 		var ade *AmbiguousDateError
 		if !errors.As(err, &ade) {
@@ -373,6 +380,75 @@ func TestStrictModeNeedsTwoReadings(t *testing.T) {
 		}
 		if !errors.Is(err, ErrAmbiguous) {
 			t.Errorf("ParseWith(%q, strict) = %v, want an error unwrapping to ErrAmbiguous", in, err)
+		}
+	}
+}
+
+// TestStrictModeYearFirstCarriesEveryReading is C22's half of the strict-mode
+// question, which the card left open deliberately: a year-first input has three
+// honest readings where every other ambiguous input has two, and what the error
+// carries had to be decided rather than fall out.
+//
+// It carries all three. Strict mode exists to hand back what the library was
+// choosing between, and the preference chose the year-first reading against
+// both year-last orders, not against one of them.
+//
+// What it does not carry is YY/DD/MM. A format that writes the year first
+// writes ISO order after it, so the reading the option enables is year, month,
+// day, and the month-versus-day question does not arise inside it.
+func TestStrictModeYearFirstCarriesEveryReading(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		in   string
+		want map[string]string
+	}{
+		{"01/02/03", map[string]string{
+			"YY/MM/DD": "2001-02-03",
+			"MM/DD/YY": "2003-01-02",
+			"DD/MM/YY": "2003-02-01",
+		}},
+		{"01-02-03", map[string]string{
+			"YY/MM/DD": "2001-02-03",
+			"MM/DD/YY": "2003-01-02",
+			"DD/MM/YY": "2003-02-01",
+		}},
+		// 25 is not a month, so the year-last reading that would need it to be
+		// one is not offered: a reading that cannot parse the input is not one
+		// of the ones the caller is being asked about.
+		{"25/12/01", map[string]string{
+			"YY/MM/DD": "2025-12-01",
+			"DD/MM/YY": "2001-12-25",
+		}},
+	} {
+		_, err := ParseWith(tt.in, WithBaseTime(base), WithPreferYearFirst(true), WithStrictMode(true))
+		var ade *AmbiguousDateError
+		if !errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, yearFirst, strict) = %T %v, want *AmbiguousDateError", tt.in, err, err)
+			continue
+		}
+		got := map[string]string{}
+		for _, i := range ade.Interpretations {
+			got[i.Label] = i.Time.Format("2006-01-02")
+		}
+		if len(got) != len(tt.want) {
+			t.Errorf("ParseWith(%q, yearFirst, strict) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for label, want := range tt.want {
+			if got[label] != want {
+				t.Errorf("ParseWith(%q, yearFirst, strict): %s = %q, want %q", tt.in, label, got[label], want)
+			}
+		}
+		// The reading the preference chose comes first, so a caller who takes
+		// Interpretations[0] takes what the lenient path would have returned.
+		lenient, lerr := ParseWith(tt.in, WithBaseTime(base), WithPreferYearFirst(true))
+		if lerr != nil {
+			t.Errorf("ParseWith(%q, yearFirst): %v", tt.in, lerr)
+			continue
+		}
+		if !ade.Interpretations[0].Time.Equal(lenient.Time) {
+			t.Errorf("ParseWith(%q, yearFirst, strict): first interpretation is %v, but the "+
+				"lenient path returns %v", tt.in, ade.Interpretations[0].Time, lenient.Time)
 		}
 	}
 }

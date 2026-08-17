@@ -313,15 +313,24 @@ the right side of the trade.
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
 | Unix timestamp       | 80    | 1      |
-| ISO ordinal          | 122   | 3      |
+| ISO ordinal          | 122   | 2      |
 | Compact date         | 130   | 1      |
 | ISO 8601 date        | 133   | 1      |
 | SQL datetime         | 174   | 1      |
 | ISO 8601 datetime    | 177   | 1      |
 | SQL datetime + frac6 | 198   | 1      |
-| ISO week date        | 233   | 3      |
-| Ambiguous slash      | 245   | 4      |
-| Textual month        | 345   | 4      |
+| ISO week date        | 233   | 2      |
+| Ambiguous slash      | 245   | 2      |
+| Textual month        | 345   | 2      |
+
+One allocation is the `Layout` the call returns. A format the trie matches needs
+nothing else, because its fields were built at init. A format that falls through
+to a detector needs one more, holding the fields it worked out and the
+definition that describes them, and that is the whole of the second column
+above: it was four for a textual month and ten for `03/15/2024 10:30:00`, in
+scratch slices that were dead before `Parse` returned. The `ns/op` column
+predates that change and is high on the four rows whose allocation count moved,
+by 7% to 34% measured on `linux/arm64`.
 
 Eight of these ten are slower than in the baseline this replaces, by 3% to 29%.
 The cause is the range and separator checking the correctness fixes added: a

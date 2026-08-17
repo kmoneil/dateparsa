@@ -17,10 +17,13 @@ archived. Being faster than an abandoned library is a weak claim on its own,
 and the interesting content here is the shape of the difference, not the
 margin.
 
-**This is one machine and one run.** `linux/arm64`, Go 1.26.4, 10 cores,
-median of 6 runs at `-benchtime=300ms`. Every number below reproduces with
-`make bench-vs`. They are not the M2 Max figures the root README quotes and
-should not be read against them.
+**This is one machine.** `linux/arm64`, Go 1.26.4, 10 cores, `-benchtime=300ms`:
+median of 6 runs everywhere except the one-shot table, which is the median of 5
+from a later run, after the allocations that table describes were removed. The
+reuse and column tables were not re-run because that change cannot reach them,
+reuse being `Layout.Parse` and a column amortising one detection over ten
+thousand rows. Every number reproduces with `make bench-vs`. None of them are
+the M2 Max figures the root README quotes and none should be read against them.
 
 **dateparsa does not win everything.** It is behind on 7 of 16 formats when
 each value is parsed cold, and behind on the two text-shaped misses. Those
@@ -54,37 +57,42 @@ caller holding a single date. `dateparsa.Parse` against `dateparse.ParseAny`.
 
 | Format               | dateparsa | araddon |       | allocs d/a |
 | -------------------- | --------- | ------- | ----- | ---------- |
-| unix_seconds         | 87.2 ns   | 140.2   | 1.61x | 1 / 3      |
-| ISO8601_date         | 157.7 ns  | 251.4   | 1.59x | 1 / 3      |
-| RFC3339_nano         | 223.4 ns  | 342.6   | 1.53x | 1 / 3      |
-| SQL_datetime         | 191.2 ns  | 279.4   | 1.46x | 1 / 3      |
-| SQL_datetime_frac    | 203.1 ns  | 296.8   | 1.46x | 1 / 3      |
-| ISO8601_datetime     | 196.0 ns  | 283.0   | 1.44x | 1 / 3      |
-| ISO8601_datetime_Z   | 209.3 ns  | 278.2   | 1.33x | 1 / 3      |
-| compact_date         | 145.9 ns  | 189.0   | 1.30x | 1 / 5      |
-| RFC3339_offset       | 216.1 ns  | 387.9   | 1.80x | 1 / 6      |
-| **textual_month**    | 387.1 ns  | 348.1   | 0.90x | 4 / 7      |
-| **ANSIC**            | 660.3 ns  | 481.2   | 0.73x | 6 / 7      |
-| **textual_month_abbr** | 390.7 ns | 277.4  | 0.71x | 4 / 4      |
-| **US_slash**         | 263.6 ns  | 185.0   | 0.70x | 4 / 3      |
-| **day_month_year_text** | 367.9 ns | 221.8 | 0.60x | 5 / 4      |
-| **RFC1123**          | 744.5 ns  | 363.2   | 0.49x | 7 / 3      |
-| **US_slash_time**    | 585.3 ns  | 264.4   | 0.45x | 10 / 3     |
+| RFC3339_offset       | 224.9 ns  | 400.0   | 1.78x | 1 / 6      |
+| unix_seconds         | 91.0 ns   | 146.0   | 1.61x | 1 / 3      |
+| RFC3339_nano         | 229.7 ns  | 348.5   | 1.52x | 1 / 3      |
+| SQL_datetime_frac    | 210.7 ns  | 316.8   | 1.50x | 1 / 3      |
+| ISO8601_datetime     | 190.9 ns  | 278.5   | 1.46x | 1 / 3      |
+| SQL_datetime         | 191.6 ns  | 274.4   | 1.43x | 1 / 3      |
+| ISO8601_datetime_Z   | 202.7 ns  | 283.5   | 1.40x | 1 / 3      |
+| compact_date         | 149.8 ns  | 198.0   | 1.32x | 1 / 5      |
+| ISO8601_date         | 158.6 ns  | 204.3   | 1.29x | 1 / 3      |
+| **textual_month**    | 363.7 ns  | 357.8   | 0.98x | 2 / 7      |
+| **ANSIC**            | 561.3 ns  | 501.0   | 0.89x | 2 / 7      |
+| **textual_month_abbr** | 376.6 ns | 280.4  | 0.74x | 2 / 4      |
+| **US_slash**         | 269.1 ns  | 195.2   | 0.73x | 2 / 3      |
+| **day_month_year_text** | 339.8 ns | 229.8 | 0.68x | 2 / 4      |
+| **US_slash_time**    | 434.8 ns  | 275.4   | 0.63x | 2 / 3      |
+| **RFC1123**          | 632.4 ns  | 366.7   | 0.58x | 2 / 3      |
 
 Ahead on 9, behind on 7. The split is not random: everything dateparsa wins is
-a format its trie matches on a character-class signature, which costs one scan
-and one allocation. Everything it loses is a format that misses the trie and
-falls through to a fallback detector, and those allocate a `[]Field` per call.
-`US_slash_time` allocates ten times and is the worst row in the table.
+a format its trie matches on a character-class signature, whose fields were
+built at init, so the parse allocates once and that once is the `Layout` it
+hands back. Everything it loses is a format that misses the trie and is worked
+out by a detector, which needs a second allocation to hold what it worked out.
 
-Two of the losses are paid for something araddon does not do. `US_slash` and
-`US_slash_time` are `DD/MM` against `MM/DD`, and dateparsa compiles both
+**The allocation count is no longer the reason.** It was: those rows cost four
+to ten allocations each, in scratch slices dead before `Parse` returned, and
+`US_slash_time` was 0.45x rather than the 0.63x above. Removing them took 7% to
+34% off each of the seven, and dateparsa now allocates fewer times than araddon
+on every row of this table. What is left is detection work rather than memory
+work: finding a month name by scanning, classifying what surrounds it, and
+covering the bytes no field reads. That is the next thing to fix, and it is a
+different fix.
+
+Two of the seven are also paying for something araddon does not do. `US_slash`
+and `US_slash_time` are `DD/MM` against `MM/DD`, and dateparsa works out both
 readings so it can report which one it guessed; `ParseResult.Ambiguous` is that
 answer. araddon defaults to month-first and moves on.
-
-The rest, the textual and RFC1123 rows, are not paying for anything. They are
-the fallback detectors allocating, and they are where this library has work
-left.
 
 ### Reuse: the format is already known
 

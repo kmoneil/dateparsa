@@ -44,6 +44,101 @@ type Config struct {
 	Locales         []*locale.Data // Locale data for month/day name lookup
 }
 
+// maxDetectFields is how many fields a Scratch holds for one format.
+//
+// compile.MaxInstructions is the number Compile will accept, so a detector
+// producing more is producing a format that is about to be refused. Overflowing
+// the array is still correct rather than merely unlikely: the append that
+// overflows moves to the heap and the Scratch's array goes unused, which costs
+// an allocation on an input that was going to error anyway.
+const maxDetectFields = compile.MaxInstructions
+
+// scratchFields is how many fields the heap object holds inline.
+//
+// It is sized to the work rather than to the limit. The widest format any
+// detector in this file produces is 15 fields, which
+// TestFallbackFieldCountsFitTheScratch measures rather than assumes; at
+// MaxInstructions the object was 656 bytes where the separate allocations it
+// replaced came to 448, which is a poor trade for a count that was already
+// down from seven to two.
+//
+// Overflowing it is correct and not merely unlikely: the append in newResult
+// moves to the heap, the inline array goes unused, and the format costs one
+// more allocation than it needed to. That is a worse number, never a wrong
+// answer, which is why this is tuned to the measurement and not to the bound.
+const scratchFields = 16
+
+// smallScratchFields is the other size. Most fallback formats are a date and
+// nothing else and compile to five or six fields, and giving those the
+// sixteen-field object cost more than the separate allocations it replaced:
+// 528 bytes a parse against 432, and "March 15, 2024" measured slower for it
+// even while allocating one time fewer. Two sizes cover the measured
+// distribution, which is 3 to 6 fields for a bare date and 10 to 15 once a time
+// or a weekday is in the input, with nothing in between.
+const smallScratchFields = 6
+
+// maxTimeFields is the same for a time component on its own, which is an hour,
+// a minute, a second, a fraction, an am/pm and a zone, plus the literals
+// between them.
+const maxTimeFields = 12
+
+// scratch is one heap object holding everything a successful fallback detection
+// has to hand back: the FormatDef that Result points at, and the fields it
+// describes.
+//
+// The fallback detectors used to allocate those separately, and a helper each
+// for the sub-slices they built on the way, so a textual date cost four
+// allocations and "03/15/2024 10:30:00" cost ten. All of them were dead the
+// moment Compile ran, since Compile copies every field into the Program by
+// value and keeps no reference, and the only other things read off a Def are
+// two strings. That is why those formats lost to araddon on a cold parse while
+// the trie formats beat it.
+//
+// It cannot be the caller's, which was the first attempt. A slice taken from an
+// array reachable through a pointer parameter and then grown with append is
+// marked as escaping whatever the caller does with it, so a caller-owned buffer
+// bought one heap object for the buffer in place of the ones it removed, and
+// cost the trie formats an allocation they did not have. One object per
+// successful detection is what escape analysis will actually give.
+//
+// It is built at the point a detector knows it has an answer. A detector that
+// gives up allocates nothing, which matters because several of them run and
+// fail on every input that reaches the fallbacks at all.
+type scratch struct {
+	def    compile.FormatDef
+	fields [scratchFields]compile.Field
+}
+
+// smallScratch is the same thing for a format that does not need the room.
+type smallScratch struct {
+	def    compile.FormatDef
+	fields [smallScratchFields]compile.Field
+}
+
+// newResult copies fields into one heap object alongside the def that describes
+// them, and is how every fallback detector returns.
+//
+// fields is copied rather than retained, so the caller can build it in a local
+// array that never leaves its frame.
+func newResult(name, goLayout string, fields []compile.Field, ambig, prone bool) Result {
+	if len(fields) <= smallScratchFields {
+		sc := new(smallScratch)
+		sc.def = compile.FormatDef{
+			Name:     name,
+			GoLayout: goLayout,
+			Fields:   append(sc.fields[:0], fields...),
+		}
+		return Result{Def: &sc.def, Ambig: ambig, AmbigProne: prone}
+	}
+	sc := new(scratch)
+	sc.def = compile.FormatDef{
+		Name:     name,
+		GoLayout: goLayout,
+		Fields:   append(sc.fields[:0], fields...),
+	}
+	return Result{Def: &sc.def, Ambig: ambig, AmbigProne: prone}
+}
+
 // Detect analyzes a date string and returns the matching FormatDef.
 // Returns ok=false if no structured format matches.
 func Detect(s string, cfg Config) (Result, bool) {
@@ -124,12 +219,27 @@ func Detect(s string, cfg Config) (Result, bool) {
 		return Result{Def: entry.def}, true
 	}
 	// Fallback for entries without pre-built defs.
-	def := &compile.FormatDef{
-		Name:     entry.name,
-		GoLayout: entry.goLayout,
-		Fields:   entry.fields,
+	return newResult(entry.name, entry.goLayout, entry.fields, false, false), true
+}
+
+// withTimeSuffix names the format that resolveAmbiguous's date and a trailing
+// time make together.
+//
+// It was Name + "_TIME", which allocates a string on every parse of every
+// "03/15/2024 10:30:00" in a column, for one of three answers known when this
+// file was written. resolveAmbiguous produces exactly the three names below and
+// TestWithTimeSuffixCoversResolveAmbiguous holds it to them, so an unnamed
+// fourth falls back to the concatenation rather than to a wrong label.
+func withTimeSuffix(name string) string {
+	switch name {
+	case "NUMERIC_MDY":
+		return "NUMERIC_MDY_TIME"
+	case "NUMERIC_DMY":
+		return "NUMERIC_DMY_TIME"
+	case "NUMERIC_AMBIG":
+		return "NUMERIC_AMBIG_TIME"
 	}
-	return Result{Def: def}, true
+	return name + "_TIME"
 }
 
 // lit returns a one-byte literal field carrying the byte the detector checked,
@@ -152,29 +262,53 @@ func lit(s string, off int) compile.Field {
 // unlike the separators above, because nothing else parses these bytes
 // differently: "March 15; 2024" has only one reading whatever the punctuation.
 func coverGaps(fields []compile.Field, s string) []compile.Field {
-	covered := make([]bool, len(s))
+	// One bit per input byte rather than one bool, so the common case needs no
+	// heap at all: coverWords covers 256 bytes, which is every input a program
+	// can address, since Compile refuses a field past byte 255. A longer input
+	// still gets the exact same answer from a slice, because it is the answer
+	// that decides what the program describes and it may not depend on how the
+	// bookkeeping was stored.
+	//
+	// This allocated a []bool of len(s) on every call, and it is reached by
+	// every textual format and every variable-width numeric one, which is
+	// exactly the set that was losing to araddon on a cold parse.
+	var stack [coverWords]uint64
+	covered := stack[:]
+	if words := (len(s) + 63) / 64; words > coverWords {
+		covered = make([]uint64, words)
+	}
+
+	// The bit twiddling is written out rather than wrapped in a set/isSet pair.
+	// Closures over covered were the first version and they kept the array on
+	// the heap anyway: a captured local escapes unless every closure over it
+	// inlines, so the allocation this function exists to remove came back
+	// through the helpers meant to make it readable.
 	for _, f := range fields {
 		off, w := int(f.Offset), int(f.Len)
 		if fw, fixed := compile.FixedWidth(f.Kind); fixed {
 			w = fw
 		}
 		for i := off; i < off+w && i < len(s); i++ {
-			covered[i] = true
+			covered[i>>6] |= 1 << uint(i&63)
 		}
 	}
 	for i := 0; i < len(s); {
-		if covered[i] {
+		if covered[i>>6]&(1<<uint(i&63)) != 0 {
 			i++
 			continue
 		}
 		start := i
-		for i < len(s) && !covered[i] {
+		for i < len(s) && covered[i>>6]&(1<<uint(i&63)) == 0 {
 			i++
 		}
 		fields = append(fields, skip(start, i-start))
 	}
 	return fields
 }
+
+// coverWords is how many uint64 of coverage sit on the stack: 256 bits, which
+// is every byte a compiled program can address.
+const coverWords = 4
 
 // skip covers a run the format does not read and does not constrain, such as
 // the weekday name of an RFC 2822 date. It fixes the run's width without
@@ -211,8 +345,8 @@ func detectISO8601Frac(s string) (Result, bool) {
 		return Result{}, false
 	}
 
-	fields := make([]compile.Field, 0, 10)
-	fields = append(fields,
+	var buf [maxDetectFields]compile.Field
+	fields := append(buf[:0],
 		compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
 		lit(s, 4),
 		compile.Field{Kind: compile.FMonth2, Offset: 5, Len: 2},
@@ -253,8 +387,7 @@ func detectISO8601Frac(s string) (Result, bool) {
 		}
 	}
 
-	def := &compile.FormatDef{Name: "ISO8601_FRAC", Fields: fields}
-	return Result{Def: def}, true
+	return newResult("ISO8601_FRAC", "", fields, false, false), true
 }
 
 // detectGoTimeString handles Go's time.Time.String() output:
@@ -332,8 +465,7 @@ func detectGoTimeString(s string) (Result, bool) {
 		fields = append(fields, compile.Field{Kind: compile.FTail, Offset: int32(pos)})
 	}
 
-	def := &compile.FormatDef{Name: "GO_TIME_STRING", Fields: fields}
-	return Result{Def: def}, true
+	return newResult("GO_TIME_STRING", "", fields, false, false), true
 }
 
 // detectDatePlusTZ handles date + timezone offset without time:
@@ -360,8 +492,7 @@ func detectDatePlusTZ(s string) (Result, bool) {
 		{Kind: compile.FDay2, Offset: 8, Len: 2},
 		{Kind: compile.FTZOffset, Offset: 10, Len: int32(tzLen)},
 	}
-	def := &compile.FormatDef{Name: "ISO_DATE_TZ", Fields: fields}
-	return Result{Def: def}, true
+	return newResult("ISO_DATE_TZ", "", fields, false, false), true
 }
 
 // detectCJKDate handles dates with CJK ideographic characters:
@@ -405,8 +536,7 @@ func detectCJKDate(s string) (Result, bool) {
 		{Kind: compile.FDay1or2, Offset: int32(monthIdx + len("月")), Len: int32(len(dayStr))},
 		skip(dayIdx, len("日")),
 	}
-	def := &compile.FormatDef{Name: "CJK_DATE", Fields: fields}
-	return Result{Def: def}, true
+	return newResult("CJK_DATE", "", fields, false, false), true
 }
 
 // detectVariableNumeric handles numeric dates with variable-width fields:
@@ -440,7 +570,8 @@ func detectVariableNumeric(s string, cfg Config) (Result, bool) {
 	}
 	datePart := s[:dateEnd]
 
-	parts := splitOnSep(datePart, sep)
+	var partsBuf [maxDateParts]string
+	parts := splitOnSep(partsBuf[:0], datePart, sep)
 	if len(parts) < 2 || len(parts) > 3 {
 		return Result{}, false
 	}
@@ -474,27 +605,26 @@ func detectVariableNumeric(s string, cfg Config) (Result, bool) {
 		return Result{}, false
 	}
 
-	// Build the result using resolveAmbiguous on the date portion.
-	ambigResult, ok := resolveAmbiguous(datePart, cfg)
+	// Resolve the date into a local buffer rather than through
+	// resolveAmbiguous, so that a trailing time can be appended to it before
+	// anything is put on the heap.
+	var buf [maxDetectFields]compile.Field
+	name, fields, ambig, ok := resolveAmbiguousFields(buf[:0], datePart, cfg)
 	if !ok {
 		return Result{}, false
 	}
 
 	// If there's a time component after the date, parse it.
 	if dateEnd < len(s) {
-		timeFields := parseTimeComponent(s, dateEnd)
+		var tbuf [maxTimeFields]compile.Field
+		timeFields := parseTimeComponent(tbuf[:0], s, dateEnd)
 		if len(timeFields) > 0 {
-			combined := make([]compile.Field, 0, len(ambigResult.Def.Fields)+len(timeFields))
-			combined = append(combined, ambigResult.Def.Fields...)
-			combined = append(combined, timeFields...)
-			ambigResult.Def = &compile.FormatDef{
-				Name:   ambigResult.Def.Name + "_TIME",
-				Fields: coverGaps(combined, s),
-			}
+			name = withTimeSuffix(name)
+			fields = coverGaps(append(fields, timeFields...), s)
 		}
 	}
 
-	return ambigResult, true
+	return newResult(name, "", fields, ambig, true), true
 }
 
 // datePart holds a parsed component of an ambiguous date string with its position.
@@ -507,9 +637,26 @@ type datePart struct {
 // resolveAmbiguous handles DD/DD/DDDD type signatures where the format
 // could be MM/DD/YYYY or DD/MM/YYYY.
 func resolveAmbiguous(s string, cfg Config) (Result, bool) {
+	var buf [maxDetectFields]compile.Field
+	name, fields, ambig, ok := resolveAmbiguousFields(buf[:0], s, cfg)
+	if !ok {
+		return Result{}, false
+	}
+	return newResult(name, "", fields, ambig, true), true
+}
+
+// resolveAmbiguousFields is resolveAmbiguous without the heap object, for a
+// caller that has more to add before it wants one.
+//
+// detectVariableNumeric is that caller: it resolves the date and then appends a
+// time to it. Going through resolveAmbiguous made it build one object for the
+// date, overflow it with the time fields, and build a second, so
+// "03/15/2024 10:30:00" cost two allocations where it needed one and the first
+// was thrown away.
+func resolveAmbiguousFields(dst []compile.Field, s string, cfg Config) (name string, fields []compile.Field, ambig, ok bool) {
 	sep := findSep(s)
 	if sep < 0 {
-		return Result{}, false
+		return "", nil, false, false
 	}
 	sepChar := s[sep]
 
@@ -518,29 +665,30 @@ func resolveAmbiguous(s string, cfg Config) (Result, bool) {
 		cfg.PreferDayFirst = true
 	}
 
-	parts := splitOnSep(s, sepChar)
+	var partsBuf [maxDateParts]string
+	parts := splitOnSep(partsBuf[:0], s, sepChar)
 	if len(parts) < 3 {
-		return Result{}, false
+		return "", nil, false, false
 	}
 
 	first := parseSmallInt(parts[0])
 	second := parseSmallInt(parts[1])
 	third := parseSmallInt(parts[2])
 	if first < 0 || second < 0 || third < 0 {
-		return Result{}, false
+		return "", nil, false, false
 	}
 
 	monthPart, dayPart, ambig, ok := resolveYearMonthDay(parts, first, second, third, cfg)
 	if !ok {
-		return Result{}, false
+		return "", nil, false, false
 	}
 
-	fields, ok := buildDatePartFields(parts, sepChar, monthPart, dayPart)
+	fields, ok = buildDatePartFields(dst, parts, sepChar, monthPart, dayPart)
 	if !ok {
-		return Result{}, false
+		return "", nil, false, false
 	}
 
-	name := "NUMERIC_AMBIG"
+	name = "NUMERIC_AMBIG"
 	if !ambig {
 		if cfg.PreferDayFirst {
 			name = "NUMERIC_DMY"
@@ -548,8 +696,7 @@ func resolveAmbiguous(s string, cfg Config) (Result, bool) {
 			name = "NUMERIC_MDY"
 		}
 	}
-	def := &compile.FormatDef{Name: name, Fields: fields}
-	return Result{Def: def, Ambig: ambig, AmbigProne: true}, true
+	return name, fields, ambig, true
 }
 
 // resolveYearMonthDay determines which parts are year, month, and day,
@@ -636,7 +783,7 @@ func partIndex(offset int, parts []string) int {
 
 // buildDatePartFields constructs compile.Fields for a 3-part date, sorting by
 // input position and inserting literal separator fields between them.
-func buildDatePartFields(parts []string, sepChar byte, month, day datePart) ([]compile.Field, bool) {
+func buildDatePartFields(dst []compile.Field, parts []string, sepChar byte, month, day datePart) ([]compile.Field, bool) {
 	// Determine year part by elimination: whichever offset is not month or day.
 	// Both are assigned on every path below, so neither carries an initializer.
 	var yearOffset, yearLen int
@@ -729,7 +876,7 @@ func buildDatePartFields(parts []string, sepChar byte, month, day datePart) ([]c
 	if sepChar != '-' && sepChar != '/' && sepChar != '.' {
 		sepAux = 0 // not a class this knows; fall back to "not a digit"
 	}
-	fields := make([]compile.Field, 0, 8)
+	fields := dst
 	prevEnd := 0
 	for _, info := range infos {
 		if info.offset > prevEnd {
@@ -756,27 +903,23 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 	if n >= 8 && s[4] == '-' && (s[5] == 'W' || s[5] == 'w') {
 		if n == 8 && isDigit(s[6]) && isDigit(s[7]) {
 			// YYYY-Www (week only, assume day 1=Monday)
-			return Result{Def: &compile.FormatDef{
-				Name: "ISO_WEEK",
-				Fields: []compile.Field{
-					{Kind: compile.FYear4, Offset: 0, Len: 4},
-					lit(s, 4), lit(s, 5),
-					{Kind: compile.FISOWeek, Offset: 6, Len: 2},
-				},
-			}}, true
+			var buf [maxDetectFields]compile.Field
+			return newResult("ISO_WEEK", "", append(buf[:0],
+				compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+				lit(s, 4), lit(s, 5),
+				compile.Field{Kind: compile.FISOWeek, Offset: 6, Len: 2},
+			), false, false), true
 		}
 		if n == 10 && isDigit(s[6]) && isDigit(s[7]) && s[8] == '-' && isDigit(s[9]) {
 			// YYYY-Www-D
-			return Result{Def: &compile.FormatDef{
-				Name: "ISO_WEEK_DATE",
-				Fields: []compile.Field{
-					{Kind: compile.FYear4, Offset: 0, Len: 4},
-					lit(s, 4), lit(s, 5),
-					{Kind: compile.FISOWeek, Offset: 6, Len: 2},
-					lit(s, 8),
-					{Kind: compile.FISOWeekDay, Offset: 9, Len: 1},
-				},
-			}}, true
+			var buf [maxDetectFields]compile.Field
+			return newResult("ISO_WEEK_DATE", "", append(buf[:0],
+				compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+				lit(s, 4), lit(s, 5),
+				compile.Field{Kind: compile.FISOWeek, Offset: 6, Len: 2},
+				lit(s, 8),
+				compile.Field{Kind: compile.FISOWeekDay, Offset: 9, Len: 1},
+			), false, false), true
 		}
 	}
 
@@ -791,14 +934,12 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 		if d0 <= 9 && d1 <= 9 && d2 <= 9 {
 			val := int(d0)*100 + int(d1)*10 + int(d2)
 			if val >= 1 && val <= 366 {
-				return Result{Def: &compile.FormatDef{
-					Name: "ISO_ORDINAL",
-					Fields: []compile.Field{
-						{Kind: compile.FYear4, Offset: 0, Len: 4},
-						lit(s, 4),
-						{Kind: compile.FOrdinalDay, Offset: 5, Len: 3},
-					},
-				}}, true
+				var buf [maxDetectFields]compile.Field
+				return newResult("ISO_ORDINAL", "", append(buf[:0],
+					compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
+					lit(s, 4),
+					compile.Field{Kind: compile.FOrdinalDay, Offset: 5, Len: 3},
+				), false, false), true
 			}
 		}
 	}
@@ -839,8 +980,8 @@ func trimAtSuffix(s string) string {
 		return s
 	}
 	textBeforeAt := s[:atIdx]
-	numsBeforeAt := extractNumbers(textBeforeAt)
-	if len(numsBeforeAt) <= 1 || !hasFourDigitYear(textBeforeAt) {
+	numsBeforeAt, _ := countNumbers(textBeforeAt)
+	if numsBeforeAt <= 1 || !hasFourDigitYear(textBeforeAt) {
 		return textBeforeAt
 	}
 	return s
@@ -870,10 +1011,10 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	}
 
 	// Build field list from actual byte positions.
-	fields := coverGaps(buildTextualFields(s, monthNum, monthStart, monthEnd), s)
-	def := &compile.FormatDef{Name: name, Fields: fields}
+	var buf [maxDetectFields]compile.Field
+	fields := coverGaps(buildTextualFields(buf[:0], s, monthNum, monthStart, monthEnd), s)
 	prone, guess := textualDayIsAGuess(fields)
-	return Result{Def: def, Ambig: guess, AmbigProne: prone}, true
+	return newResult(name, "", fields, guess, prone), true
 }
 
 // textualDayIsAGuess reports whether the number this format read as a day could
@@ -940,27 +1081,27 @@ func classifyTextualPattern(s string, monthStart, monthEnd int) string {
 	before := strings.TrimSpace(s[:monthStart])
 	after := strings.TrimSpace(s[monthEnd:])
 
-	beforeNums := extractNumbers(before)
+	nBefore, _ := countNumbers(before)
 	afterStr := strings.TrimLeft(after, ", ")
-	afterNums := extractNumbers(trimAtSuffix(afterStr))
+	nAfter, firstAfter := countNumbers(trimAtSuffix(afterStr))
 
 	switch {
-	case len(beforeNums) == 0 && len(afterNums) >= 2:
+	case nBefore == 0 && nAfter >= 2:
 		// "March 15, 2024"
 		return "MONTH_DAY_YEAR"
 
-	case len(beforeNums) >= 1 && len(afterNums) >= 1:
+	case nBefore >= 1 && nAfter >= 1:
 		// "15 Mar 2024" or "Fri, 15 Mar 2024"
 		return "DAY_MONTH_YEAR"
 
-	case len(beforeNums) == 0 && len(afterNums) == 1:
+	case nBefore == 0 && nAfter == 1:
 		// "March 2024" (value > 31 → year) or "March 15" (value ≤ 31 → day)
-		if afterNums[0] > 31 {
+		if firstAfter > 31 {
 			return "MONTH_YEAR"
 		}
 		return "MONTH_DAY"
 
-	case len(beforeNums) == 1 && len(afterNums) == 0:
+	case nBefore == 1 && nAfter == 0:
 		// "15 March"
 		return "DAY_MONTH"
 
@@ -971,9 +1112,10 @@ func classifyTextualPattern(s string, monthStart, monthEnd int) string {
 
 // buildTextualFields constructs compile.Fields for a textual-month date string
 // by scanning the actual byte positions.
-func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []compile.Field {
+func buildTextualFields(dst []compile.Field, s string, monthNum int, monthStart, monthEnd int) []compile.Field {
 	// Use stack-allocated fixed-size arrays to avoid heap allocations.
-	fields := make([]compile.Field, 0, 10)
+	fields := dst
+	var tbuf [maxTimeFields]compile.Field
 
 	// Scan for numeric tokens in the string, skipping the month name region.
 	nums := make([]numToken, 0, 6)
@@ -1035,7 +1177,7 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 
 		// Check for time component after the date.
 		afterLast := nums[len(nums)-1].end
-		timeFields := parseTimeComponent(s, afterLast)
+		timeFields := parseTimeComponent(tbuf[:0], s, afterLast)
 		fields = append(fields, timeFields...)
 
 	case 1:
@@ -1046,14 +1188,14 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 			fields = appendDay(fields, s, n)
 		}
 		// Check for time component after the number.
-		timeFields := parseTimeComponent(s, n.end)
+		timeFields := parseTimeComponent(tbuf[:0], s, n.end)
 		fields = append(fields, timeFields...)
 
 	case 0:
 		// Month name only — unusual but valid.
 
 	default:
-		fields = appendMultiNumFields(s, nums, fields)
+		fields = appendMultiNumFields(tbuf[:0], s, nums, fields)
 	}
 
 	return fields
@@ -1061,7 +1203,7 @@ func buildTextualFields(s string, monthNum int, monthStart, monthEnd int) []comp
 
 // appendMultiNumFields handles the 3+ numeric tokens case in buildTextualFields.
 // Patterns: "day time [year]" (e.g., "Mar 15 10:30:00 2024") or "day year time".
-func appendMultiNumFields(s string, nums []numToken, fields []compile.Field) []compile.Field {
+func appendMultiNumFields(tbuf []compile.Field, s string, nums []numToken, fields []compile.Field) []compile.Field {
 	n0, n1 := nums[0], nums[1]
 
 	// Detect if nums[1:] form a time pattern (HH:MM or HH:MM:SS).
@@ -1070,7 +1212,7 @@ func appendMultiNumFields(s string, nums []numToken, fields []compile.Field) []c
 	if isTimeAtN1 && n0.value <= 31 && n1.value <= 23 {
 		// Pattern: "day time [year]", e.g. "Mar 15 10:30:00 2024"
 		fields = appendDay(fields, s, n0)
-		timeFields := parseTimeComponent(s, n0.end)
+		timeFields := parseTimeComponent(tbuf[:0], s, n0.end)
 		fields = append(fields, timeFields...)
 		if yr := findTrailingYear(nums, timeFields, n0.end); yr != nil {
 			fields = append(fields, yearField(*yr))
@@ -1089,7 +1231,7 @@ func appendMultiNumFields(s string, nums []numToken, fields []compile.Field) []c
 		fields = appendDay(fields, s, n0)
 		fields = append(fields, yearField(n1))
 	}
-	timeFields := parseTimeComponent(s, nums[1].end)
+	timeFields := parseTimeComponent(tbuf[:0], s, nums[1].end)
 	fields = append(fields, timeFields...)
 	return fields
 }
@@ -1182,7 +1324,7 @@ func dayField(n numToken) compile.Field {
 // it used to reserve up front were 256 bytes allocated, never written, and
 // returned empty. Every caller either checks the length or appends the result,
 // and appending a nil slice appends nothing.
-func parseTimeComponent(s string, from int) []compile.Field {
+func parseTimeComponent(dst []compile.Field, s string, from int) []compile.Field {
 	// Skip whitespace, punctuation, and colons to find time start.
 	// Colons appear as time separators in CLF: "2024:10:30:00".
 	i := from
@@ -1197,7 +1339,7 @@ func parseTimeComponent(s string, from int) []compile.Field {
 
 	// Find HH:MM pattern.
 	if i+5 <= len(s) && isDigit(s[i]) && isDigit(s[i+1]) && s[i+2] == ':' && isDigit(s[i+3]) && isDigit(s[i+4]) {
-		fields := make([]compile.Field, 0, 8)
+		fields := dst
 		fields = append(fields, compile.Field{Kind: compile.FHour24, Offset: int32(i), Len: 2})
 		fields = append(fields, compile.Field{Kind: compile.FMinute2, Offset: int32(i + 3), Len: 2})
 
@@ -1713,8 +1855,14 @@ func isLetter(c byte) bool {
 }
 
 // extractNumbers extracts all decimal numbers from a string.
-func extractNumbers(s string) []int {
-	var nums []int
+// countNumbers reports how many runs of digits s holds and the value of the
+// first, which is all any caller ever wanted.
+//
+// It returned a []int, built with append from nil, and every caller then read
+// its length and at most its first element. classifyTextualPattern calls it
+// twice, so a textual date paid two heap allocations to count to three. The
+// values past the first were never read by anything.
+func countNumbers(s string) (n, first int) {
 	i := 0
 	for i < len(s) {
 		if s[i] >= '0' && s[i] <= '9' {
@@ -1723,12 +1871,15 @@ func extractNumbers(s string) []int {
 				val = val*10 + int(s[i]-'0')
 				i++
 			}
-			nums = append(nums, val)
+			if n == 0 {
+				first = val
+			}
+			n++
 		} else {
 			i++
 		}
 	}
-	return nums
+	return n, first
 }
 
 // hasFourDigitYear checks if a string contains a 4-digit number (likely a year).
@@ -1759,18 +1910,31 @@ func findSep(s string) int {
 	return -1
 }
 
-func splitOnSep(s string, sep byte) []string {
-	var parts []string
+// splitOnSep appends the sep-separated parts of s to dst and returns it.
+//
+// dst is caller-owned so the parts can live in the caller's frame. It built its
+// own slice with append, which grew from nil and cost two allocations on every
+// numeric date that reached it, for a result never longer than the four parts
+// maxDateParts allows and discarded before the function returned. A caller that
+// hands in a short array gets the same answer with no heap.
+//
+// Nothing is dropped when there are more parts than dst holds: append grows it,
+// on the heap, exactly as before. The array is a fast path and not a limit.
+func splitOnSep(dst []string, s string, sep byte) []string {
 	start := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] == sep {
-			parts = append(parts, s[start:i])
+			dst = append(dst, s[start:i])
 			start = i + 1
 		}
 	}
-	parts = append(parts, s[start:])
-	return parts
+	return append(dst, s[start:])
 }
+
+// maxDateParts is the array a caller of splitOnSep puts on its stack. Three is
+// what a date has; the fourth is headroom so a malformed input with an extra
+// separator does not reach the heap either.
+const maxDateParts = 4
 
 func parseSmallInt(s string) int {
 	if len(s) == 0 || len(s) > 4 {

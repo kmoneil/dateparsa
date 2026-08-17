@@ -852,6 +852,36 @@ func getLocaleWords(loc *locale.Data) *localeWords {
 	return words
 }
 
+// tokenCap is the capacity ScanLocale reserves for an input of n bytes.
+//
+// A flat 6, which is what Scan reserves, is the obvious version and it over-
+// reserves badly at the short end: a one-word expression keeps six tokens and
+// throws five away, measured at +62.86% B/op on Parse_Locale_FrenchNL. n bounds
+// it, because a token is at least one byte and two tokens need a separator
+// between them, so (n+1)/2 is the most any input can produce.
+//
+// The bound is not tight and does not need to be. "hier" is four bytes and one
+// token, so this reserves two and wastes one, which is +96 B/op on that same
+// benchmark against no hint at all. One Token is 96 bytes and one allocation
+// either way; the nine allocations this removes from a three-locale miss are
+// the point, and a bound that fits exactly would cost a pass over the input to
+// find.
+//
+// It is arithmetic on a length the caller already holds, not a pass over the
+// input. A prototype that counted the runs instead was measurably slower and
+// removed exactly the same allocations, because what costs anything here is the
+// number of reallocations and not how tightly the first one fits.
+//
+// Scan keeps its flat 6. The same bound applied there costs +7.38% on
+// Parse_NL_Yesterday to save 64 bytes, which is the wrong side of the trade on
+// the path every English expression takes.
+func tokenCap(n int) int {
+	if c := (n + 1) / 2; c < 6 {
+		return c
+	}
+	return 6
+}
+
 // ScanLocale tokenizes a natural language date string using locale-specific keywords.
 func ScanLocale(s string, loc *locale.Data) []Token {
 	if loc == nil {
@@ -863,9 +893,15 @@ func ScanLocale(s string, loc *locale.Data) []Token {
 	lower = foldAccents(lower)
 
 	words := getLocaleWords(loc)
-	var tokens []Token
+	// This function is otherwise Scan's copy for a locale's phrase table, and
+	// it had no capacity hint where Scan has one. Growing from nil reallocated
+	// at 1, 2, 4 and 8, once per configured locale, for an input that is about
+	// to fail all of them: runtime.growslice was 13.22% of
+	// BenchmarkParse_Miss_Locales and every call to it came from the append
+	// below.
 	i := 0
 	n := len(lower)
+	tokens := make([]Token, 0, tokenCap(n))
 
 	for i < n {
 		// Skip whitespace and commas.

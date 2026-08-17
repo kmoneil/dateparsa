@@ -2,8 +2,12 @@ package flextime
 
 import (
 	"database/sql/driver"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/kmoneil/dateparsa"
 )
 
 func TestScanTimeTime(t *testing.T) {
@@ -221,6 +225,45 @@ func TestValue(t *testing.T) {
 				if !tv.Equal(tt.ft.Time()) {
 					t.Errorf("Value() = %v, want %v", tv, tt.ft.Time())
 				}
+			}
+		})
+	}
+}
+
+// TestErrorMessagesDoNotRepeatTheInput covers every entry point that takes a
+// string from outside and hands the failure back.
+//
+// Each of these wrapped a dateparsa error that already quoted the input with a
+// second %q of the same string, so a megabyte in produced a 2,097,231-byte
+// message where the library's own was 1,048,628. The library bounds its half
+// now; a wrapper that quotes the input again puts the whole thing back.
+func TestErrorMessagesDoNotRepeatTheInput(t *testing.T) {
+	const big = 1 << 20
+	input := strings.Repeat("x", big)
+
+	var ft FlexTime
+	sc := NewScanner()
+
+	entries := []struct {
+		name string
+		err  func() error
+	}{
+		{"Scan", func() error { return ft.Scan(input) }},
+		{"UnmarshalText", func() error { return ft.UnmarshalText([]byte(input)) }},
+		{"UnmarshalJSON", func() error { return ft.UnmarshalJSON([]byte(`"` + input + `"`)) }},
+		{"Scanner.Scan", func() error { return sc.Scan(&ft, input) }},
+	}
+	for _, e := range entries {
+		t.Run(e.name, func(t *testing.T) {
+			err := e.err()
+			if err == nil {
+				t.Fatal("expected an error for a megabyte of junk")
+			}
+			if n := len(err.Error()); n > 512 {
+				t.Errorf("error is %d bytes for a %d-byte input, want <= 512", n, big)
+			}
+			if !errors.Is(err, dateparsa.ErrNoMatch) {
+				t.Errorf("errors.Is(err, ErrNoMatch) = false; the wrapper stopped wrapping: %v", err)
 			}
 		})
 	}

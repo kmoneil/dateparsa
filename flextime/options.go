@@ -181,7 +181,7 @@ func (s *Scanner) scanString(ft *FlexTime, str string) error {
 		// result and no error. That is reachable now rather than merely
 		// shapely, because strict mode changes what Parse *refuses* and not
 		// only what it returns.
-		return fmt.Errorf("flextime: cannot scan %q: %w", str, err)
+		return fmt.Errorf("flextime: %w", err)
 	}
 	ft.set(result.Time, true, result.Ambiguous)
 	return nil

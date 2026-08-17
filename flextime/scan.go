@@ -76,7 +76,10 @@ func (ft *FlexTime) scanString(s string) error {
 	}
 	result, err := dateparsa.Parse(s)
 	if err != nil {
-		return fmt.Errorf("flextime: cannot parse %q: %w", s, err)
+		// Name the boundary and nothing else. The wrapped error already quotes
+		// the input, bounded, and repeating it here doubled the length of an
+		// error message over an input that is assumed hostile.
+		return fmt.Errorf("flextime: %w", err)
 	}
 	ft.set(result.Time, true, result.Ambiguous)
 	return nil

@@ -41,7 +41,7 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 		}
 		result, err := dateparsa.Parse(s)
 		if err != nil {
-			return fmt.Errorf("flextime: cannot parse %q: %w", s, err)
+			return fmt.Errorf("flextime: %w", err)
 		}
 		ft.set(result.Time, true, result.Ambiguous)
 		return nil

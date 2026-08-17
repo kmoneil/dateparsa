@@ -249,6 +249,19 @@ are single bytes, and the compiler refuses a format with a field past what they
 hold rather than narrowing it. Before that check, a field at offset 260 read
 byte 4.
 
+**Trailing content after a Go time string is at most 64 bytes, and is one zone
+name and one clock reading.** `compile.ValidTail` describes what
+`time.Time.String` writes after the numeric offset, and `OpTail` is the one
+field whose width is whatever is left, so it was the one place an input's length
+was not bounded by what a program can describe. Before it,
+`"2024-03-15 10:30:00 +0000 UTC"` followed by a megabyte of anything was a date,
+and so was the same line followed by `"; DROP TABLE users"`. The instant was
+right; the acceptance was not, and a caller using `Parse` to decide whether a
+field is a date got yes for a megabyte of prose with a timestamp on the front.
+
+The 64 is measured: 33 bytes for the longest tzdata zone name and 24 for the
+widest monotonic reading, `" m=+9223372036.854775807"`.
+
 **A fractional second is at most nine digits.** `compile.MaxFracDigits` is 9,
 which is what a nanosecond holds, and a field wider than that is **refused** at
 detection rather than truncated at execution. `parseFracSec` is inlined into both

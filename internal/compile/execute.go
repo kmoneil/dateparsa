@@ -579,6 +579,18 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			// by GO_TIME_STRING, whose trailing zone name and monotonic clock
 			// suffix ("m=+0.000000001") no fixed-width program can describe.
 			// Everything that decides the instant has already been read.
+			//
+			// Ignored, but not unbounded. This is the one field whose width is
+			// whatever is left, so it was the one place an input's length was
+			// not bounded by what a program can describe:
+			// "2024-03-15 10:30:00 +0000 UTC" followed by a megabyte of
+			// anything parsed, and so did the same line followed by
+			// "; DROP TABLE users". The instant was right and the acceptance
+			// was not, and a caller asking Parse whether a field is a date got
+			// yes for a megabyte of prose with a timestamp on the front.
+			if !ValidTail(s[off:]) {
+				return time.Time{}, fieldError("trailing content", off, slen)
+			}
 			w = slen - off
 
 		case OpNop:
@@ -692,6 +704,89 @@ func parse4Digits(s string, off int) (int, bool) {
 		return 0, false
 	}
 	return int(d0)*1000 + int(d1)*100 + int(d2)*10 + int(d3), true
+}
+
+// MaxTailLen is the widest OpTail this package will execute, which bounds the
+// trailing text a Go time string may carry after its numeric offset.
+//
+// Measured rather than chosen. Go's String() writes the zone name and then an
+// optional monotonic reading, and the widest each can be is
+//
+//	" America/Argentina/ComodRivadavia"   33, the longest tzdata zone name
+//	" m=+9223372036.854775807"            24, the monotonic clock at int64
+//
+// which is 57 together. Real zone names are far shorter: every zone measured
+// prints four to six bytes, "UTC", "CEST" and "+0545" among them, and the
+// monotonic reading of a fresh process is fifteen. 64 leaves room and refuses a
+// megabyte.
+//
+// Exported because detect refuses the same length at detection, so that Detect
+// and Layout.Parse agree about what the format is. One constant read from both
+// places, as with MaxFracDigits below.
+const MaxTailLen = 64
+
+// ValidTail reports whether t is trailing content a Go time string may carry
+// after its numeric offset.
+//
+// The shape, which is what time.Time.String writes and nothing else:
+//
+//	" UTC"                          a zone abbreviation
+//	" +0545"                        a numeric one, which Kathmandu prints
+//	" Europe/Berlin"                whatever name a FixedZone was given
+//	" UTC m=+0.003691376"           with the monotonic clock reading
+//	" m=+9223372036.854775807"      the widest that reading can be
+//
+// So: at most two space-separated pieces, and the second begins "m=". That
+// accepts every string Go writes and refuses
+// "2024-03-15 10:30:00 +0000 UTC ; DROP TABLE users", which parsed here as a
+// date because the tail was ignored rather than described.
+//
+// The length bound comes with it. 33 is the longest tzdata zone name,
+// "America/Argentina/ComodRivadavia", and 24 the widest monotonic reading, so
+// 64 leaves room over the 57 those need together and refuses a megabyte. The
+// tail was the one field whose width was whatever was left, which made it the
+// one place an input's length was not bounded by what a program can describe.
+//
+// Called from the executor, so that a reused layout refuses what detection
+// would have refused, and from detectGoTimeString, so that Detect and
+// Layout.Parse agree about what the format is.
+func ValidTail(t string) bool {
+	if len(t) > MaxTailLen {
+		return false
+	}
+	if t == "" {
+		return true
+	}
+	if t[0] != ' ' {
+		return false
+	}
+	rest := t[1:]
+	// The zone piece, which runs to the next space or to the end.
+	i := 0
+	for i < len(rest) && rest[i] != ' ' {
+		i++
+	}
+	if i == 0 {
+		return false // two spaces in a row is not a zone name
+	}
+	if i == len(rest) {
+		return true
+	}
+	// Whatever is left has to be the monotonic reading, which is one piece and
+	// starts "m=". Its digits are not checked here: a program that has read the
+	// instant is not made more correct by validating a clock reading it ignores.
+	mono := rest[i+1:]
+	if len(mono) < 3 || mono[0] != 'm' || mono[1] != '=' {
+		return false
+	}
+	for j := 2; j < len(mono); j++ {
+		c := mono[j]
+		if c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // MaxFracDigits is how many fractional digits a nanosecond holds, and therefore

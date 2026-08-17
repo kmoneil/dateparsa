@@ -1728,3 +1728,94 @@ func TestSeparatorClassIsDeliberatelyWide(t *testing.T) {
 		}
 	}
 }
+
+// TestGoTimeStringTailIsBounded is W16.
+//
+// OpTail is the one field whose width is whatever is left, because a Go time
+// string ends with a zone name and an optional monotonic reading and no
+// fixed-width program describes those. Whatever is left was unbounded, so
+// "2024-03-15 10:30:00 +0000 UTC" followed by a megabyte of anything was a
+// date, and so was the same line followed by "; DROP TABLE users". The instant
+// was right and the acceptance was not: a caller using Parse to answer "is this
+// field a date" got yes for a megabyte of prose with a timestamp on the front.
+func TestGoTimeStringTailIsBounded(t *testing.T) {
+	const stem = "2024-03-15 10:30:00 +0000 UTC"
+
+	// What Go itself writes. Every one of these has to keep parsing.
+	for _, in := range []string{
+		stem,
+		stem + " m=+0.000000001",
+		stem + " m=+9223372036.854775807", // the monotonic clock at int64
+		"2024-03-15 10:30:00.123456789 +0545 +0545",    // Kathmandu, a numeric abbreviation
+		"2024-07-15 10:30:00 +0200 CEST",               //
+		"2024-03-15 10:30:00 +0000 UTC m=+0.003691376", // what time.Now() prints
+	} {
+		r, err := Parse(in)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", in, err)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02T15:04:05"); got != "2024-03-15T10:30:00" &&
+			got != "2024-07-15T10:30:00" {
+			t.Errorf("Parse(%q) = %s", in, got)
+		}
+	}
+
+	// And what nobody writes.
+	for _, suffix := range []string{
+		" ; DROP TABLE users",
+		" and then some entirely different sentence about something else",
+		strings.Repeat("x", 1<<20),
+		" " + strings.Repeat("z", 64),
+	} {
+		if _, err := Parse(stem + suffix); err == nil {
+			t.Errorf("Parse(%q + %d bytes) returned no error", stem, len(suffix))
+		}
+	}
+
+	// The boundary, from both sides, so that the constant is pinned and not
+	// merely large. The tail is everything after the numeric offset, so it
+	// starts at the space before the zone name and a zone name of 63 bytes
+	// makes a tail of 64.
+	head := "2024-03-15 10:30:00 +0000"
+	for _, n := range []int{1, 62, 63} {
+		if _, err := Parse(head + " " + strings.Repeat("x", n)); err != nil {
+			t.Errorf("Parse with a %d-byte tail: %v", n+1, err)
+		}
+	}
+	if _, err := Parse(head + " " + strings.Repeat("x", 64)); err == nil {
+		t.Error("Parse with a 65-byte tail returned no error")
+	}
+
+	// The shape, which is what makes the bound worth having. A tail is a zone
+	// name and at most one more piece, and that piece is the monotonic clock.
+	for _, tail := range []string{
+		" UTC", " +0545", " Europe/Berlin", " UTC m=+0.003691376",
+		" m=+9223372036.854775807", "",
+	} {
+		if _, err := Parse(head + tail); err != nil {
+			t.Errorf("Parse(%q): %v; that is a tail Go writes", head+tail, err)
+		}
+	}
+	for _, tail := range []string{
+		" UTC ; DROP TABLE users", " UTC user=bob action=delete", " UTC 2025-01-01",
+		" UTC and then a sentence", "UTC", " UTC  m=+1", " UTC m+1", " UTC x=1",
+	} {
+		if _, err := Parse(head + tail); err == nil {
+			t.Errorf("Parse(%q) returned no error; nothing writes that", head+tail)
+		}
+	}
+
+	// A layout has to refuse it too, not only the detecting call: the layout is
+	// what a caller keeps for the rest of their column.
+	lay, err := Detect(stem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lay.Parse(stem + strings.Repeat("x", 1<<10)); err == nil {
+		t.Error("Layout.Parse accepted a 1 KiB tail")
+	}
+	if _, err := lay.Parse(stem + " m=+0.000000001"); err != nil {
+		t.Errorf("Layout.Parse(monotonic): %v", err)
+	}
+}

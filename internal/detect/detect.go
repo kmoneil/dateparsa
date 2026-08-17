@@ -798,7 +798,17 @@ func detectGoTimeString(s string) (Result, bool) {
 	// ignored: the offset above already fixes the instant. FTail records that
 	// as a decision the program carries, rather than leaving it to the
 	// executor not to check.
+	//
+	// Described by compile.ValidTail, which it was not. Everything else this
+	// library detects is bounded by what a program can describe, because a
+	// field cannot start past byte 255 or run longer than 255; the tail was the
+	// exception, so "2024-03-15 10:30:00 +0000 UTC" followed by a megabyte of
+	// anything was a date. Refused here as well as in the executor so that
+	// Detect and Layout.Parse agree about what the format is.
 	if pos < n {
+		if !compile.ValidTail(s[pos:]) {
+			return Result{}, false
+		}
 		fields = append(fields, compile.Field{Kind: compile.FTail, Offset: int32(pos)})
 	}
 

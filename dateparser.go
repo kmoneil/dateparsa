@@ -115,7 +115,7 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 	}
 
 	if cfg.strictMode && result.Ambig {
-		return ParseResult{}, buildAmbiguousError(s, cfg)
+		return ParseResult{}, buildAmbiguousError(s, cfg, result)
 	}
 
 	// The base year is compiled into the program rather than patched onto the
@@ -210,91 +210,45 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 // and the word that produced each does not: "कल" is the label for both.
 const nlLabelFormat = "2006-01-02"
 
-// buildAmbiguousError re-reads the input both ways round and returns the pair.
+// buildAmbiguousError returns the readings strict mode refused to choose
+// between, as an *AmbiguousDateError carrying one Interpretation each.
 //
-// The two Configs below are cfg's fields and not a fresh set. They used to name
-// PreferDayFirst and Timezone only, which dropped the caller's Locales, and a
-// locale month name is not findable without them: both re-detections failed,
-// interps came back empty, and the function fell through to the "ambiguous date
-// could not be interpreted" ParseError at the bottom. So strict mode did not
-// refuse to guess about "mai 15", it failed to parse it, while the lenient path
-// read it and reported the guess:
+// It used to read the input twice itself, once with PreferDayFirst false and
+// once with it true, and label the two answers MM/DD/YYYY and DD/MM/YYYY. That
+// works only for an input whose ambiguity is the field order and whose format
+// consults the preference, and two of the three heuristics ahead of that
+// preference can overrule it. detect.Result.Readings is where the pair is built
+// now, out of the format already detected; its doc comment has the two shapes
+// this got wrong.
 //
-//	ParseWith("mai 15", WithLocales(FR))                     2026-05-15, Ambiguous
-//	ParseWith("mai 15", WithLocales(FR), WithStrictMode(true)) *ParseError
+// What is left here is the caller's half: compile each reading, read the input
+// with it, and keep the ones that parse. A reading that does not parse is not
+// one of the ones the caller is being asked about, and fewer than two of them
+// leaves nothing to choose between, so the ErrAmbiguous ParseError stands in
+// exactly where it did before.
 //
-// A caller who took SECURITY.md's advice and turned strict mode on for a trust
-// boundary lost the ability to parse non-English textual dates at all, and got an
-// error saying the date could not be interpreted about an input that could.
-//
-// PreferYearFirst went the same way and is carried for the same reason. No input
-// on the board reaches it today, because the formats that consult it are not the
-// formats that arrive here ambiguous, and it is carried rather than left out
-// because "the caller's preferences, minus the two somebody remembered" is not a
-// rule anybody can hold in their head.
-func buildAmbiguousError(s string, cfg config) error {
-	// Build both interpretations (MDY and DMY).
+// The base year and the timezone come from cfg because the readings are the
+// caller's readings. "March 15" has no year field on either reading, and the
+// pair is only comparable if both take the same base.
+func buildAmbiguousError(s string, cfg config, result detect.Result) error {
 	var interps []Interpretation
-
-	// MDY interpretation.
-	mdyDcfg := detect.Config{
-		PreferDayFirst:  false,
-		PreferYearFirst: cfg.preferYearFirst,
-		Timezone:        cfg.timezone,
-		Locales:         localeDataFromConfig(cfg),
-	}
-	if mdyResult, ok := detect.Detect(s, mdyDcfg); ok {
-		prog, needsBaseYear, cerr := compile.Compile(mdyResult.Def, cfg.timezone)
-		if cerr != nil {
-			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
-		}
-		if needsBaseYear {
-			by, ok := baseYear(cfg)
-			if !ok {
-				return baseYearError(s, cfg)
+	if chosen, alt, ok := result.Readings(); ok {
+		for _, r := range [2]detect.Reading{chosen, alt} {
+			in, parsed, err := interpretation(s, cfg, r.Def, r.Label)
+			if err != nil {
+				return err
 			}
-			prog.BaseYear = by
-		}
-		t, err := prog.Execute(s)
-		if err == nil {
-			interps = append(interps, Interpretation{
-				Time:   t,
-				Layout: &Layout{program: prog, label: "MM/DD/YYYY"},
-				Label:  "MM/DD/YYYY",
-			})
-		}
-	}
-
-	// DMY interpretation.
-	dmyDcfg := detect.Config{
-		PreferDayFirst:  true,
-		PreferYearFirst: cfg.preferYearFirst,
-		Timezone:        cfg.timezone,
-		Locales:         localeDataFromConfig(cfg),
-	}
-	if dmyResult, ok := detect.Detect(s, dmyDcfg); ok {
-		prog, needsBaseYear, cerr := compile.Compile(dmyResult.Def, cfg.timezone)
-		if cerr != nil {
-			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
-		}
-		if needsBaseYear {
-			by, ok := baseYear(cfg)
-			if !ok {
-				return baseYearError(s, cfg)
+			if parsed {
+				interps = append(interps, in)
 			}
-			prog.BaseYear = by
-		}
-		t, err := prog.Execute(s)
-		if err == nil {
-			interps = append(interps, Interpretation{
-				Time:   t,
-				Layout: &Layout{program: prog, label: "DD/MM/YYYY"},
-				Label:  "DD/MM/YYYY",
-			})
 		}
 	}
 
-	if len(interps) == 0 {
+	// One reading is not a choice. "March 00" is the case: the day reading is
+	// not a date and only the year one parses, and an *AmbiguousDateError
+	// holding it would offer strict mode's caller a value the lenient path
+	// refuses outright.
+	if len(interps) < 2 {
 		return &ParseError{
 			Input:   s,
 			Message: "ambiguous date could not be interpreted",
@@ -305,6 +259,36 @@ func buildAmbiguousError(s string, cfg config) error {
 		Input:           s,
 		Interpretations: interps,
 	}
+}
+
+// interpretation compiles def and reads s with it.
+//
+// ok is false when the format does not read this input, which is not an error:
+// a reading that cannot parse the input is not one of the ones the caller is
+// being asked to choose between, and the other reading may still be. The error
+// return is for the two failures that belong to the call rather than to the
+// reading, a program that will not compile and a base year that will not fit.
+func interpretation(s string, cfg config, def *compile.FormatDef, label string) (Interpretation, bool, error) {
+	prog, needsBaseYear, err := compile.Compile(def, cfg.timezone)
+	if err != nil {
+		return Interpretation{}, false, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+	}
+	if needsBaseYear {
+		by, ok := baseYear(cfg)
+		if !ok {
+			return Interpretation{}, false, baseYearError(s, cfg)
+		}
+		prog.BaseYear = by
+	}
+	t, err := prog.Execute(s)
+	if err != nil {
+		return Interpretation{}, false, nil
+	}
+	return Interpretation{
+		Time:   t,
+		Layout: &Layout{program: prog, label: label},
+		Label:  label,
+	}, true, nil
 }
 
 // baseYear is the year a format carrying no year field takes, for example

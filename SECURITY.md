@@ -267,6 +267,31 @@ so the application decides. **If you are parsing dates that cross a trust
 boundary and a wrong day has consequences, use strict mode.** The default exists
 for convenience, not for safety.
 
+**Every interpretation names the reading it carries.** That is the half of the
+promise above that was not kept until 2026-08-17. The error was built by
+detecting the input a second time with the day-first preference flipped, and two
+of the three heuristics ahead of that preference can overrule it, so for two
+whole shapes both detections came back the same and the caller was handed two
+copies of one reading:
+
+- A month name and a number. `ParseWith("March 15", WithStrictMode(true))`
+  returned the fifteenth of March twice, labelled `MM/DD/YYYY` and `DD/MM/YYYY`
+  for an input that is not a numeric date, and the reading it was choosing
+  between, March 2015, was not in the error at all.
+- A dot-separated date, where the separator forces day-first.
+  `ParseWith("03.02.2024", WithStrictMode(true))` returned the third of February
+  twice, and one copy was labelled `MM/DD/YYYY`, which reads as the second of
+  March. A caller filtering the interpretations by label got a European reading
+  under an American label.
+
+A caller who wrote the obvious guard, that two interpretations agreeing means
+the guess was safe to take, was worse served than one who ignored the error.
+Both readings are now built from the format that was detected, by re-reading the
+one or two fields the question is about, so a label cannot disagree with the
+instant beside it. An input whose second reading does not parse, such as
+`March 00`, is refused rather than returned as a single interpretation: strict
+mode may refuse more than the lenient path and never accepts more.
+
 **A word can be ambiguous as well as a number.** Hindi writes both yesterday and
 tomorrow as `कल` and tells them apart with the verb, which a date string does not
 have. That word now reports `Ambiguous` and refuses under strict mode with both

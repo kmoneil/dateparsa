@@ -819,3 +819,116 @@ func TestLitClassOfIsComplete(t *testing.T) {
 		}
 	}
 }
+
+// TestAmbiguousResultCarriesItsReadings is the invariant at the layer that sets
+// the flag: a detector that says this input needed a guess has to say which
+// guess, and that kind has to be able to produce both readings.
+//
+// Ambig without a kind is what strict mode cannot do anything with. It used to
+// answer every ambiguity by detecting again with PreferDayFirst flipped, which
+// is a preference the textual detector does not read and the dot heuristic
+// overrules, so two of the shapes below came back as two copies of one reading.
+func TestAmbiguousResultCarriesItsReadings(t *testing.T) {
+	inputs := []string{
+		"01/02/2024", "01/02/03", "01-02-03", "03.02.2024", "1/2/2024",
+		"01/02/2024 10:30:00",
+		"March 15", "MAY 15", "MAY15", "15 March", "December 25",
+		"Mar 15 10:30:00", "Sept 09",
+	}
+	for _, in := range inputs {
+		r, ok := Detect(in, Config{})
+		if !ok {
+			t.Errorf("Detect(%q) found no format", in)
+			continue
+		}
+		if !r.Ambig {
+			t.Errorf("test premise gone: Detect(%q) is no longer ambiguous", in)
+			continue
+		}
+		if r.AmbigKind == AmbigNone {
+			t.Errorf("Detect(%q): Ambig with no AmbigKind", in)
+			continue
+		}
+		chosen, alt, ok := r.Readings()
+		if !ok {
+			t.Errorf("Detect(%q): AmbigKind %d has no readings", in, r.AmbigKind)
+			continue
+		}
+		if chosen.Label == alt.Label {
+			t.Errorf("Detect(%q): both readings are labelled %q", in, chosen.Label)
+		}
+		if chosen.Def == nil || alt.Def == nil {
+			t.Errorf("Detect(%q): a reading has no format", in)
+			continue
+		}
+		if len(chosen.Def.Fields) != len(alt.Def.Fields) {
+			t.Errorf("Detect(%q): the readings describe %d and %d fields; the alternative "+
+				"reads the same bytes differently and cannot read different bytes",
+				in, len(chosen.Def.Fields), len(alt.Def.Fields))
+			continue
+		}
+		differ := 0
+		for i := range chosen.Def.Fields {
+			c, a := chosen.Def.Fields[i], alt.Def.Fields[i]
+			if c.Offset != a.Offset || c.Len != a.Len {
+				t.Errorf("Detect(%q): field %d moved between the readings, %d+%d to %d+%d",
+					in, i, c.Offset, c.Len, a.Offset, a.Len)
+			}
+			if c.Kind != a.Kind {
+				differ++
+			}
+		}
+		if differ == 0 {
+			t.Errorf("Detect(%q): the two readings are the same program", in)
+		}
+	}
+}
+
+// TestUnambiguousResultHasNoReadings is the other side of it. An input that
+// needed no guess has nothing to choose between, and Readings must not invent a
+// second answer for one.
+func TestUnambiguousResultHasNoReadings(t *testing.T) {
+	inputs := []string{
+		"2024-03-15", "13/01/2024", "March 15, 2024", "March 2024", "March 32",
+		"MAY70", "March 5", "March 15th", "15th March", "2024-03-15T10:30:00Z",
+	}
+	for _, in := range inputs {
+		r, ok := Detect(in, Config{})
+		if !ok {
+			t.Errorf("Detect(%q) found no format", in)
+			continue
+		}
+		if r.Ambig || r.AmbigKind != AmbigNone {
+			t.Errorf("Detect(%q): Ambig=%v AmbigKind=%d, want neither", in, r.Ambig, r.AmbigKind)
+		}
+		if _, _, ok := r.Readings(); ok {
+			t.Errorf("Detect(%q): offers two readings of an input that needed no guess", in)
+		}
+	}
+}
+
+// TestOrdinalSuffixEndsTheDayOrYearQuestion pins the shape that has one reading
+// only. "March 15th" is the fifteenth: no year is written "15th", so the number
+// is not a two-digit year and the format cannot take one either, which is why
+// AmbigProne goes with the flag rather than staying behind.
+func TestOrdinalSuffixEndsTheDayOrYearQuestion(t *testing.T) {
+	for _, in := range []string{"March 15th", "MAY 15th", "15th March", "December 25th", "March 1st"} {
+		r, ok := Detect(in, Config{})
+		if !ok {
+			t.Errorf("Detect(%q) found no format", in)
+			continue
+		}
+		if r.Ambig || r.AmbigProne {
+			t.Errorf("Detect(%q): Ambig=%v AmbigProne=%v, want neither: an ordinal suffix "+
+				"is a day and every input this layout accepts carries one", in, r.Ambig, r.AmbigProne)
+		}
+	}
+	// Without the suffix the same shapes are a guess, so the test above is not
+	// passing because the inputs stopped being detected.
+	for _, in := range []string{"March 15", "MAY 15", "15 March", "December 25"} {
+		r, ok := Detect(in, Config{})
+		if !ok || !r.Ambig {
+			t.Errorf("test premise gone: Detect(%q) ok=%v Ambig=%v", in, ok, r.Ambig)
+		}
+	}
+}

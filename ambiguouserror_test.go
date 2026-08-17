@@ -3,6 +3,7 @@ package dateparsa
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestStrictModeCarriesTheCallerConfig is C21 half two.
@@ -88,39 +89,290 @@ func TestStrictModeNumericStillCarriesBothReadings(t *testing.T) {
 	}
 }
 
-// TestStrictModeTextualInterpretationsAreStillWrong records C21 half one, which is
-// open, and pins the current behaviour so that fixing it is a visible change rather
-// than a silent one.
+// TestStrictModeTextualCarriesTheYearReading is C21 half one.
 //
-// "MAY 15" is ambiguous because 15 could be the day or the year 2015, which is what
-// textualDayIsAGuess decides. The error offers two interpretations that are the same
-// instant, under labels naming a numeric format the input is not, and the reading it
-// is actually choosing between is not among them. A caller checking whether the two
-// readings agree concludes the guess was safe and takes it.
+// "MAY 15" is ambiguous because 15 could be the fifteenth of May or the year 2015,
+// which is what textualDayIsAGuess decides. The error used to offer two
+// interpretations that were the same instant, under labels naming a numeric format
+// the input is not, and the reading it was really choosing between was not among
+// them. A caller checking whether the two readings agree concluded the guess was
+// safe and took it.
 //
-// The assertion is deliberately "these are equal", so it FAILS when half one lands.
-// That is the point: read this comment, delete the test, and put the real assertion
-// in TestStrictModeNumericStillCarriesBothReadings's shape beside it.
-func TestStrictModeTextualInterpretationsAreStillWrong(t *testing.T) {
-	_, err := ParseWith("MAY 15", WithStrictMode(true))
-	var ade *AmbiguousDateError
-	if !errors.As(err, &ade) {
-		t.Fatalf("want *AmbiguousDateError, got %T %v", err, err)
+// This replaces TestStrictModeTextualInterpretationsAreStillWrong, which pinned that
+// behaviour and was written to fail when it was fixed.
+func TestStrictModeTextualCarriesTheYearReading(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in        string
+		locales   []Locale
+		dayLabel  string
+		dayTime   string
+		yearLabel string
+		yearTime  string
+	}{
+		{"MAY 15", nil, "MONTH_DAY", "2026-05-15", "MONTH_YEAR", "2015-05-01"},
+		{"March 15", nil, "MONTH_DAY", "2026-03-15", "MONTH_YEAR", "2015-03-01"},
+		{"December 25", nil, "MONTH_DAY", "2026-12-25", "MONTH_YEAR", "2025-12-01"},
+		{"Sept 09", nil, "MONTH_DAY", "2026-09-09", "MONTH_YEAR", "2009-09-01"},
+		{"MAY15", nil, "MONTH_DAY", "2026-05-15", "MONTH_YEAR", "2015-05-01"},
+		{"15 March", nil, "DAY_MONTH", "2026-03-15", "YEAR_MONTH", "2015-03-01"},
+		{"mai 15", []Locale{FR}, "MONTH_DAY", "2026-05-15", "MONTH_YEAR", "2015-05-01"},
+		{"15 mai", []Locale{FR}, "DAY_MONTH", "2026-05-15", "YEAR_MONTH", "2015-05-01"},
+		{"marzo 15", []Locale{ES}, "MONTH_DAY", "2026-03-15", "MONTH_YEAR", "2015-03-01"},
 	}
-	if len(ade.Interpretations) != 2 {
-		t.Fatalf("got %d interpretations, want 2 (pinning current behaviour)", len(ade.Interpretations))
-	}
-	if !ade.Interpretations[0].Time.Equal(ade.Interpretations[1].Time) {
-		t.Skip("C21 half one appears to be fixed: the two textual interpretations " +
-			"now differ. Delete this test and assert the real readings instead.")
-	}
-	for _, i := range ade.Interpretations {
-		if i.Label != "MM/DD/YYYY" && i.Label != "DD/MM/YYYY" {
-			t.Skipf("C21 half one appears to be fixed: label %q is no longer a "+
-				"numeric one. Delete this test.", i.Label)
+
+	for _, c := range cases {
+		opts := []Option{WithBaseTime(base), WithLocales(c.locales...), WithStrictMode(true)}
+		_, err := ParseWith(c.in, opts...)
+		var ade *AmbiguousDateError
+		if !errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, strict) = %T %v, want *AmbiguousDateError", c.in, err, err)
+			continue
+		}
+		got := map[string]string{}
+		for _, i := range ade.Interpretations {
+			got[i.Label] = i.Time.Format("2006-01-02")
+		}
+		if got[c.dayLabel] != c.dayTime || got[c.yearLabel] != c.yearTime || len(got) != 2 {
+			t.Errorf("ParseWith(%q, strict) interpretations = %v\n"+
+				"  want %s %s and %s %s: the number is either the day or a two-digit year,\n"+
+				"  and both readings have to be in the error for the caller to choose",
+				c.in, got, c.dayLabel, c.dayTime, c.yearLabel, c.yearTime)
 		}
 	}
-	t.Log("C21 half one is open: \"MAY 15\" yields two identical interpretations " +
-		"labelled MM/DD/YYYY and DD/MM/YYYY, and the day-versus-2015 reading it " +
-		"is really choosing between is not offered.")
+}
+
+// TestStrictModeInterpretationsAlwaysDiffer is the general property, asserted across
+// every class of ambiguity rather than per input.
+//
+// Two identical interpretations is the bug C21 was filed for, and the assertion is
+// what stops a fourth ambiguity class arriving with it: a caller cannot choose
+// between two readings that are the same instant, and one who writes the obvious
+// "both agree, so the guess was safe" guard is worse off than one who ignored the
+// error.
+//
+// Every input below is one whose two readings are genuinely different dates. Two
+// readings that coincide are not this bug and are covered by
+// TestStrictModeReadingsMayCoincide; what makes them legitimate there is that both
+// labels are true of the instant they carry, which is what fails here.
+func TestStrictModeInterpretationsAlwaysDiffer(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in      string
+		locales []Locale
+	}{
+		{"01/02/2024", nil},   // numeric field order
+		{"01/02/03", nil},     // numeric field order, two-digit year
+		{"01-02-03", nil},     // same, other separator
+		{"03.02.2024", nil},   // same, and the dot heuristic decides the reading
+		{"MAY 15", nil},       // textual day or two-digit year
+		{"March 15", nil},     // same
+		{"15 March", nil},     // same, number first
+		{"MAY15", nil},        // same, no separator
+		{"December 25", nil},  // same
+		{"Mar 15 10:30", nil}, // same, with a time
+		{"mai 15", []Locale{FR}},
+		{"15 mai", []Locale{FR}},
+		{"marzo 15", []Locale{ES}},
+		{"कल", []Locale{HI}}, // a word with two meanings
+	}
+
+	for _, c := range cases {
+		opts := []Option{WithBaseTime(base), WithLocales(c.locales...), WithStrictMode(true)}
+		_, err := ParseWith(c.in, opts...)
+		var ade *AmbiguousDateError
+		if !errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, strict) = %T %v, want *AmbiguousDateError", c.in, err, err)
+			continue
+		}
+		if len(ade.Interpretations) < 2 {
+			t.Errorf("ParseWith(%q, strict): %d interpretation(s); an ambiguous input has "+
+				"at least two readings or it is not ambiguous", c.in, len(ade.Interpretations))
+			continue
+		}
+		seenTime := map[int64]string{}
+		seenLabel := map[string]bool{}
+		for _, i := range ade.Interpretations {
+			if prev, dup := seenTime[i.Time.UnixNano()]; dup {
+				t.Errorf("ParseWith(%q, strict): interpretations %q and %q are both %s;\n"+
+					"  the error has to carry the readings being chosen between, not two "+
+					"copies of the chosen one", c.in, prev, i.Label, i.Time.Format(time.RFC3339))
+			}
+			seenTime[i.Time.UnixNano()] = i.Label
+			if i.Label == "" {
+				t.Errorf("ParseWith(%q, strict): an interpretation has no label", c.in)
+			}
+			if seenLabel[i.Label] {
+				t.Errorf("ParseWith(%q, strict): two interpretations are labelled %q", c.in, i.Label)
+			}
+			seenLabel[i.Label] = true
+			// The Layout is checked for existence and not for its name. A
+			// natural-language reading carries the LayoutNaturalLanguage
+			// sentinel, which refuses to re-parse on purpose, and labels the two
+			// readings by date because the word that produced them is the same
+			// word.
+			if i.Layout == nil {
+				t.Errorf("ParseWith(%q, strict): interpretation %q has no Layout", c.in, i.Label)
+			}
+		}
+	}
+}
+
+// TestOrdinalDayIsNotAGuess is the other half of "the interpretations differ": an
+// input has to have a second reading before it can be reported as ambiguous.
+//
+// "March 15th" was reported ambiguous and refused in strict mode. The suffix says
+// the number is an ordinal, so there is no year reading to choose against, and the
+// alternative offered for it would have been a fabrication: "2015th". Nothing else
+// about the shape changes, so the flag was noise on an input with one reading.
+func TestOrdinalDayIsNotAGuess(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"March 15th", "2026-03-15"},
+		{"MAY 15th", "2026-05-15"},
+		{"15th March", "2026-03-15"},
+		{"December 25th", "2026-12-25"},
+		{"March 1st", "2026-03-01"},
+		{"1st March", "2026-03-01"},
+	}
+
+	for _, c := range cases {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q) = %v", c.in, err)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("ParseWith(%q) = %s, want %s", c.in, got, c.want)
+		}
+		if r.Ambiguous {
+			t.Errorf("ParseWith(%q).Ambiguous = true; an ordinal suffix is a day and "+
+				"nothing else, so there is no second reading to report", c.in)
+		}
+		if _, err := ParseWith(c.in, WithBaseTime(base), WithStrictMode(true)); err != nil {
+			t.Errorf("ParseWith(%q, strict) = %v; strict mode refuses a guess, and "+
+				"this input needs none", c.in, err)
+		}
+	}
+}
+
+// TestStrictModeLabelsTheReadingItCarries is the numeric half of C21 half one,
+// which the card said worked.
+//
+// It did for a slash date and not for a dot date. The two readings were built by
+// detecting the input twice with PreferDayFirst flipped, and resolveAmbiguousFields
+// overrides that preference for a dot separator, so both detections came back
+// day-first: "03.02.2024" produced the third of February twice, and one copy was
+// labelled MM/DD/YYYY, which reads as the second of March. A caller filtering the
+// interpretations for the American reading got a European one.
+//
+// The label now comes from the order the fields sit in, so it describes the reading
+// it is attached to and cannot disagree with it.
+func TestStrictModeLabelsTheReadingItCarries(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in   string
+		want map[string]string
+	}{
+		{"03.02.2024", map[string]string{"DD/MM/YYYY": "2024-02-03", "MM/DD/YYYY": "2024-03-02"}},
+		{"01.02.2024", map[string]string{"DD/MM/YYYY": "2024-02-01", "MM/DD/YYYY": "2024-01-02"}},
+		{"01/02/2024", map[string]string{"MM/DD/YYYY": "2024-01-02", "DD/MM/YYYY": "2024-02-01"}},
+		{"1/2/2024", map[string]string{"MM/DD/YYYY": "2024-01-02", "DD/MM/YYYY": "2024-02-01"}},
+		// A two-digit year is named YY, because the label names the reading and
+		// "01/02/03" is not a four-digit year.
+		{"01/02/03", map[string]string{"MM/DD/YY": "2003-01-02", "DD/MM/YY": "2003-02-01"}},
+		{"01-02-03", map[string]string{"MM/DD/YY": "2003-01-02", "DD/MM/YY": "2003-02-01"}},
+		{"01/02/2024 10:30:00", map[string]string{"MM/DD/YYYY": "2024-01-02", "DD/MM/YYYY": "2024-02-01"}},
+	}
+
+	for _, c := range cases {
+		// Both preferences, because which reading is chosen must not change what
+		// either label means.
+		for _, dayFirst := range []bool{false, true} {
+			opts := []Option{WithBaseTime(base), WithPreferDayFirst(dayFirst), WithStrictMode(true)}
+			_, err := ParseWith(c.in, opts...)
+			var ade *AmbiguousDateError
+			if !errors.As(err, &ade) {
+				t.Errorf("ParseWith(%q, strict, dayFirst=%v) = %T %v, want *AmbiguousDateError",
+					c.in, dayFirst, err, err)
+				continue
+			}
+			got := map[string]string{}
+			for _, i := range ade.Interpretations {
+				got[i.Label] = i.Time.Format("2006-01-02")
+			}
+			if len(got) != len(c.want) {
+				t.Errorf("ParseWith(%q, strict, dayFirst=%v) = %v, want %v", c.in, dayFirst, got, c.want)
+				continue
+			}
+			for label, want := range c.want {
+				if got[label] != want {
+					t.Errorf("ParseWith(%q, strict, dayFirst=%v): %s = %q, want %q\n"+
+						"  a label names the reading it is attached to, or a caller picking by "+
+						"label gets the other one", c.in, dayFirst, label, got[label], want)
+				}
+			}
+		}
+	}
+}
+
+// TestStrictModeReadingsMayCoincide is the case that looks like the C21 bug and is
+// not one.
+//
+// "01/01/2024" is ambiguous: the parser had to decide which 01 was the month, and
+// result.Ambiguous says so. Both decisions land on the first of January, and each
+// label is true of the instant beside it. That is worth pinning, because the
+// tempting fix for C21 is to drop a reading that duplicates another, and dropping
+// one here would leave a single-reading error on an input that genuinely has two.
+func TestStrictModeReadingsMayCoincide(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	for _, in := range []string{"01/01/2024", "02/02/2024", "12/12/2024"} {
+		_, err := ParseWith(in, WithBaseTime(base), WithStrictMode(true))
+		var ade *AmbiguousDateError
+		if !errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, strict) = %T %v, want *AmbiguousDateError", in, err, err)
+			continue
+		}
+		if len(ade.Interpretations) != 2 {
+			t.Errorf("ParseWith(%q, strict): %d interpretations, want 2", in, len(ade.Interpretations))
+			continue
+		}
+		if !ade.Interpretations[0].Time.Equal(ade.Interpretations[1].Time) {
+			t.Errorf("ParseWith(%q, strict): %v and %v differ; the two readings of a date "+
+				"whose parts are equal are the same date", in,
+				ade.Interpretations[0].Time, ade.Interpretations[1].Time)
+		}
+	}
+}
+
+// TestStrictModeNeedsTwoReadings covers the inputs detection calls ambiguous and
+// execution then disagrees with.
+//
+// "March 00" is read as a day, because 00 is not over 31, and there is no
+// zeroth of March. Only the year reading parses, and an *AmbiguousDateError
+// carrying it alone would hand strict mode's caller 2000-03-01 for an input that
+// Parse refuses outright: strict mode is allowed to refuse more than the lenient
+// path and never to accept more.
+func TestStrictModeNeedsTwoReadings(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	for _, in := range []string{"March 00", "MAY00", "00 March", "15 March 10:30"} {
+		if _, err := ParseWith(in, WithBaseTime(base)); err == nil {
+			t.Errorf("test premise gone: ParseWith(%q) now parses", in)
+			continue
+		}
+		_, err := ParseWith(in, WithBaseTime(base), WithStrictMode(true))
+		var ade *AmbiguousDateError
+		if errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, strict) = *AmbiguousDateError with %d interpretation(s); "+
+				"an input the lenient path refuses has no readings to choose between",
+				in, len(ade.Interpretations))
+			continue
+		}
+		if !errors.Is(err, ErrAmbiguous) {
+			t.Errorf("ParseWith(%q, strict) = %v, want an error unwrapping to ErrAmbiguous", in, err)
+		}
+	}
 }

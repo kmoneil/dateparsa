@@ -596,6 +596,11 @@ func TestParserReportsAmbiguityLikeParse(t *testing.T) {
 		{"textual/abbrev", "Mar 70", []string{"Mar 10"}},
 		{"textual/width settles it", "March 5", []string{"March 15"}},
 		{"textual/4-digit year settles it", "March 2015", []string{"March 15"}},
+		// An ordinal suffix settles it too, and that one keeps the cache: the
+		// layout accepts nothing without the suffix, and nothing with it is a
+		// year. This is the pair that has to agree for that to be sound.
+		{"textual/ordinal settles it", "March 5th", []string{"March 15th", "March 20th"}},
+		{"textual/ordinal, wide seed", "March 15th", []string{"March 20th", "March 5th"}},
 
 		// A shaped format is not prone and must keep using the cache.
 		{"shaped", "2024-03-15T10:30:00Z", []string{"2025-01-01T00:00:00Z"}},
@@ -738,6 +743,8 @@ func TestBareMonthNumberReportsTheGuess(t *testing.T) {
 		{"5 March", false},        //
 		{"March 32", false},       // over 31, so not a day
 		{"MAY70", false},          //
+		{"March 15th", false},     // an ordinal suffix is a day, never a year
+		{"15th March", false},     //
 		{"March 2015", false},     // four digits
 		{"March 15, 2024", false}, // a year is written out
 		{"2024-03-15", false},     // no question arises

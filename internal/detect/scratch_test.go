@@ -84,7 +84,7 @@ func TestNewResultCopiesTheFields(t *testing.T) {
 		{Kind: compile.FYear4, Offset: 0, Len: 4},
 		{Kind: compile.FMonth2, Offset: 5, Len: 2},
 	}
-	r := newResult("X", "", src, false, false)
+	r := newResult("X", "", src, AmbigNone, false)
 
 	// Scribble over the source the way a reused frame would.
 	for i := range src {
@@ -108,7 +108,7 @@ func TestNewResultSurvivesOverflow(t *testing.T) {
 		for i := range src {
 			src[i] = compile.Field{Kind: compile.FSkip, Offset: int32(i), Len: 1}
 		}
-		r := newResult("X", "", src, false, false)
+		r := newResult("X", "", src, AmbigNone, false)
 		if len(r.Def.Fields) != n {
 			t.Fatalf("%d fields in, %d out", n, len(r.Def.Fields))
 		}

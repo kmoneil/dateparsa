@@ -34,6 +34,216 @@ type Result struct {
 	// answer it for the next value; what a layout can carry is whether the
 	// question arises at all. Strict mode uses this to decline the cache.
 	AmbigProne bool
+
+	// AmbigKind says which question the input left open. Meaningful only when
+	// Ambig is true, and it is what a caller building the alternative reading
+	// has to branch on.
+	AmbigKind AmbigKind
+}
+
+// AmbigKind names the question an ambiguous input left open.
+//
+// It exists because the two questions take different answers. The field-order
+// one is answered by detecting the input a second time with the preference
+// flipped, which produces a different format; the day-or-year one by reading
+// one field of the format already detected as the other kind, because flipping
+// a preference that does not participate produces the same format and the same
+// instant.
+//
+// A caller that treats every ambiguity as the field-order kind hands the second
+// kind back two copies of one reading under labels naming a format the input is
+// not, which is what strict mode did for every textual month until C21.
+type AmbigKind uint8
+
+const (
+	// AmbigNone is an input that needed no guess.
+	AmbigNone AmbigKind = iota
+
+	// AmbigFieldOrder is "01/02/2024": two numeric parts that are each a valid
+	// month and a valid day, so the configured preference chose between them.
+	AmbigFieldOrder
+
+	// AmbigDayOrYear is "March 15": a bare two-digit number beside a month
+	// name, read as the fifteenth because it is not over 31, and equally the
+	// year 2015.
+	AmbigDayOrYear
+)
+
+// Reading is one way to read an ambiguous input: the format that reads it that
+// way, and a label naming the reading.
+//
+// The label is not Def.Name. classifyTextualPattern names "Mar 15 10:30" a
+// MONTH_DAY_YEAR because it counts the time's numbers, and a label has to say
+// which reading of the ambiguous number the caller is being offered.
+type Reading struct {
+	Def   *compile.FormatDef
+	Label string
+}
+
+// Readings returns both ways to read an ambiguous input: the one Detect chose,
+// and the one it did not.
+//
+// Both are built by re-kinding the fields of the format already detected, not by
+// detecting a second time. Nothing about the input moves between them: the same
+// bytes are read at the same offsets, and the two programs differ in the one or
+// two instructions that decide which slot a number lands in.
+//
+// A second detection cannot produce the pair, and that is the bug this replaces.
+// The caller used to run Detect twice with PreferDayFirst flipped, which is a
+// preference two of the three heuristics ahead of it can overrule:
+//
+//   - detectTextualMonth does not consult it at all, so "March 15" came back the
+//     same both times and strict mode handed over two copies of one instant
+//     under the labels MM/DD/YYYY and DD/MM/YYYY, for an input that is not a
+//     numeric date.
+//   - resolveAmbiguousFields overrides it for a dot separator, so "03.02.2024"
+//     came back day-first both times and the copy labelled MM/DD/YYYY carried
+//     the third of February. That label reads as the second of March.
+//
+// It reports false when the input needed no guess, and when the fields do not
+// hold what the kind says they should, which is a detector bug rather than an
+// input the caller can be asked about.
+func (r Result) Readings() (chosen, alt Reading, ok bool) {
+	if r.Def == nil {
+		return Reading{}, Reading{}, false
+	}
+	switch r.AmbigKind {
+	case AmbigDayOrYear:
+		return r.dayOrYearReadings()
+	case AmbigFieldOrder:
+		return r.fieldOrderReadings()
+	}
+	return Reading{}, Reading{}, false
+}
+
+// dayOrYearReadings reads the bare number beside a month name as the day of the
+// month, which is what Detect chose, and as a two-digit year, which is what it
+// did not: "March 15" is the fifteenth of March or March 2015.
+func (r Result) dayOrYearReadings() (day, year Reading, ok bool) {
+	dayAt, monthAt := -1, -1
+	for i := range r.Def.Fields {
+		switch r.Def.Fields[i].Kind {
+		case compile.FDay2:
+			dayAt = i
+		case compile.FMonthName:
+			monthAt = i
+		}
+	}
+	if dayAt < 0 || monthAt < 0 {
+		return Reading{}, Reading{}, false
+	}
+
+	// Which side of the month name the number sits on is what the labels differ
+	// by, and it is read off the offsets rather than off the format name for the
+	// reason on Reading.
+	dayLabel, yearLabel := "MONTH_DAY", "MONTH_YEAR"
+	if r.Def.Fields[dayAt].Offset < r.Def.Fields[monthAt].Offset {
+		dayLabel, yearLabel = "DAY_MONTH", "YEAR_MONTH"
+	}
+
+	fields := copyFields(r.Def.Fields)
+	fields[dayAt].Kind = compile.FYear2
+
+	return Reading{Def: r.Def, Label: dayLabel},
+		Reading{Def: &compile.FormatDef{Name: yearLabel, Fields: fields}, Label: yearLabel},
+		true
+}
+
+// fieldOrderReadings reads the two small numeric parts in the order Detect
+// chose, and in the other order: "01/02/2024" is the second of January or the
+// first of February.
+//
+// Both parts are 12 or under, because that is what made the input ambiguous, so
+// each is a valid month and a valid day and the swap cannot produce a date that
+// does not exist.
+func (r Result) fieldOrderReadings() (chosen, alt Reading, ok bool) {
+	monthAt, dayAt, yearAt := -1, -1, -1
+	for i := range r.Def.Fields {
+		switch r.Def.Fields[i].Kind {
+		case compile.FMonth2, compile.FMonth1or2:
+			monthAt = i
+		case compile.FDay2, compile.FDay1or2:
+			dayAt = i
+		case compile.FYear4, compile.FYear2:
+			yearAt = i
+		}
+	}
+	if monthAt < 0 || dayAt < 0 || yearAt < 0 {
+		return Reading{}, Reading{}, false
+	}
+
+	monthAsDay, ok1 := swapDateRole(r.Def.Fields[monthAt].Kind)
+	dayAsMonth, ok2 := swapDateRole(r.Def.Fields[dayAt].Kind)
+	if !ok1 || !ok2 {
+		return Reading{}, Reading{}, false
+	}
+	fields := copyFields(r.Def.Fields)
+	fields[monthAt].Kind = monthAsDay
+	fields[dayAt].Kind = dayAsMonth
+
+	// The labels are the same three parts in the order the fields sit in, so a
+	// year-first shape says so rather than being called MM/DD/YYYY, and the
+	// alternative is the same call with the two roles exchanged.
+	chosenLabel := numericLabel(r.Def.Fields, monthAt, dayAt, yearAt)
+	altLabel := numericLabel(r.Def.Fields, dayAt, monthAt, yearAt)
+
+	return Reading{Def: r.Def, Label: chosenLabel},
+		Reading{Def: &compile.FormatDef{Name: altLabel, Fields: fields}, Label: altLabel},
+		true
+}
+
+// swapDateRole exchanges a month field for the day field of the same width, and
+// the other way round. The width has to survive the swap: the parts are one
+// digit or two, the kinds come in a pair for each width, and a field that
+// declares a width it does not read is C9.
+func swapDateRole(k compile.FieldKind) (compile.FieldKind, bool) {
+	switch k {
+	case compile.FMonth2:
+		return compile.FDay2, true
+	case compile.FMonth1or2:
+		return compile.FDay1or2, true
+	case compile.FDay2:
+		return compile.FMonth2, true
+	case compile.FDay1or2:
+		return compile.FMonth1or2, true
+	}
+	return k, false
+}
+
+// numericLabel names a reading of a three-part numeric date by the order its
+// parts sit in, with the caller saying which index holds which role.
+//
+// The separator is always a slash, whatever the input uses. "MM/DD/YYYY" is the
+// name of an ordering rather than a description of the bytes, and it is the
+// string this library has always returned for the reading.
+func numericLabel(fields []compile.Field, monthAt, dayAt, yearAt int) string {
+	year := "YYYY"
+	if fields[yearAt].Kind == compile.FYear2 {
+		year = "YY"
+	}
+	parts := [3]struct {
+		offset int32
+		name   string
+	}{
+		{fields[monthAt].Offset, "MM"},
+		{fields[dayAt].Offset, "DD"},
+		{fields[yearAt].Offset, year},
+	}
+	for i := 1; i < len(parts); i++ {
+		for j := i; j > 0 && parts[j].offset < parts[j-1].offset; j-- {
+			parts[j], parts[j-1] = parts[j-1], parts[j]
+		}
+	}
+	return parts[0].name + "/" + parts[1].name + "/" + parts[2].name
+}
+
+// copyFields is the alternative reading's own field slice. It runs once per
+// input refused in strict mode, so it is off the path the rest of this package
+// is written for.
+func copyFields(src []compile.Field) []compile.Field {
+	dst := make([]compile.Field, len(src))
+	copy(dst, src)
+	return dst
 }
 
 // Config passes user preferences into the detection layer.
@@ -120,7 +330,11 @@ type smallScratch struct {
 //
 // fields is copied rather than retained, so the caller can build it in a local
 // array that never leaves its frame.
-func newResult(name, goLayout string, fields []compile.Field, ambig, prone bool) Result {
+// The ambiguity arrives as a kind rather than as a bool so that no detector can
+// report that this input needed a guess without saying which guess it was. Ambig
+// is derived here and read everywhere, because "did this need a guess" is the
+// question almost every caller asks.
+func newResult(name, goLayout string, fields []compile.Field, ambig AmbigKind, prone bool) Result {
 	if len(fields) <= smallScratchFields {
 		sc := new(smallScratch)
 		sc.def = compile.FormatDef{
@@ -128,7 +342,7 @@ func newResult(name, goLayout string, fields []compile.Field, ambig, prone bool)
 			GoLayout: goLayout,
 			Fields:   append(sc.fields[:0], fields...),
 		}
-		return Result{Def: &sc.def, Ambig: ambig, AmbigProne: prone}
+		return Result{Def: &sc.def, Ambig: ambig != AmbigNone, AmbigProne: prone, AmbigKind: ambig}
 	}
 	sc := new(scratch)
 	sc.def = compile.FormatDef{
@@ -136,7 +350,7 @@ func newResult(name, goLayout string, fields []compile.Field, ambig, prone bool)
 		GoLayout: goLayout,
 		Fields:   append(sc.fields[:0], fields...),
 	}
-	return Result{Def: &sc.def, Ambig: ambig, AmbigProne: prone}
+	return Result{Def: &sc.def, Ambig: ambig != AmbigNone, AmbigProne: prone, AmbigKind: ambig}
 }
 
 // Detect analyzes a date string and returns the matching FormatDef.
@@ -219,7 +433,7 @@ func Detect(s string, cfg Config) (Result, bool) {
 		return Result{Def: entry.def}, true
 	}
 	// Fallback for entries without pre-built defs.
-	return newResult(entry.name, entry.goLayout, entry.fields, false, false), true
+	return newResult(entry.name, entry.goLayout, entry.fields, AmbigNone, false), true
 }
 
 // withTimeSuffix names the format that resolveAmbiguous's date and a trailing
@@ -404,7 +618,7 @@ func detectISO8601Frac(s string) (Result, bool) {
 		}
 	}
 
-	return newResult("ISO8601_FRAC", "", fields, false, false), true
+	return newResult("ISO8601_FRAC", "", fields, AmbigNone, false), true
 }
 
 // detectGoTimeString handles Go's time.Time.String() output:
@@ -492,7 +706,7 @@ func detectGoTimeString(s string) (Result, bool) {
 		fields = append(fields, compile.Field{Kind: compile.FTail, Offset: int32(pos)})
 	}
 
-	return newResult("GO_TIME_STRING", "", fields, false, false), true
+	return newResult("GO_TIME_STRING", "", fields, AmbigNone, false), true
 }
 
 // detectDatePlusTZ handles date + timezone offset without time:
@@ -519,7 +733,7 @@ func detectDatePlusTZ(s string) (Result, bool) {
 		{Kind: compile.FDay2, Offset: 8, Len: 2},
 		{Kind: compile.FTZOffset, Offset: 10, Len: int32(tzLen)},
 	}
-	return newResult("ISO_DATE_TZ", "", fields, false, false), true
+	return newResult("ISO_DATE_TZ", "", fields, AmbigNone, false), true
 }
 
 // detectCJKDate handles dates with CJK ideographic characters:
@@ -563,7 +777,7 @@ func detectCJKDate(s string) (Result, bool) {
 		{Kind: compile.FDay1or2, Offset: int32(monthIdx + len("月")), Len: int32(len(dayStr))},
 		skip(dayIdx, len("日")),
 	}
-	return newResult("CJK_DATE", "", fields, false, false), true
+	return newResult("CJK_DATE", "", fields, AmbigNone, false), true
 }
 
 // detectVariableNumeric handles numeric dates with variable-width fields:
@@ -680,10 +894,10 @@ func resolveAmbiguous(s string, cfg Config) (Result, bool) {
 // date, overflow it with the time fields, and build a second, so
 // "03/15/2024 10:30:00" cost two allocations where it needed one and the first
 // was thrown away.
-func resolveAmbiguousFields(dst []compile.Field, s string, cfg Config) (name string, fields []compile.Field, ambig, ok bool) {
+func resolveAmbiguousFields(dst []compile.Field, s string, cfg Config) (name string, fields []compile.Field, ambig AmbigKind, ok bool) {
 	sep := findSep(s)
 	if sep < 0 {
-		return "", nil, false, false
+		return "", nil, AmbigNone, false
 	}
 	sepChar := s[sep]
 
@@ -695,28 +909,28 @@ func resolveAmbiguousFields(dst []compile.Field, s string, cfg Config) (name str
 	var partsBuf [maxDateParts]string
 	parts := splitOnSep(partsBuf[:0], s, sepChar)
 	if len(parts) < 3 {
-		return "", nil, false, false
+		return "", nil, AmbigNone, false
 	}
 
 	first := parseSmallInt(parts[0])
 	second := parseSmallInt(parts[1])
 	third := parseSmallInt(parts[2])
 	if first < 0 || second < 0 || third < 0 {
-		return "", nil, false, false
+		return "", nil, AmbigNone, false
 	}
 
 	monthPart, dayPart, ambig, ok := resolveYearMonthDay(parts, first, second, third, cfg)
 	if !ok {
-		return "", nil, false, false
+		return "", nil, AmbigNone, false
 	}
 
 	fields, ok = buildDatePartFields(dst, parts, sepChar, monthPart, dayPart)
 	if !ok {
-		return "", nil, false, false
+		return "", nil, AmbigNone, false
 	}
 
 	name = "NUMERIC_AMBIG"
-	if !ambig {
+	if ambig == AmbigNone {
 		if cfg.PreferDayFirst {
 			name = "NUMERIC_DMY"
 		} else {
@@ -737,7 +951,7 @@ func resolveAmbiguousFields(dst []compile.Field, s string, cfg Config) (name str
 // out of the input at run time, which is the whole design. The year is still
 // identified, because that is what leaves two parts to choose between, but it
 // is identified rather than computed.
-func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (month, day datePart, ambig bool, ok bool) {
+func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (month, day datePart, ambig AmbigKind, ok bool) {
 	// Step 1: Identify year position.
 	var v1, v2 int
 	var v1Offset, v2Offset int
@@ -771,7 +985,7 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		month, day = p1, p2
 	} else {
 		// Genuinely ambiguous — both could be month or day.
-		ambig = true
+		ambig = AmbigFieldOrder
 		if cfg.PreferDayFirst {
 			day, month = p1, p2
 		} else {
@@ -780,7 +994,7 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 	}
 
 	if month.value < 1 || month.value > 12 || day.value < 1 || day.value > 31 {
-		return datePart{}, datePart{}, false, false
+		return datePart{}, datePart{}, AmbigNone, false
 	}
 
 	// A day or a month is written with one digit or two, never three. The
@@ -790,7 +1004,7 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 	// first two bytes, and Parse("020/01/2024") came back as the second of
 	// January having validated the twentieth.
 	if month.length > 2 || day.length > 2 {
-		return datePart{}, datePart{}, false, false
+		return datePart{}, datePart{}, AmbigNone, false
 	}
 	return month, day, ambig, true
 }
@@ -935,7 +1149,7 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 				compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
 				lit(s, 4), lit(s, 5),
 				compile.Field{Kind: compile.FISOWeek, Offset: 6, Len: 2},
-			), false, false), true
+			), AmbigNone, false), true
 		}
 		if n == 10 && isDigit(s[6]) && isDigit(s[7]) && s[8] == '-' && isDigit(s[9]) {
 			// YYYY-Www-D
@@ -946,7 +1160,7 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 				compile.Field{Kind: compile.FISOWeek, Offset: 6, Len: 2},
 				lit(s, 8),
 				compile.Field{Kind: compile.FISOWeekDay, Offset: 9, Len: 1},
-			), false, false), true
+			), AmbigNone, false), true
 		}
 	}
 
@@ -966,7 +1180,7 @@ func detectISOWeekOrOrdinal(s string) (Result, bool) {
 					compile.Field{Kind: compile.FYear4, Offset: 0, Len: 4},
 					lit(s, 4),
 					compile.Field{Kind: compile.FOrdinalDay, Offset: 5, Len: 3},
-				), false, false), true
+				), AmbigNone, false), true
 			}
 		}
 	}
@@ -1040,8 +1254,12 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	// Build field list from actual byte positions.
 	var buf [maxDetectFields]compile.Field
 	fields := coverGaps(buildTextualFields(buf[:0], s, monthNum, monthStart, monthEnd), s)
-	prone, guess := textualDayIsAGuess(fields)
-	return newResult(name, "", fields, guess, prone), true
+	prone, guess := textualDayIsAGuess(s, fields)
+	ambig := AmbigNone
+	if guess {
+		ambig = AmbigDayOrYear
+	}
+	return newResult(name, "", fields, ambig, prone), true
 }
 
 // textualDayIsAGuess reports whether the number this format read as a day could
@@ -1063,9 +1281,17 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 // Two digits is the whole of the ambiguous set, because NormalizeTwoDigitYear
 // maps every two-digit value to some year, so "could be a year" excludes
 // nothing that "could be a day" admits.
+//
+// An ordinal suffix takes the number back out of that set, which is why the
+// input is a parameter and not just its fields. "March 15th" is the fifteenth
+// and nothing else: no year is written "15th", so there is no second reading to
+// choose between and the alternative offered for one would have to be invented.
+// It is not the input that is exempt but the shape, because the suffix is part
+// of what the program accepts, and every input the layout takes carries it too.
+//
 // It returns prone, meaning the day-or-year question arises for this shape at
 // all, and guess, meaning this input actually needed it answered.
-func textualDayIsAGuess(fields []compile.Field) (prone, guess bool) {
+func textualDayIsAGuess(s string, fields []compile.Field) (prone, guess bool) {
 	for i := range fields {
 		switch fields[i].Kind {
 		case compile.FYear2:
@@ -1087,11 +1313,12 @@ func textualDayIsAGuess(fields []compile.Field) (prone, guess bool) {
 			// Four digits cannot be a day, so nothing about this shape is
 			// decided by value and no later row can flip it.
 			return false, false
-		case compile.FDay1or2:
+		case compile.FDay1or2, compile.FDay2:
+			if ordinalSuffixLen(s, int(fields[i].Offset+fields[i].Len)) > 0 {
+				continue
+			}
 			prone = true
-		case compile.FDay2:
-			prone = true
-			if fields[i].Len == 2 {
+			if fields[i].Kind == compile.FDay2 && fields[i].Len == 2 {
 				guess = true
 			}
 		}

@@ -270,6 +270,25 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
    format instead of applying the previous row's reading to it. Steps 1 and 2
    answer per value, so a layout cannot carry the answer forward.
 
+Each interpretation is labelled with the reading it carries, and the labels name
+the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, and
+`MM/DD/YY` where the year is written with two digits.
+
+A month name and a bare number is the other ambiguous shape, and it is reported
+the same way. `March 15` is the fifteenth of March or March 2015, because
+`March 32` can only be a year and nothing about `15` says which was meant:
+
+```go
+r, _ := dateparsa.Parse("March 15")
+fmt.Println(r.Ambiguous) // true — read as the day, and that was a choice
+
+_, err := dateparsa.ParseWith("March 15", dateparsa.WithStrictMode(true))
+// *AmbiguousDateError: MONTH_DAY 2026-03-15 and MONTH_YEAR 2015-03-01
+```
+
+An ordinal suffix settles it and reports nothing: `March 15th` is a day, since
+no year is written `15th`.
+
 A word can be ambiguous too, and is reported the same way. Hindi writes both
 yesterday and tomorrow as `कल`, choosing between them with the verb, which a
 date string does not have:

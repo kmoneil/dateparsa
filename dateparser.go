@@ -14,6 +14,8 @@
 package dateparsa
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/kmoneil/dateparsa/internal/compile"
@@ -127,7 +129,11 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
-		program.BaseYear = int32(baseYear(cfg))
+		by, ok := baseYear(cfg)
+		if !ok {
+			return ParseResult{}, baseYearError(s, cfg)
+		}
+		program.BaseYear = by
 	}
 	t, err := program.Execute(s)
 	if err != nil {
@@ -183,7 +189,11 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 		return nil, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
-		program.BaseYear = int32(baseYear(cfg))
+		by, ok := baseYear(cfg)
+		if !ok {
+			return nil, baseYearError(s, cfg)
+		}
+		program.BaseYear = by
 	}
 	return &Layout{
 		program:  program,
@@ -212,7 +222,11 @@ func buildAmbiguousError(s string, cfg config) error {
 			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
 		}
 		if needsBaseYear {
-			prog.BaseYear = int32(baseYear(cfg))
+			by, ok := baseYear(cfg)
+			if !ok {
+				return baseYearError(s, cfg)
+			}
+			prog.BaseYear = by
 		}
 		t, err := prog.Execute(s)
 		if err == nil {
@@ -232,7 +246,11 @@ func buildAmbiguousError(s string, cfg config) error {
 			return &ParseError{Input: s, Message: cerr.Error(), Cause: ErrNoMatch}
 		}
 		if needsBaseYear {
-			prog.BaseYear = int32(baseYear(cfg))
+			by, ok := baseYear(cfg)
+			if !ok {
+				return baseYearError(s, cfg)
+			}
+			prog.BaseYear = by
 		}
 		t, err := prog.Execute(s)
 		if err == nil {
@@ -262,11 +280,40 @@ func buildAmbiguousError(s string, cfg config) error {
 // year. Read at detection time, never on Layout.Parse, and only for the formats
 // that actually lack a year: the clock read is about 50ns, which is a third of
 // a whole Parse, and calling it unconditionally cost 30% on every format.
-func baseYear(cfg config) int {
+//
+// It reports whether the year fits Program.BaseYear, which is an int32 for a
+// documented size reason: a Layout lands in the 208-byte size class exactly and
+// widening this field moves it. time.Time reaches year 292277026596, so the
+// conversion can truncate, and truncating turns a base year nobody meant into a
+// different base year nobody meant. ParseWith("10:30:00") with such a base came
+// back as 219250468-01-01 with a nil error.
+//
+// Reachable, not hypothetical. flextime's numeric paths built exactly such a time
+// out of a JSON number until C20, so a caller resolving a record's relative dates
+// against the record's own timestamp could hand one straight back. The threat
+// model calls the options trusted, which says nobody hostile chooses them; it does
+// not say the conversion is safe.
+func baseYear(cfg config) (int32, bool) {
+	y := 0
 	if cfg.baseTime.IsZero() {
-		return time.Now().Year()
+		y = time.Now().Year()
+	} else {
+		y = cfg.baseTime.Year()
 	}
-	return cfg.baseTime.Year()
+	if y < math.MinInt32 || y > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(y), true
+}
+
+// baseYearError is what a base year that cannot be represented returns. Its own
+// function because four call sites need it and the message is worth writing once.
+func baseYearError(s string, cfg config) error {
+	return &ParseError{
+		Input:   s,
+		Message: fmt.Sprintf("base year %d does not fit the compiled layout", cfg.baseTime.Year()),
+		Cause:   ErrNoMatch,
+	}
 }
 
 // localeDataFromConfig extracts the internal locale data pointers from

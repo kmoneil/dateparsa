@@ -299,13 +299,6 @@ func FromSeconds(f float64) (time.Time, bool) {
 	return withinRange(sec, int64(nsf))
 }
 
-// FromUnix builds an instant from a second and nanosecond count and reports
-// whether it lands inside the range this package accepts. It is withinRange,
-// exported for a caller holding a count it did not parse.
-func FromUnix(sec, nsec int64) (time.Time, bool) {
-	return withinRange(sec, nsec)
-}
-
 // withinRange builds the instant and reports whether it lands inside
 // maxSeconds of the epoch.
 //

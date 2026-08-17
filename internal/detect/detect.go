@@ -323,8 +323,18 @@ func skip(off, length int) compile.Field {
 // Matches: YYYY-MM-DD[T ]HH:MM:SS.{1-9 digits}[Z|±HH:MM|±HHMM]
 func detectISO8601Frac(s string) (Result, bool) {
 	n := len(s)
-	// Minimum: "YYYY-MM-DDTHH:MM:SS.fZ" = 22 chars
-	if n < 22 {
+	// Minimum: "YYYY-MM-DDTHH:MM:SS.f" = 21 chars, and the zone is optional.
+	//
+	// This was 22, counting a trailing zone byte the format does not require, so a
+	// one-digit fraction with no zone was one byte short and refused:
+	// "2024-03-15 10:30:00.9" did not parse while "2024-03-15 10:30:00.99" did.
+	// Nothing else in the cascade covers it, because the trie carries the
+	// three-digit and six-digit fractions and not the one-digit one.
+	//
+	// Found by TestParseAgreesWithTimeParseOnFractions, which asserts that a
+	// fraction the stdlib reads exactly is one this library does not refuse. That
+	// assertion is about C17 and this is a second, older defect underneath it.
+	if n < 21 {
 		return Result{}, false
 	}
 	// Check the fixed prefix: YYYY-MM-DD[T ]HH:MM:SS.
@@ -335,13 +345,20 @@ func detectISO8601Frac(s string) (Result, bool) {
 	}
 
 	// Count fractional digits after the dot.
+	//
+	// The upper bound is what the other two producers of this field were missing.
+	// A nanosecond holds nine digits, so a wider run has no representation, and
+	// this detector has always refused one. detectGoTimeString and
+	// parseTimeComponent accepted one and computed the wrong instant from it, so
+	// three detectors disagreed about the same input in the worst direction. They
+	// agree now, and this is the arm that was already right.
 	fracStart := 20
 	fracEnd := fracStart
 	for fracEnd < n && isDigit(s[fracEnd]) {
 		fracEnd++
 	}
 	fracLen := fracEnd - fracStart
-	if fracLen < 1 || fracLen > 9 {
+	if fracLen < 1 || fracLen > compile.MaxFracDigits {
 		return Result{}, false
 	}
 
@@ -423,11 +440,21 @@ func detectGoTimeString(s string) (Result, bool) {
 
 	pos := 19
 	// Optional fractional seconds.
+	//
+	// Bounded at compile.MaxFracDigits, which it was not. A nanosecond holds nine digits
+	// and this emitted a field as wide as the run, so
+	// "2024-03-15 10:30:00.99999999999999999999999 +0000 UTC" produced a field of
+	// 23 and came back as 2030-07-21 with a nil error, where time.Parse reads
+	// 2024-03-15. detectISO8601Frac has carried this bound all along; the two
+	// detectors that did not are what C17 was.
 	if pos < n && s[pos] == '.' {
 		fracStart := pos + 1
 		fracEnd := fracStart
 		for fracEnd < n && isDigit(s[fracEnd]) {
 			fracEnd++
+		}
+		if fracEnd-fracStart > compile.MaxFracDigits {
+			return Result{}, false
 		}
 		if fracEnd > fracStart {
 			fields = append(fields, lit(s, pos),
@@ -1350,11 +1377,22 @@ func parseTimeComponent(dst []compile.Field, s string, from int) []compile.Field
 			j += 3
 
 			// Check for .fractional
+			//
+			// Bounded at compile.MaxFracDigits, which it was not. See the same bound in
+			// detectGoTimeString and detectISO8601Frac: this is the third producer
+			// of the field and the second of the two that were missing it, which
+			// is why "March 15, 2024 10:30:00." followed by 25 nines came back as
+			// 2074-08-13. A run over the bound leaves this returning no time
+			// fields at all, so the caller describes the date and the coverage
+			// check refuses the input rather than reading part of it.
 			if j+1 < len(s) && s[j] == '.' {
 				fracStart := j + 1
 				fracEnd := fracStart
 				for fracEnd < len(s) && isDigit(s[fracEnd]) {
 					fracEnd++
+				}
+				if fracEnd-fracStart > compile.MaxFracDigits {
+					return nil
 				}
 				if fracEnd > fracStart {
 					fields = append(fields, compile.Field{Kind: compile.FFracSec, Offset: int32(fracStart), Len: int32(fracEnd - fracStart)})

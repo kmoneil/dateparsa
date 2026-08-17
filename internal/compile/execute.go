@@ -658,8 +658,65 @@ func parse4Digits(s string, off int) (int, bool) {
 	return int(d0)*1000 + int(d1)*100 + int(d2)*10 + int(d3), true
 }
 
+// MaxFracDigits is how many fractional digits a nanosecond holds, and therefore
+// the widest OpFracSec field this package will execute.
+//
+// Exported because detect has to honour it: a detector emitting a wider field
+// produces a parse error rather than a wrong instant, which is safe but is not the
+// error anybody wants. One constant read from both places, rather than two held
+// together by a test that somebody has to remember to write.
+const MaxFracDigits = 9
+
 // parseFracSec parses fractional seconds and returns nanoseconds.
+//
+// Every one of the length bytes has to be a digit, and only the first nine are
+// read. Those are two separate jobs and conflating them was the bug. The digit
+// check covers the whole declared field because the executor's coverage
+// accounting says the field is that wide, so a non-digit at byte twelve of a
+// twelve-digit fraction still has to refuse; the value has to stop at nine
+// because that is all a nanosecond holds.
+//
+// It used to accumulate the whole run and then scale with `for i := length; i < 9`,
+// which does nothing at all once length is over nine. So the digits past the ninth
+// were added and never divided back out: ten digits moved the answer by up to nine
+// seconds and twenty wrapped int64 and moved it by years, with a nil error.
+// "2024-03-15 10:30:00.99999999999999999999999" came back as 2030-07-21 where
+// time.Parse returns 2024-03-15.
+//
+// This is C3 over again, in the file C3 did not touch. internal/epoch's
+// parseFractional cut its fraction to nine digits before parsing on 2026-08-13, for
+// the same reason and with the same wrapped-int64 symptom, and nobody checked
+// whether the other fractional parser in the tree had the same defect. It did.
+// A field declared wider than a nanosecond holds is refused here, and that
+// refusal is the whole fix. It is one compare in front of the loop this function
+// has always run, so every format that carries a fraction pays nothing.
+//
+// Truncating instead was tried first, because it is what time.Parse does with the
+// same input, and it was measurably worse for the formats that are not broken.
+// Reading nine digits and validating the rest needs work inside this function
+// however it is arranged, and this function is inlined into both executors, so
+// adding any costs the inline. Three versions, measured on linux/arm64:
+//
+//	a counter tested per digit   FracSec3 +33%   FracSec9 +23%   Layout.Parse +8.8%
+//	two loops in one function    FracSec3 +37%   FracSec9 +10%
+//	the long case split out      FracSec3 +25%   FracSec9 +11%   inline lost in both
+//	                                                             executors
+//	this                         flat            flat            inline kept
+//
+// So the producers bound the field instead, and an over-long fraction is refused
+// at detection rather than truncated at execution. That is stricter than the
+// stdlib, and CLAUDE.md says that is the decision: "staying stricter than the
+// stdlib is the decision. Do not try to enumerate the stdlib's leniency."
+//
+// The check stays here as well as in the producers because Program is a plain
+// struct with exported fields, and Compile is not the only way to fill one. It is
+// the same argument as the MaxInstructions clamp in executeInner: cheaper than
+// proving no caller can ever build such a Program, and the failure it prevents is
+// a wrong instant rather than a panic.
 func parseFracSec(s string, off, length int) (int, bool) {
+	if length > MaxFracDigits {
+		return 0, false
+	}
 	val := 0
 	for i := range length {
 		d := s[off+i] - '0'
@@ -668,8 +725,9 @@ func parseFracSec(s string, off, length int) (int, bool) {
 		}
 		val = val*10 + int(d)
 	}
-	// Scale to nanoseconds: if length=3 (millis), multiply by 1e6; length=6 (micros), 1e3; etc.
-	for i := length; i < 9; i++ { //nolint:rangeint
+	// Scale to nanoseconds: three digits are millis and multiply by 1e6, nine are
+	// already nanoseconds.
+	for i := length; i < MaxFracDigits; i++ { //nolint:rangeint
 		val *= 10
 	}
 	return val, true

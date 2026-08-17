@@ -210,12 +210,39 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 // and the word that produced each does not: "कल" is the label for both.
 const nlLabelFormat = "2006-01-02"
 
+// buildAmbiguousError re-reads the input both ways round and returns the pair.
+//
+// The two Configs below are cfg's fields and not a fresh set. They used to name
+// PreferDayFirst and Timezone only, which dropped the caller's Locales, and a
+// locale month name is not findable without them: both re-detections failed,
+// interps came back empty, and the function fell through to the "ambiguous date
+// could not be interpreted" ParseError at the bottom. So strict mode did not
+// refuse to guess about "mai 15", it failed to parse it, while the lenient path
+// read it and reported the guess:
+//
+//	ParseWith("mai 15", WithLocales(FR))                     2026-05-15, Ambiguous
+//	ParseWith("mai 15", WithLocales(FR), WithStrictMode(true)) *ParseError
+//
+// A caller who took SECURITY.md's advice and turned strict mode on for a trust
+// boundary lost the ability to parse non-English textual dates at all, and got an
+// error saying the date could not be interpreted about an input that could.
+//
+// PreferYearFirst went the same way and is carried for the same reason. No input
+// on the board reaches it today, because the formats that consult it are not the
+// formats that arrive here ambiguous, and it is carried rather than left out
+// because "the caller's preferences, minus the two somebody remembered" is not a
+// rule anybody can hold in their head.
 func buildAmbiguousError(s string, cfg config) error {
 	// Build both interpretations (MDY and DMY).
 	var interps []Interpretation
 
 	// MDY interpretation.
-	mdyDcfg := detect.Config{PreferDayFirst: false, Timezone: cfg.timezone}
+	mdyDcfg := detect.Config{
+		PreferDayFirst:  false,
+		PreferYearFirst: cfg.preferYearFirst,
+		Timezone:        cfg.timezone,
+		Locales:         localeDataFromConfig(cfg),
+	}
 	if mdyResult, ok := detect.Detect(s, mdyDcfg); ok {
 		prog, needsBaseYear, cerr := compile.Compile(mdyResult.Def, cfg.timezone)
 		if cerr != nil {
@@ -239,7 +266,12 @@ func buildAmbiguousError(s string, cfg config) error {
 	}
 
 	// DMY interpretation.
-	dmyDcfg := detect.Config{PreferDayFirst: true, Timezone: cfg.timezone}
+	dmyDcfg := detect.Config{
+		PreferDayFirst:  true,
+		PreferYearFirst: cfg.preferYearFirst,
+		Timezone:        cfg.timezone,
+		Locales:         localeDataFromConfig(cfg),
+	}
 	if dmyResult, ok := detect.Detect(s, dmyDcfg); ok {
 		prog, needsBaseYear, cerr := compile.Compile(dmyResult.Def, cfg.timezone)
 		if cerr != nil {

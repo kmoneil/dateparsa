@@ -22,6 +22,16 @@ type formatSpec struct {
 	// year. Those are exactly where the arithmetic these formats need is
 	// wrong, so a spec without them checks the easy half.
 	cases []time.Time
+
+	// zoned says the format writes a numeric zone offset, so the generator
+	// renders each sample in a random zone instead of in UTC.
+	//
+	// It exists because randomTime returns a UTC time and every zone-bearing
+	// format therefore rendered "Z" or "+0000" on all 1000 iterations. The
+	// suite CLAUDE.md calls the one that catches a silent wrong answer had
+	// never round-tripped an offset that was not zero, on any format, and a
+	// wrong offset is a wrong instant.
+	zoned bool
 }
 
 // dateOnly compares year/month/day only.
@@ -76,8 +86,8 @@ var roundTripFormats = []formatSpec{
 	{name: "ISO_DATE", goFmt: "2006-01-02", checkFn: dateOnly},
 	{name: "ISO_DATETIME", goFmt: "2006-01-02T15:04:05", checkFn: dateAndTime},
 	{name: "ISO_DATETIME_Z", goFmt: "2006-01-02T15:04:05Z", checkFn: dateAndTime},
-	{name: "RFC3339", goFmt: time.RFC3339, checkFn: dateAndTime},
-	{name: "RFC3339_NANO", goFmt: time.RFC3339Nano, checkFn: dateTimeAndNano},
+	{name: "RFC3339", goFmt: time.RFC3339, checkFn: dateAndTime, zoned: true},
+	{name: "RFC3339_NANO", goFmt: time.RFC3339Nano, checkFn: dateTimeAndNano, zoned: true},
 
 	// === SQL ===
 	{name: "SQL_DATETIME", goFmt: "2006-01-02 15:04:05", checkFn: dateAndTime},
@@ -107,7 +117,7 @@ var roundTripFormats = []formatSpec{
 	{name: "DAY_MONTH_YEAR", goFmt: "2 January 2006", checkFn: dateOnly},
 
 	// === RFC 2822 ===
-	{name: "RFC2822", goFmt: "Mon, 02 Jan 2006 15:04:05 -0700", checkFn: dateAndTime},
+	{name: "RFC2822", goFmt: "Mon, 02 Jan 2006 15:04:05 -0700", checkFn: dateAndTime, zoned: true},
 
 	// === RFC 1123 ===
 	{
@@ -311,6 +321,33 @@ func weekStart(orig, parsed time.Time) error {
 	return dateOnly(mondayOf(orig), parsed)
 }
 
+// randomZone returns a fixed zone at a random whole-minute offset in the range
+// parseTZOffset accepts, which is -23:59 to +23:59 because RFC 3339 allows it.
+//
+// It draws from the whole range on purpose rather than from the offsets in use
+// today. The executor holds 105 pre-built Locations at 15-minute granularity and
+// builds anything else on demand, so an offset off that grid takes a different
+// path through the code, and a generator that only produced real-world offsets
+// would take the pre-built one about nine times in ten. +05:53 is Bombay before
+// 1955 and -00:44 Monrovia before 1972, so off-grid is historical data rather
+// than a fiction, and M9 is the card about a gate that never reached it.
+func randomZone(rng *rand.Rand) *time.Location {
+	minutes := rng.Intn(2*1439+1) - 1439
+	return time.FixedZone("GEN", minutes*60)
+}
+
+// renderSample renders orig with spec's format, in a random zone where the
+// format writes one.
+func renderSample(spec formatSpec, orig time.Time, rng *rand.Rand) string {
+	if spec.zoned {
+		orig = orig.In(randomZone(rng))
+	}
+	if spec.render != nil {
+		return spec.render(orig)
+	}
+	return orig.Format(spec.goFmt)
+}
+
 // randomTime generates a random time between 1970 and 2099.
 func randomTime(rng *rand.Rand) time.Time {
 	year := 1970 + rng.Intn(130) // 1970-2099
@@ -339,12 +376,7 @@ func TestRoundTrip_Semantic(t *testing.T) {
 			// because a failing boundary is a different report from a failing
 			// iteration and the two want different follow-up.
 			trip := func(label string, orig time.Time) {
-				var input string
-				if spec.render != nil {
-					input = spec.render(orig)
-				} else {
-					input = orig.Format(spec.goFmt)
-				}
+				input := renderSample(spec, orig, rng)
 
 				result, err := ParseWith(input, spec.opts...)
 				if err != nil {

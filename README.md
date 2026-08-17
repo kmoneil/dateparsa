@@ -337,6 +337,13 @@ on the machine the section names, and say what produced it.
 count being a property of the code. It comes from the same run as everything
 else.
 
+The zero in it has one exception. A timezone offset is answered from a table of
+`*time.Location` built at init, at 15-minute granularity out to 14 hours, which
+covers every offset in use today. An offset off that grid, `+05:53` for Bombay
+before 1955 or `-00:44` for Monrovia before 1972, is built on first sight and
+cached: three allocations for the first row of such a column and none for the
+rest.
+
 ### Hot path (compiled Layout reuse)
 
 Apple M2 Max, Go 1.26.6, 12 cores, benchstat over 12 runs, all within ±2%.

@@ -43,6 +43,15 @@ var (
 // Parse parses a date string using this pre-detected layout.
 // Skips format detection entirely. This is the hot path.
 //
+// It allocates nothing, which is the reason this type exists, with one
+// exception worth knowing before it surprises you. A timezone offset is
+// answered from a table of Locations built at init, and an offset that is not
+// on a 15-minute boundary or is past 14 hours is not in that table: the first
+// input carrying such an offset builds its Location and caches it, three
+// allocations, and every later input at the same offset allocates nothing. So a
+// column of pre-1955 Indian records, which carry +05:53, allocates three times
+// in total rather than three times per row.
+//
 // Returns a *ParseError if the input does not match the layout,
 // or if this is a sentinel layout (LayoutEpoch, LayoutNaturalLanguage).
 func (l *Layout) Parse(s string) (time.Time, error) {

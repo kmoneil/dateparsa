@@ -2,6 +2,7 @@ package compile
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -749,23 +750,87 @@ var tzOffsetTable [tzTableSize]*time.Location
 func init() {
 	for i := range tzTableSize {
 		minutes := tzTableMinOffset + i*tzTableStep
-		seconds := minutes * 60
-		sign := "+"
-		absMin := minutes
-		if minutes < 0 {
-			sign = "-"
-			absMin = -minutes
-		}
-		h := absMin / 60
-		m := absMin % 60
-		var name string
-		if m == 0 {
-			name = fmt.Sprintf("%s%02d:00", sign, h)
-		} else {
-			name = fmt.Sprintf("%s%02d:%02d", sign, h, m)
-		}
-		tzOffsetTable[i] = time.FixedZone(name, seconds)
+		tzOffsetTable[i] = time.FixedZone(offsetName(minutes), minutes*60)
 	}
+}
+
+// offsetName spells an offset the way every Location this package builds for one
+// is named, "+05:30" and "-00:44", whatever the input wrote.
+//
+// One function because two produced two spellings. The table above names its
+// entries in the canonical form and the fallback below used to name its own with
+// the bytes it had just read, so "+0530" came back with the zone name "+05:30"
+// and "+0537" with "+0537": the same input shape, named two ways, decided by
+// which side of a lookup table the offset happened to fall. Time.Format("MST")
+// prints that name, so it is not internal.
+//
+// Naming the fallback from a slice of the input had a second effect. A string
+// slice shares its backing array, so a Location built that way keeps the whole
+// input alive for as long as anything holds the parsed time: one megabyte of CSV
+// row retained by a six-byte zone name.
+//
+// h is at most 23 and m at most 59, both guaranteed by parseTZOffset, so the
+// two-digit fields cannot overflow their bytes.
+func offsetName(minutes int) string {
+	sign := byte('+')
+	if minutes < 0 {
+		sign = '-'
+		minutes = -minutes
+	}
+	h, m := minutes/60, minutes%60
+	buf := [6]byte{
+		sign,
+		byte('0' + h/10), byte('0' + h%10),
+		':',
+		byte('0' + m/10), byte('0' + m%10),
+	}
+	return string(buf[:])
+}
+
+// tzFallbackTable holds the Locations tzOffsetTable cannot: an offset off the
+// 15-minute grid, and one past 14 hours, which parseTZOffset accepts out to
+// 23:59 because RFC 3339 does.
+//
+// Filled on demand rather than at init. Building all 2879 at init costs 300µs
+// and 276KB of heap in every process that links this library, whether or not it
+// ever sees such an offset, which is a poor trade for the case it covers; the
+// array of pointers is 23KB of BSS and costs nothing until an entry is used.
+// Measured on linux/arm64, and the 15-minute table above is 105 entries, 20µs
+// and 20KB, which is what widening it would replace.
+//
+// The case is a historical column, where the offset is the same on every row:
+// +05:53 is Bombay before 1955, -00:44 Monrovia before 1972, +04:51 Kathmandu
+// before 1920. time.FixedZone allocates three times, so a million such rows
+// allocated three million times against a promise of zero. Now the first row
+// allocates and the rest do not.
+//
+// Two goroutines racing to fill one entry both build an equivalent Location and
+// one store wins, which is why this needs no lock: the entries are values
+// derived from the index, not shared state a reader can observe mid-write.
+const (
+	tzFallbackMinOffset = -1439 // -23:59 in minutes
+	tzFallbackSize      = 2*1439 + 1
+)
+
+var tzFallbackTable [tzFallbackSize]atomic.Pointer[time.Location]
+
+// fallbackZone answers an offset the pre-built table does not hold, caching one
+// Location per minute of offset.
+func fallbackZone(totalSeconds int) *time.Location {
+	minutes := totalSeconds / 60
+	idx := minutes - tzFallbackMinOffset
+	if minutes*60 != totalSeconds || idx < 0 || idx >= tzFallbackSize {
+		// Not reachable from parseTZOffset, which builds totalSeconds from a
+		// bounded hour and minute. Correct rather than cached, so that a caller
+		// building a Program by hand cannot index out of the array.
+		return time.FixedZone(offsetName(minutes), totalSeconds)
+	}
+	if loc := tzFallbackTable[idx].Load(); loc != nil {
+		return loc
+	}
+	loc := time.FixedZone(offsetName(minutes), totalSeconds)
+	tzFallbackTable[idx].Store(loc)
+	return loc
 }
 
 // lookupTZByOffset returns a pre-built *time.Location for the given offset
@@ -840,9 +905,9 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 		return loc, true
 	}
 
-	// Slow path: uncommon offset, allocate via FixedZone.
-	name := s[off : off+length]
-	return time.FixedZone(name, totalSeconds), true
+	// Slow path: an offset off the grid or past 14 hours. Cached per minute,
+	// so a column of them allocates on its first row and not on the rest.
+	return fallbackZone(totalSeconds), true
 }
 
 // Pre-built timezone abbreviation Locations — allocated once at init.

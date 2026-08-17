@@ -155,6 +155,25 @@ to fill the same key build equal values and one of them wins, so what a reader
 gets does not depend on who got there first. No input a caller passes reaches
 any of them as a key.
 
+**A fourth cache is keyed on the input, and it is bounded by arithmetic rather
+than by trust.** A timezone offset resolves against a table of `*time.Location`
+built at `init()` at 15-minute granularity, and an offset off that grid or past
+14 hours is built on first sight and stored in a fixed array of 2879
+`atomic.Pointer[time.Location]`, one per minute from -23:59 to +23:59. That is
+the whole range `parseTZOffset` accepts, so the array cannot grow, cannot be
+indexed out of range, and holds at most 2879 Locations however many distinct
+offsets an attacker sends: about 200KB if every one of them is reached, against
+23KB of pointers that are there either way. Each entry is derived from its own
+index and from nothing else, so a race to fill one builds two equal Locations
+and either may win.
+
+The alternative was to build all 2879 at `init()`, which costs 300µs of startup
+and 276KB of heap in every process that links this library whether or not it
+ever sees such an offset. The cache is the same benefit for 23KB and no startup
+cost. Before either, an off-grid offset built a Location on **every** call:
+three allocations per row for a column of historical records, against a promise
+of zero.
+
 `Layout` holds a value-type `Program`
 and no pointers into caller memory, which is why it is safe to share across
 goroutines. `Parser` holds one piece of mutable state, the cached layout, in an

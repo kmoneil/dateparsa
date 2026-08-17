@@ -1,6 +1,8 @@
 package dateparsa
 
 import (
+	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 )
@@ -219,9 +221,50 @@ func BenchmarkLayout_Parse_TZName_CET(b *testing.B) {
 	}
 }
 
+// BenchmarkLayout_Parse_TZOffset_OffGrid is the offset half of the benchmark
+// above, and the same shape of hole: an offset off the 15-minute grid missed
+// the pre-built table and built a Location per call, three allocations, while
+// the on-grid benchmark beside it reported zero.
+//
+// The pair is the point. Both run the same program over the same format and
+// differ by seven minutes of zone offset.
+func BenchmarkLayout_Parse_TZOffset_OffGrid(b *testing.B) {
+	const in = "2024-03-15T10:30:00+05:53" // Bombay, until 1955
+	result, err := Parse(in)
+	if err != nil {
+		b.Fatal(err)
+	}
+	layout := result.Layout
+	b.ResetTimer()
+	for b.Loop() {
+		layout.Parse(in)
+	}
+}
+
+func BenchmarkLayout_Parse_TZOffset_OnGrid(b *testing.B) {
+	const in = "2024-03-15T10:30:00+05:30"
+	result, err := Parse(in)
+	if err != nil {
+		b.Fatal(err)
+	}
+	layout := result.Layout
+	b.ResetTimer()
+	for b.Loop() {
+		layout.Parse(in)
+	}
+}
+
 // zeroAllocSample is fixed so a failure reproduces. It carries a fraction and a
 // day and month over 12, so the formats that read those are exercised.
 var zeroAllocSample = time.Date(2024, 3, 15, 10, 30, 45, 123000000, time.UTC)
+
+// zeroAllocGenerated is how many generated samples each format is checked over,
+// on top of the fixed one. Eight is enough to reach both widths of a 1-or-2
+// digit field and, for a zone-bearing format, to land off the 15-minute grid
+// with near certainty: 105 of the 2879 offsets the generator draws from are on
+// it, so eight draws miss the grid 74 times in 100 at worst and always in
+// practice at this seed.
+const zeroAllocGenerated = 8
 
 // zeroAllocExtras are inputs the round-trip table cannot produce.
 //
@@ -256,6 +299,24 @@ var zeroAllocExtras = []struct{ name, input string }{
 	{"TZ_OFFSET/-08:00", "2024-03-15T10:30:00-08:00"},
 	{"TZ_OFFSET/+0530", "2024-03-15 10:30:00 +0530"},
 	{"TZ_Z", "2024-03-15T10:30:00Z"},
+
+	// Off the 15-minute grid, which is the other side of the branch above and
+	// the one M9 was filed for: every sample in this file used to sit on the
+	// grid, so the fallback three lines below the one they exercise had never
+	// been measured. It allocated three times per call.
+	//
+	// Historical zones are the case. Not a fiction, and not one row: a column
+	// of pre-1955 Indian records carries +05:53 on every row.
+	{"TZ_OFFSET/+05:53", "2024-03-15T10:30:00+05:53"}, // Bombay, until 1955
+	{"TZ_OFFSET/-00:44", "2024-03-15T10:30:00-00:44"}, // Monrovia, until 1972
+	{"TZ_OFFSET/+04:51", "2024-03-15T10:30:00+04:51"}, // Kathmandu, until 1920
+	{"TZ_OFFSET/+0537", "2024-03-15 10:30:00 +0537"},  // off-grid, no colon
+
+	// Past the pre-built table's range rather than off its grid. It stops at
+	// +14:00 and parseTZOffset accepts out to 23:59, so these take the same
+	// fallback for a different reason.
+	{"TZ_OFFSET/+23:59", "2024-03-15T10:30:00+23:59"},
+	{"TZ_OFFSET/-23:59", "2024-03-15T10:30:00-23:59"},
 
 	// Variable-width numeric, which reaches the 1-or-2 ops and their delta.
 	{"NUMERIC/1or2", "3/15/2024"},
@@ -304,13 +365,26 @@ func TestLayoutParseZeroAlloc(t *testing.T) {
 		}
 	}
 
+	// The fixed sample first, then samples this test did not choose.
+	//
+	// A list of inputs known to pass is not a gate, and this one has been
+	// widened twice after it reported green over a defect: M2 for the zone
+	// names, M9 for the zone offsets. Both times the sample set was chosen by
+	// somebody who knew which inputs satisfied it, so it could not discover
+	// one that did not. The generator can: it is the same rng and the same
+	// seed the round-trip suite runs on, and for a zone-bearing format it now
+	// draws an offset from the whole range rather than rendering UTC.
+	//
+	// Deterministic, so a failure reproduces: seed 42, and the subtests run in
+	// order without t.Parallel.
+	rng := rand.New(rand.NewSource(42))
 	for _, spec := range roundTripFormats {
-		input := zeroAllocSample.Format(spec.goFmt)
-		if spec.render != nil {
-			input = spec.render(zeroAllocSample)
-		}
 		t.Run(spec.name, func(t *testing.T) {
-			check(t, spec.name, input, spec.opts...)
+			check(t, spec.name+"/fixed", renderSample(spec, zeroAllocSample, rng), spec.opts...)
+			for i := range zeroAllocGenerated {
+				check(t, fmt.Sprintf("%s/gen%d", spec.name, i),
+					renderSample(spec, randomTime(rng), rng), spec.opts...)
+			}
 		})
 	}
 

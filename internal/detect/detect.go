@@ -2290,8 +2290,12 @@ func equalsFoldASCII(a, b string) bool {
 
 // isWordChar returns true for characters that can be part of a word
 // (letters, including non-ASCII bytes which may be part of UTF-8 sequences).
+//
+// One definition, in compile, because the executor verifies as a whole word
+// what this package finds as one and the two disagreeing is C24. See
+// compile.IsWordChar.
 func isWordChar(c byte) bool {
-	return isLetter(c) || c >= 0x80
+	return compile.IsWordChar(c)
 }
 
 func isLetter(c byte) bool {

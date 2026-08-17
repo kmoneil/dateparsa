@@ -546,3 +546,46 @@ func TestFusionMatchesTheUnfusedProgram(t *testing.T) {
 		})
 	}
 }
+
+// TestMonthNameMatchesRequiresAWholeWord pins the boundary rule directly, which
+// the round-trip and reuse tests only reach through a detected layout.
+//
+// The rule has to be the one detect applies when it finds a name, because the
+// executor's job is to verify what detection found. A letter either side is a
+// refusal; a digit, punctuation or the end of the input is not. C24.
+func TestMonthNameMatchesRequiresAWholeWord(t *testing.T) {
+	const march = 3
+	tests := []struct {
+		name string
+		s    string
+		off  int
+		want bool
+	}{
+		{"alone", "Mar", 0, true},
+		{"space either side", "1 Mar 2024", 2, true},
+		{"start of input", "Mar 15", 0, true},
+		{"end of input", "15 Mar", 3, true},
+		{"digit after", "Mar15", 0, true},
+		{"digit before", "15Mar", 2, true},
+		{"punctuation after", "Mar, 2024", 0, true},
+		{"punctuation before", "15-Mar-2024", 3, true},
+
+		// The C24 shapes.
+		{"letter after", "MarAA1MAY", 0, false},
+		{"letter before", "AAMar 15", 2, false},
+		{"letter both sides", "xMary", 1, false},
+
+		// A byte over 0x7f is a word character: it is part of a rune, and a
+		// name butted against one is not a whole word to detect either.
+		{"utf-8 byte after", "Maré", 0, false},
+		{"utf-8 byte before", "éMar", 2, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := monthNameMatches(tt.s, tt.off, 3, march); got != tt.want {
+				t.Errorf("monthNameMatches(%q, %d, 3, March) = %v, want %v",
+					tt.s, tt.off, got, tt.want)
+			}
+		})
+	}
+}

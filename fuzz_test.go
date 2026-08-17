@@ -150,6 +150,13 @@ func FuzzLayoutReuse(f *testing.F) {
 		// character class its signature matched on now.
 		{"20-1-00", "10:01:00"},
 		{"10:30:45", "12/25/24"},
+
+		// The same rule at the month name. Detection finds one as a whole word,
+		// so "MArAA1MAY" holds exactly one and it is MAY at offset 6, but the
+		// executor checked the bytes the instruction named and nothing either
+		// side of them. A MONTH_DAY layout read March where detection read May,
+		// with no guess reported on either call. C24.
+		{"MAr A1AAA", "MArAA1MAY"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

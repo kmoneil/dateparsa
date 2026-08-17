@@ -856,6 +856,68 @@ func TestReusedLayoutRefusesAnotherMonth(t *testing.T) {
 	}
 }
 
+// TestReusedLayoutRefusesAMonthNameInsideAWord is C24.
+//
+// Verifying the month name was not enough on its own. detectTextualMonth finds
+// one as a whole word, so "MArAA1MAY" holds exactly one month name and it is
+// MAY at offset 6, but the executor checked the three bytes the instruction
+// named and nothing either side of them. A MONTH_DAY layout detected from
+// "MAr A1AAA" read that input as March where detection reads it as May, and
+// neither call set Ambiguous, so a caller reusing a layout down a column got a
+// different month from parsing the same row on its own with nothing marking the
+// difference. FuzzLayoutReuse found it and carries it as a seed.
+func TestReusedLayoutRefusesAMonthNameInsideAWord(t *testing.T) {
+	cached, err := Parse("MAr A1AAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const other = "MArAA1MAY"
+
+	fresh, err := Parse(other)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", other, err)
+	}
+	if got := fresh.Time.Month(); got != time.May {
+		t.Fatalf("detection of %q reads month %v, want May; this test's premise moved", other, got)
+	}
+
+	// Refusing is the outcome. The reused layout may not answer March, and it
+	// may not answer May either: the bytes it would have to read to say May are
+	// not where its instructions point.
+	if got, err := cached.Layout.Parse(other); err == nil {
+		t.Errorf("layout detected from %q accepted %q and returned %v, want an error",
+			"MAr A1AAA", other, got)
+	}
+
+	// Its own input still parses, which is what makes this a boundary rule and
+	// not a ban on the shape.
+	if _, err := cached.Layout.Parse("MAr A1AAA"); err != nil {
+		t.Errorf("layout refused the input it was detected from: %v", err)
+	}
+}
+
+// TestMonthNameNextToADigitStillParses is the case the C24 boundary must not
+// break. A digit is not a word character, so a month name butted against one is
+// still a whole word, and detection accepts these for exactly that reason.
+// "MAY10" is in FuzzLayoutReuse's seed list from an earlier defect.
+func TestMonthNameNextToADigitStillParses(t *testing.T) {
+	for _, in := range []string{"MAY10", "MAY 15", "15MAY", "March15, 2024"} {
+		r, err := Parse(in)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", in, err)
+			continue
+		}
+		again, err := r.Layout.Parse(in)
+		if err != nil {
+			t.Errorf("layout detected from %q refused it: %v", in, err)
+			continue
+		}
+		if !again.Equal(r.Time) {
+			t.Errorf("%q: reuse gave %v, detection gave %v", in, again, r.Time)
+		}
+	}
+}
+
 // TestMonthNameVerificationKeepsLocales guards the other direction: the check
 // has to accept every spelling detection matches, or a layout refuses the very
 // input it was detected from. English "sept" and a locale abbreviation with its

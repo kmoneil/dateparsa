@@ -25,7 +25,21 @@ var englishMonths = [12][]string{
 	{"december", "dec"},
 }
 
-// monthNameMatches reports whether s[off:off+length] names the given month.
+// IsWordChar reports whether c can be part of a word: a letter, or any byte of
+// a UTF-8 sequence.
+//
+// It lives here and not beside its callers because detect and this package have
+// to agree about it exactly. detect finds a month name as a whole word and this
+// package verifies one, and where the two disagreed about what a word is, a
+// reused layout read a month the detector would not have found. See
+// monthNameMatches. Two copies of this rule is the shape of that bug, so there
+// is one copy and detect calls it.
+func IsWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80
+}
+
+// monthNameMatches reports whether s[off:off+length] names the given month, as
+// a whole word.
 //
 // OpMonthName used to skip this and take the month from the instruction alone,
 // which is correct for the input a layout was detected from and wrong for every
@@ -39,8 +53,28 @@ var englishMonths = [12][]string{
 // twelve, so an English input costs one or two comparisons and a mismatch is a
 // refusal rather than a different month. Nothing here allocates:
 // strings.EqualFold folds in place.
+//
+// The word boundary is the other half of the same bug and was missing until
+// C24. detectTextualMonth finds a month name with a whole-word match, so
+// "MArAA1MAY" holds exactly one month name and it is MAY at offset 6, while
+// this function looked at the three bytes the instruction named and nothing
+// around them. A MONTH_DAY layout detected from "MAr A1AAA" therefore read that
+// input as March where detection read it as May, and neither call reported a
+// guess. FuzzLayoutReuse found it.
+//
+// A digit either side is still a match. "MAY10" is an input this library
+// accepts, and detection accepts it for exactly this reason: a digit is not a
+// word character, so the name is still a whole word. Every path in
+// findMonthNameCI requires the same two boundaries, which is why this cannot
+// refuse an input detection accepted.
 func monthNameMatches(s string, off, length, month int) bool {
 	if month < 1 || month > 12 || length <= 0 || off+length > len(s) {
+		return false
+	}
+	if off > 0 && IsWordChar(s[off-1]) {
+		return false
+	}
+	if end := off + length; end < len(s) && IsWordChar(s[end]) {
 		return false
 	}
 	got := s[off : off+length]

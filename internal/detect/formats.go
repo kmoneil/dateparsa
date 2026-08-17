@@ -31,6 +31,13 @@ type formatEntry struct {
 	litOffsets [8]uint8
 	nLits      uint8
 
+	// fracOffset is where the fraction's "." sits, or noFracOffset. It is the
+	// one literal that may not be respelled, because ".000" is a token and
+	// writing another byte over its dot turns it into two literals: the layout
+	// would then read "00:00:00/000" and refuse "00:00:00/010". An input that
+	// spells it differently gets no Go layout rather than a wrong one.
+	fracOffset uint8
+
 	name   string
 	sig    []CharClass // Expected signature pattern
 	fields []compile.Field

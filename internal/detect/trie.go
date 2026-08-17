@@ -50,7 +50,7 @@ func buildTrie() *trie {
 		for i := range formats {
 			if len(formats[i].sig) > 0 {
 				stampLiteralClasses(&formats[i])
-				formats[i].litOffsets, formats[i].nLits = literalOffsets(formats[i].goLayout)
+				formats[i].litOffsets, formats[i].nLits, formats[i].fracOffset = literalOffsets(formats[i].goLayout)
 				// Pre-build the FormatDef so Detect doesn't allocate one per call.
 				if !formats[i].ambig && len(formats[i].fields) > 0 {
 					formats[i].def = &compile.FormatDef{
@@ -96,26 +96,48 @@ var litClassOf = [numClasses]compile.LitClass{
 // A layout with more literals than the array holds gets none and no check,
 // which leaves that entry exactly as it was. Eight covers every entry in the
 // tree: the widest is RFC3339_NANO with seven.
-func literalOffsets(goLayout string) (offs [8]uint8, n uint8) {
+func literalOffsets(goLayout string) (offs [8]uint8, n uint8, frac uint8) {
+	frac = noFracOffset
 	if goLayout == "" || len(goLayout) > 255 {
-		return offs, 0
+		return offs, 0, frac
 	}
 	def, err := compile.ParseGoLayout(goLayout)
 	if err != nil {
-		return offs, 0
+		return offs, 0, frac
+	}
+	// The "." of a fraction is a literal to the layout parser and is not one to
+	// respell. ".000" is a token: write the input's "/" over its dot and Go
+	// reads a literal "/" followed by a literal "000", which parses
+	// "00:00:00/000" and refuses "00:00:00/010". A layout that takes one value
+	// of the field it describes is worse than no layout, so the entry reports
+	// none for an input spelled that way.
+	fracAt := -1
+	for _, f := range def.Fields {
+		if f.Kind == compile.FFracSec && f.Offset > 0 {
+			fracAt = int(f.Offset) - 1
+		}
 	}
 	for _, f := range def.Fields {
 		if f.Kind != compile.FLiteral {
 			continue
 		}
+		if int(f.Offset) == fracAt {
+			frac = uint8(f.Offset)
+			continue
+		}
 		if int(n) == len(offs) {
-			return [8]uint8{}, 0
+			return [8]uint8{}, 0, noFracOffset
 		}
 		offs[n] = uint8(f.Offset)
 		n++
 	}
-	return offs, n
+	return offs, n, frac
 }
+
+// noFracOffset is fracOffset's "this layout has no fraction" value. 255 rather
+// than -1 so the field stays a byte, and a layout is at most 255 bytes long, so
+// no real offset can collide with it.
+const noFracOffset = 255
 
 // goLayoutFor returns the Go layout describing s, given the entry that matched
 // it: the entry's own layout when s spells its literals the canonical way, and
@@ -130,8 +152,14 @@ func literalOffsets(goLayout string) (offs [8]uint8, n uint8) {
 // Detect_Only, and splitting the branch nobody takes out of the branch everyone
 // takes is what C17's fraction check did for the same reason.
 func goLayoutFor(e *formatEntry, s string) string {
-	if e.nLits == 0 || len(s) != len(e.goLayout) {
+	// The length test is what makes every index below safe, and the empty test
+	// is for an entry that never had a layout: its offsets were never computed
+	// and its fields are zero rather than absent.
+	if e.goLayout == "" || len(s) != len(e.goLayout) {
 		return e.goLayout
+	}
+	if e.fracOffset != noFracOffset && s[e.fracOffset] != e.goLayout[e.fracOffset] {
+		return ""
 	}
 	for _, off := range e.litOffsets[:e.nLits] {
 		if s[off] != e.goLayout[off] {

@@ -1634,7 +1634,13 @@ func TestGoLayoutDescribesTheInputItCameFrom(t *testing.T) {
 		"2024/03/15 10:30:00",
 		"2024.03.15 10:30:00",
 		"2024/03/15T10:30:00Z",
+
+		// A fraction spelled with anything but a dot is the one case that gets
+		// no Go layout rather than a respelled one: ".000" is a token, and
+		// writing another byte over its dot leaves a layout that reads
+		// "00:00:00/000" and refuses "00:00:00/010".
 		"10:30:00/000",
+		"10:30:00/123",
 	}
 	for _, in := range inputs {
 		r, err := Parse(in)

@@ -29,8 +29,7 @@ func (ft FlexTime) MarshalJSON() ([]byte, error) {
 // and any other format dateparsa can detect.
 func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
-		ft.valid = false
-		ft.t = time.Time{}
+		ft.set(time.Time{}, false, false)
 		return nil
 	}
 
@@ -44,8 +43,7 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 		if err != nil {
 			return fmt.Errorf("flextime: cannot parse %q: %w", s, err)
 		}
-		ft.t = result.Time
-		ft.valid = true
+		ft.set(result.Time, true, result.Ambiguous)
 		return nil
 	}
 
@@ -68,8 +66,7 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 			if !ok {
 				return fmt.Errorf("flextime: %d is not a timestamp this package accepts", v)
 			}
-			ft.t = t
-			ft.valid = true
+			ft.set(t, true, false)
 			return nil
 		}
 		// Out of int64 range. Fall through: the seconds arm refuses it on range,
@@ -84,8 +81,7 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 	if !ok {
 		return fmt.Errorf("flextime: %v is not a timestamp this package accepts", f)
 	}
-	ft.t = t
-	ft.valid = true
+	ft.set(t, true, false)
 	return nil
 }
 

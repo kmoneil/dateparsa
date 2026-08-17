@@ -23,16 +23,14 @@ import (
 // can carry and because it is what the column type means. NaN and the infinities
 // are refused rather than converted; the conversion was implementation-defined
 // and gave different instants on arm64 and amd64.
-func (ft *FlexTime) Scan(src interface{}) error {
+func (ft *FlexTime) Scan(src any) error {
 	switch v := src.(type) {
 	case nil:
-		ft.t = time.Time{}
-		ft.valid = false
+		ft.set(time.Time{}, false, false)
 		return nil
 
 	case time.Time:
-		ft.t = v
-		ft.valid = true
+		ft.set(v, true, false)
 		return nil
 
 	case string:
@@ -46,8 +44,7 @@ func (ft *FlexTime) Scan(src interface{}) error {
 		if !ok {
 			return fmt.Errorf("flextime: %d is not a timestamp this package accepts", v)
 		}
-		ft.t = t
-		ft.valid = true
+		ft.set(t, true, false)
 		return nil
 
 	case float64:
@@ -55,8 +52,7 @@ func (ft *FlexTime) Scan(src interface{}) error {
 		if !ok {
 			return fmt.Errorf("flextime: %v is not a timestamp this package accepts", v)
 		}
-		ft.t = t
-		ft.valid = true
+		ft.set(t, true, false)
 		return nil
 
 	default:
@@ -82,7 +78,6 @@ func (ft *FlexTime) scanString(s string) error {
 	if err != nil {
 		return fmt.Errorf("flextime: cannot parse %q: %w", s, err)
 	}
-	ft.t = result.Time
-	ft.valid = true
+	ft.set(result.Time, true, result.Ambiguous)
 	return nil
 }

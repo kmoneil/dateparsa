@@ -6,9 +6,14 @@ import (
 	"time"
 )
 
+// TestNewWithOptions used to pass WithTimezone here, which did nothing: the
+// option was dropped unless a jsonFormat came with it, and the three FlexTime
+// parse paths never read it either. The test only asserted Valid and Time, so it
+// passed throughout. It takes a MarshalOption now, and the version that did not
+// no longer compiles, which is the point of splitting the types.
 func TestNewWithOptions(t *testing.T) {
 	now := time.Now()
-	ft := NewWithOptions(now, WithTimezone(time.UTC))
+	ft := NewWithOptions(now, WithJSONFormat(time.RFC822))
 	if !ft.Valid() {
 		t.Error("NewWithOptions should produce valid FlexTime")
 	}

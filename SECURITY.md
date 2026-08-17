@@ -85,13 +85,33 @@ likely to be a compact date or a bare year, and reading `"20240315"` as a
 timestamp is the mistake the range bound was introduced to prevent; a value a
 schema has already typed as a number has no date reading to protect.
 
-**`flextime` does not report ambiguity, and cannot reach strict mode.** A
-`FlexTime` that scanned `"01/02/2024"` holds one of two honest readings and has no
-way to say so, and there is no `flextime` equivalent of `WithStrictMode`. If you
-are parsing dates across a trust boundary through this type and a wrong day has
-consequences, parse the string yourself with `ParseWith` and strict mode until
-that is fixed. It is tracked and it is a real gap in what this document promises
-under *Ambiguity is reported, never hidden* below.
+**Ambiguity is reported here too, and can be refused.** `FlexTime.Ambiguous()`
+carries the flag `dateparsa.Parse` returns beside the time, on every path that
+parses a string: `Scan`, `UnmarshalJSON`, `UnmarshalText` and `Scanner.Scan`. It is
+false for a value that arrived already typed, and it is cleared on reuse, which
+matters because `database/sql` hands the same `*FlexTime` to every row of a result
+set.
+
+Every one of those paths dropped the flag until 2026-08-17. A row from a database
+or a field from a JSON body carried a guessed day with `Valid()` true and no way at
+all to find out, which made the promise under *Ambiguity is reported, never hidden*
+below true of the root package and false of the type this library recommends for
+database models and JSON APIs.
+
+**Refusing needs configuration, and configuration reaches a `Scanner` only.**
+`flextime.NewScanner(flextime.WithStrictMode(true))` returns dateparsa's
+`*AmbiguousDateError` for a value with more than one honest reading, and
+`errors.Is` and `errors.As` both work through the wrapping. A `FlexTime` reached
+through `encoding/json` or `database/sql` is constructed by the decoder, so there
+is no moment at which a caller could attach an option to it; at that boundary,
+checking `Ambiguous()` after the fact is the equivalent, and it is the reason the
+accessor exists rather than only the option.
+
+`ParseOption` and `MarshalOption` are separate types for the same reason. There
+used to be one, and three of its four constructors silently did nothing on the
+value they were most likely passed to:
+`NewWithOptions(t, WithPreferDayFirst(true))` compiled, ran, and read US order on
+every row. It no longer compiles.
 
 ## What is not possible, by construction
 

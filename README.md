@@ -179,11 +179,29 @@ type APIResponse struct {
     Deleted flextime.FlexTime `json:"deleted"` // null
 }
 
-// Pre-configured scanner for non-default options
+// A guessed day is reported here too, the same as result.Ambiguous is above
+fmt.Println(u.CreatedAt.Ambiguous()) // true if the day came from a preference
+
+// Configured parsing goes through a Scanner, which is the only place options
+// can reach: encoding/json and database/sql construct the value themselves.
 scanner := flextime.NewScanner(flextime.WithPreferDayFirst(true))
 var ft flextime.FlexTime
 scanner.Scan(&ft, "01/02/2024") // February 1, not January 2
+
+// Or refuse to guess at all
+strict := flextime.NewScanner(flextime.WithStrictMode(true))
+err := strict.Scan(&ft, "01/02/2024")
+// err is *dateparsa.AmbiguousDateError with both interpretations
 ```
+
+`ParseOption` and `MarshalOption` are separate types so that a parse option cannot
+be handed to a value that will never parse with it. `WithPreferDayFirst`,
+`WithTimezone` and `WithStrictMode` go to `NewScanner`; `WithJSONFormat` goes to
+`NewWithOptions`. Mixing them does not compile.
+
+At the JSON boundary there is no `Scanner` to configure, because `encoding/json`
+constructs the value. `Ambiguous()` after unmarshalling is the equivalent: it is set
+on every path that parses a string.
 
 A numeric column or a bare JSON number takes its precision from how many digits it
 is written with, the same reading a string of those digits gets: 10 to 12 digits are

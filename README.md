@@ -64,6 +64,17 @@ for _, row := range rows {
 }
 ```
 
+Not every result carries a layout you can reuse. A Unix timestamp has no format
+to reuse, and `3 days ago` resolves against the time it was parsed at, so both
+come back as sentinels that refuse to re-parse rather than answering a different
+day later. Ask before keeping one:
+
+```go
+if result.Layout.Reusable() {
+    // safe for the rest of the column
+}
+```
+
 ### Batch parsing
 
 ```go

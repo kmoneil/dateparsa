@@ -192,9 +192,12 @@ func FuzzLayoutReuse(f *testing.F) {
 }
 
 // reusable reports whether a Layout can be re-applied to another input.
-// The sentinels carry no program and refuse by design.
+//
+// It asks the layout rather than comparing it against the two sentinels by
+// identity, which is what it used to do and what a third sentinel would have
+// broken silently.
 func reusable(l *Layout) bool {
-	return l != nil && l != LayoutEpoch && l != LayoutNaturalLanguage
+	return l.Reusable()
 }
 
 // FuzzDetect ensures that format detection never panics.

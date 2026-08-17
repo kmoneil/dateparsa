@@ -35,10 +35,46 @@ type Layout struct {
 // These are returned by Parse/ParseWith for inputs that don't have a
 // reusable format (epoch timestamps and natural language expressions).
 // Calling Parse or ParseBytes on a sentinel layout returns a *ParseError.
+//
+// They are compared by identity and must not be reassigned. That is the same
+// contract io.EOF and time.UTC carry, for the same reason: Go has no immutable
+// package-level pointer, so a sentinel is a var and the convention does the
+// work. Assigning nil to one of these makes Parse return a ParseResult whose
+// Layout is nil, and the panic lands in the caller's code on the line that
+// reuses it.
+//
+// Prefer Reusable to comparing against these. It answers the question a caller
+// actually has, and it stays right if a third sentinel is ever added.
 var (
 	LayoutEpoch           = &Layout{label: "UNIX_TIMESTAMP"}
 	LayoutNaturalLanguage = &Layout{label: "NATURAL_LANGUAGE"}
 )
+
+// Reusable reports whether this Layout can parse another input.
+//
+// It is false for the sentinels above, which describe a result rather than a
+// format: an epoch timestamp has no format to reuse, and "3 days ago" resolves
+// against the time it was parsed at, so re-running it later against a different
+// base would answer a different day from a value the caller believes is a
+// compiled layout. Both refuse rather than answering, and this is how to ask
+// before finding out.
+//
+// A nil Layout is not reusable rather than a panic, because the point of this
+// method is to be the check a caller makes before using what they were handed.
+//
+//	result, err := dateparsa.Parse(s)
+//	if err == nil && result.Layout.Reusable() {
+//	    // keep it for the rest of the column
+//	}
+//
+// It exists because the alternative was writing one. The comparison benchmark
+// in this repository, which is a separate module and therefore an ordinary
+// caller, had a helper that called Parse("") and then string-compared
+// Layout.String() against "UNIX_TIMESTAMP" and "NATURAL_LANGUAGE" to work this
+// out.
+func (l *Layout) Reusable() bool {
+	return l != nil && l.program.N != 0
+}
 
 // Parse parses a date string using this pre-detected layout.
 // Skips format detection entirely. This is the hot path.

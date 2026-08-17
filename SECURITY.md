@@ -142,8 +142,19 @@ Nothing but the Go standard library reaches your binary through this library, so
 there is no transitive dependency to audit and nothing here for a compromised
 upstream package to ride in on.
 
-**No global mutable state a caller can observe.** Locale data registers itself
-through `init()` and is read-only from then on.
+**No global mutable state a caller can observe, with one exception the language
+does not let this library remove.** Locale data registers itself through
+`init()` and is read-only from then on.
+
+The exception is `LayoutEpoch` and `LayoutNaturalLanguage`, two exported `var`s
+of pointer type, so any package in the linked binary can reassign them. Setting
+one to nil makes `Parse` return a `ParseResult` whose `Layout` is nil, and the
+panic lands in the caller's code on the line that reuses it. It is the contract
+`io.EOF` and `time.UTC` carry, for the same reason: Go has no immutable
+package-level pointer, and a sentinel compared by identity has to be a var. The
+threat model does not include a hostile package inside your own binary, which
+is what it would take, and `Layout.Reusable` is there so that ordinary code
+never has to name either of them.
 
 Three caches are built lazily beside it, because deriving their contents at
 `init()` would pay for twenty locales a caller may never configure: the month

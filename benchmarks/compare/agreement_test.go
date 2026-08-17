@@ -178,13 +178,10 @@ func araddonCanReuse(input string) (string, bool) {
 // reusable reports whether a Layout can re-parse. Epoch and natural-language
 // results are sentinels with no program, by design, and asking one to re-parse
 // is an error rather than a slow path.
+//
+// This used to call Parse("") and then string-compare Layout.String() against
+// the two sentinel labels, because the library had no way to ask. It does now,
+// and this function stays only to name what the call means here.
 func reusable(l *dateparsa.Layout) bool {
-	_, err := l.Parse("")
-	if err == nil {
-		return true
-	}
-	// A sentinel refuses with a message naming itself; a real layout refuses ""
-	// because it does not describe zero bytes.
-	s := l.String()
-	return s != "UNIX_TIMESTAMP" && s != "NATURAL_LANGUAGE"
+	return l.Reusable()
 }

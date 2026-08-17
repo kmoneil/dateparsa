@@ -419,6 +419,53 @@ func TestParse_NLLayout(t *testing.T) {
 	}
 }
 
+// TestLayoutReusableAgreesWithParse is N9.1's half that is a change to the API
+// rather than to a document.
+//
+// Reusable answers the question every caller of this library has after a parse,
+// and until now there was no way to ask it. The comparison benchmark, which is
+// a separate module and therefore an ordinary caller, worked it out by calling
+// Parse("") and string-comparing Layout.String() against the two sentinel
+// labels. In this package the fuzz target compared against the two sentinels by
+// identity, which a third sentinel would have broken silently.
+//
+// The property is the one a caller needs: Reusable is true exactly when
+// re-parsing works.
+func TestLayoutReusableAgreesWithParse(t *testing.T) {
+	base := time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC)
+	for _, in := range []string{
+		"2024-03-15",
+		"2024-03-15T10:30:00Z",
+		"2024-03-15T10:30:00+05:53", // off the pre-built zone grid
+		"March 15, 2024",
+		"01/02/2024",
+		"10:30:00",
+		"1710504800",       // epoch, a sentinel
+		"1710504800000",    // epoch in milliseconds
+		"3 days ago",       // natural language, the other sentinel
+		"now",              //
+		"yesterday at 5pm", //
+	} {
+		result, err := ParseWith(in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q): %v", in, err)
+			continue
+		}
+		_, perr := result.Layout.Parse(in)
+		if got, want := result.Layout.Reusable(), perr == nil; got != want {
+			t.Errorf("ParseWith(%q).Layout: Reusable()=%v but re-parsing %s",
+				in, got, map[bool]string{true: "succeeds", false: "fails"}[perr == nil])
+		}
+	}
+
+	// The check a caller makes before using what they were handed, so it has to
+	// survive the value being nil rather than being the panic it is guarding.
+	var nilLayout *Layout
+	if nilLayout.Reusable() {
+		t.Error("(*Layout)(nil).Reusable() = true")
+	}
+}
+
 // TestLayoutRefusesTrailingInput pins the property Parser depends on: a layout
 // describes a whole input or refuses it. Without this, a cached ISO8601_DATE
 // accepted "2024-03-16T10:30:00Z" and returned midnight with no error, so one

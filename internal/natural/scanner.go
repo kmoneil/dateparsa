@@ -883,14 +883,25 @@ func tokenCap(n int) int {
 }
 
 // ScanLocale tokenizes a natural language date string using locale-specific keywords.
+//
+// It lowers and folds the input and then calls scanLowered. Parse does those two
+// steps once and calls scanLowered directly for each locale, because neither
+// depends on the locale; this entry point is for a caller with one locale and
+// for the fuzz target.
 func ScanLocale(s string, loc *locale.Data) []Token {
+	// Fold accents for matching (e.g., "días" → "dias").
+	return scanLowered(foldAccents(strings.ToLower(s)), loc)
+}
+
+// scanLowered tokenizes an input that has already been lowered and folded.
+//
+// Pos and Raw are offsets into that string and not into the caller's original,
+// which is what Token's own comment says and why it says it: ToLower and
+// foldAccents both change lengths.
+func scanLowered(lower string, loc *locale.Data) []Token {
 	if loc == nil {
 		return nil
 	}
-
-	lower := strings.ToLower(s)
-	// Fold accents for matching (e.g., "días" → "dias").
-	lower = foldAccents(lower)
 
 	words := getLocaleWords(loc)
 	// This function is otherwise Scan's copy for a locale's phrase table, and

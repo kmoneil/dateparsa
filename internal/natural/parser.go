@@ -1,6 +1,7 @@
 package natural
 
 import (
+	"strings"
 	"time"
 
 	"github.com/kmoneil/dateparsa/internal/locale"
@@ -57,8 +58,24 @@ func Parse(s string, cfg Config) *Result {
 	}
 
 	// Try locale-specific tokenizers.
+	//
+	// Nothing below runs without a locale, and the lowering must not either:
+	// hoisting it above this check cost strings.ToLower on every no-locale
+	// miss, which is one allocation for "N/A" and +33% on Parse_Miss_Short.
+	// That benchmark is the shape that has punished two earlier reorderings
+	// around here.
+	if len(cfg.Locales) == 0 {
+		return nil
+	}
+
+	// Lowering and accent folding are functions of the input and not of the
+	// locale, so they happen once here rather than once inside each scan. Three
+	// configured locales meant three strings.ToLower and three foldAccents of
+	// the same bytes, and foldAccents reads every rune of the input before it
+	// can say that nothing folds.
+	lowered := foldAccents(strings.ToLower(s))
 	for _, loc := range cfg.Locales {
-		tokens := ScanLocale(s, loc)
+		tokens := scanLowered(lowered, loc)
 		if r := parseBothReadings(tokens, cfg); r != nil {
 			return r
 		}

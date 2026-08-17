@@ -350,7 +350,25 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			}
 
 		case OpSecond2:
-			v, ok := parse2Bounded(s, off, 0, 60) // 60 for leap second
+			// 0 to 59, where this used to read 0 to 60 with "60 for leap
+			// second" beside it. Accepting the leap second was deliberate and
+			// what it answered was not: 60 fell through to time.Date, which
+			// normalised it, so "2016-12-31T23:59:60Z" came back as
+			// 2017-01-01T00:00:00Z. The date moved, which is the failure this
+			// library exists to prevent, and it moved on exactly the two dates
+			// of the year a leap second can be announced.
+			//
+			// Neither answer a normalising parser can give is right. 23:59:60
+			// is a second that a POSIX clock does not have, so representing it
+			// means either repeating 23:59:59 or skipping to the next day, and
+			// both collide with a real neighbouring second. time.Parse refuses
+			// it by name, the hour and the minute above already refuse 24 and
+			// 60, and a caller who has leap seconds in their data knows which
+			// way they want to fold one better than this library does.
+			//
+			// Found by the over-acceptance half of the oracle, on its first
+			// two-minute run.
+			v, ok := parse2Bounded(s, off, 0, 59)
 			if !ok {
 				return time.Time{}, fieldError("second", off, slen)
 			}

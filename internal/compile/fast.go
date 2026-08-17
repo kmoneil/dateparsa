@@ -304,6 +304,8 @@ func (p *Program) executeFast(s string) (time.Time, error) {
 
 	if in := p.Insts[slotBase+SlotMinute]; in.Op != OpNop {
 		off := int(in.Offset)
+		// 0 to 59. See the OpSecond2 arm in the interpreter for why the leap
+		// second is refused rather than normalised into the next day.
 		v, ok := parse2Bounded(s, off, 0, 59)
 		if !ok || !sepOK(s, off+2, in.Aux) {
 			return time.Time{}, fieldError("minute", off, slen)
@@ -313,7 +315,7 @@ func (p *Program) executeFast(s string) (time.Time, error) {
 
 	if in := p.Insts[slotBase+SlotSecond]; in.Op != OpNop {
 		off := int(in.Offset)
-		v, ok := parse2Bounded(s, off, 0, 60) // 60 for leap second
+		v, ok := parse2Bounded(s, off, 0, 59)
 		if !ok || !sepOK(s, off+2, in.Aux) {
 			return time.Time{}, fieldError("second", off, slen)
 		}

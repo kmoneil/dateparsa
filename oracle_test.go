@@ -225,10 +225,42 @@ func assertAgrees(t *testing.T, input, layout string, got time.Time) {
 
 	want, err := time.Parse(layout, input)
 	if err != nil {
-		// The stdlib refused. Not a finding: this library is deliberately
-		// stricter in places, and enumerating the stdlib's leniency is what
-		// CLAUDE.md says not to do.
-		return
+		// The stdlib refused where this library accepted. That is the direction
+		// this assertion used to return silently on, and C23 walked out through
+		// the gap: "2024-02-30" was the first of March here and "day out of
+		// range" there, on every date-bearing format, for as long as the library
+		// has existed.
+		//
+		// CLAUDE.md's rule is about the other direction. "Do not try to
+		// enumerate the stdlib's leniency" is advice about inputs *this* library
+		// refuses, which is a decision it makes deliberately and often. An input
+		// it *accepts* and the stdlib refuses is a claim about what the input
+		// means, and there is nothing deliberate about it unless somebody wrote
+		// down that there was.
+		//
+		// Before failing, canonicalise the input's literal bytes to the ones the
+		// layout names, which is what retryWithLayoutLiterals explains.
+		var ok bool
+		if want, ok = retryWithLayoutLiterals(input, layout); !ok {
+			// The message quotes the stdlib's complaint about the layout it was
+			// given, which for a class-matched literal is about the byte rather
+			// than about the input. That is why the retry runs first: if it had
+			// parsed, there would be no failure to report.
+			if reason, exempt := oracleLenient[input]; exempt {
+				t.Logf("%q: accepted here and refused by time.Parse, deliberately: %s",
+					input, reason)
+				return
+			}
+			t.Errorf("Parse accepted %q and time.Parse refused it\n"+
+				"  layout     = %q\n"+
+				"  Parse      = %v\n"+
+				"  time.Parse = %v\n"+
+				"  This library is documented as the stricter of the two. If this\n"+
+				"  input is one it should accept, add it to oracleLenient with the\n"+
+				"  reason; otherwise it is a bug in what this library accepts.",
+				input, layout, got, err)
+			return
+		}
 	}
 
 	// The stdlib is not a usable oracle for a timezone abbreviation it does not
@@ -259,6 +291,119 @@ func assertAgrees(t *testing.T, input, layout string, got time.Time) {
 			"  difference  = %v",
 			input, layout, got, want, got.Sub(want))
 	}
+}
+
+// oracleLenient lists inputs this library accepts on purpose where time.Parse
+// refuses, with the reason. Anything not on it that diverges is a finding.
+//
+// **It is empty, and that is the result rather than an oversight.** The list was
+// built by running the assertion over every coverage case, over 200 generated
+// samples of each of the 31 round-trip formats, and over the committed fuzz
+// corpus, and collecting what came out. What came out was three inputs, all of
+// them one defect in Layout.GoLayout rather than lenience, and the separator
+// retry above turns those into comparisons instead of exemptions.
+//
+// So: this library is not deliberately more permissive than the stdlib anywhere
+// a corpus can reach. If an entry ever belongs here, it needs a sentence saying
+// why the input means what this library says it means, and CLAUDE.md's
+// equivalence invariant should gain it too.
+var oracleLenient = map[string]string{}
+
+// retryWithLayoutLiterals re-runs the stdlib with the input's literal bytes
+// replaced by the ones the layout names, and reports whether that parses.
+//
+// A trie entry matches a literal by class rather than by byte. That is
+// deliberate and is why "2024/03/15" and "2024.03.15" parse at all: naming "-"
+// in the entry would refuse them. The stdlib has no such class, so it refuses
+// them for a reason that is about which byte was written and not about what the
+// input means, and the instant is what this oracle is for.
+//
+// So the input is canonicalised rather than the layout being loosened. Writing
+// the input's byte into the layout was the first version and it is the wrong
+// direction: "-07" is a zone token, so rewriting its "-" to the input's "+"
+// turns it into the literal "+07" and the layout stops describing anything.
+// Rewriting the input cannot damage the layout.
+//
+// Only non-alphanumeric bytes are substituted, and "T", which is the one letter
+// a Go layout uses as a literal. Digits are never touched, so a token's value
+// cannot be rewritten: an earlier version substituted wherever the rendered
+// byte matched the layout byte, "05" renders "00" for second zero, the leading
+// digit coincided, and the input's "60" went into the token. The stdlib then
+// answered a minute earlier than the disagreement it was being asked about.
+//
+// **How wide the class should be is a separate question and is not settled
+// here.** It is what lets "0000.01.01+00:00:00" and "00:00:00/000" parse, which
+// no producer writes. This function keeps the oracle pointed at instants; the
+// acceptance question is filed on its own.
+func retryWithLayoutLiterals(input, layout string) (time.Time, bool) {
+	if len(input) != len(layout) {
+		return time.Time{}, false
+	}
+	literal := func(c byte) bool {
+		switch {
+		case c >= '0' && c <= '9':
+			return false
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			return c == 'T'
+		}
+		return true
+	}
+	// The zone token's first byte is part of its value rather than a separator:
+	// "-07" reads "+01" as one hour east, so canonicalising the input's "+" to
+	// the layout's "-" flips the offset and reports a two-hour disagreement that
+	// is this function's own doing. Found by the fuzzer on
+	// "0000.01.01 00:00:00+01". The fraction's "." is a separator and not a
+	// value, so it is left rewritable, which is what turns "00:00:00/000" into a
+	// comparison.
+	zoneToken := func(l string, i int) bool {
+		for _, tok := range [...]string{"-07:00:00", "-070000", "-07:00", "-0700", "-07"} {
+			if strings.HasPrefix(l[i:], tok) {
+				return true
+			}
+		}
+		return false
+	}
+	b := []byte(input)
+	changed := false
+	// AM/PM is the one token the stdlib matches case-sensitively: "PM" takes
+	// "AM" and "PM" and nothing else, "pm" takes the lower-case pair. Every
+	// other letter token it matches with a case-insensitive compare, month and
+	// day names included, so this is a quirk of one token rather than a
+	// difference of opinion about the input. This library folds case
+	// everywhere, deliberately, because "01:00 Am" is a thing that gets
+	// written.
+	for i := 0; i+1 < len(layout); i++ {
+		if layout[i] != 'P' && layout[i] != 'p' || layout[i+1] != 'M' && layout[i+1] != 'm' {
+			continue
+		}
+		up := layout[i] == 'P'
+		for j := i; j < i+2; j++ {
+			c := b[j]
+			if up && c >= 'a' && c <= 'z' {
+				c -= 32
+			} else if !up && c >= 'A' && c <= 'Z' {
+				c += 32
+			}
+			if c != b[j] {
+				b[j] = c
+				changed = true
+			}
+		}
+	}
+	for i := range b {
+		if zoneToken(layout, i) {
+			continue
+		}
+		if literal(b[i]) && literal(layout[i]) && b[i] != layout[i] {
+			b[i] = layout[i]
+			changed = true
+		}
+	}
+	if !changed {
+		return time.Time{}, false
+	}
+	want, err := time.Parse(layout, string(b))
+	return want, err == nil
 }
 
 func flattenYear(t time.Time) time.Time {
@@ -309,6 +454,33 @@ func FuzzParseAgreesWithTimeParse(f *testing.F) {
 		"March 15, 2024 10:30:00.1234567890",
 		"3/15/2024 10:30:00.1234567890",
 		"15 Mar 2024 10:30:00.99999999999999999999999",
+
+		// C23. Every one of these was the first of the next month, with a nil
+		// error, where time.Parse says "day out of range". They are seeds rather
+		// than only a table because this target is what would have found them:
+		// the table tests parse inputs somebody chose, and nobody chooses a date
+		// that does not exist.
+		"2024-02-30",
+		"2024-02-31",
+		"2023-02-29",
+		"1900-02-29",
+		"2024-04-31",
+		"2024-02-30T10:30:00Z",
+		"2024-02-30 10:30:00",
+		"20240230",
+
+		// The leap second, which the over-acceptance assertion found on its
+		// first two-minute run. Accepting 60 was deliberate; answering
+		// 2017-01-01T00:00:00Z for it was not.
+		"2016-12-31T23:59:60Z",
+		"2024-06-30 23:59:60",
+		"20240630235960",
+
+		// The separator classes, which is what the retry inside assertAgrees is
+		// for: one trie entry accepts all three and reports the dashed layout.
+		"2024/03/15",
+		"2024.03.15",
+		"2024/03/15 10:30:00",
 	}
 	for _, s := range seeds {
 		f.Add(s)

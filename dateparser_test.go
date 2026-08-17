@@ -1574,3 +1574,31 @@ func TestImpossibleDayIsRefused(t *testing.T) {
 		t.Errorf("Layout.Parse(\"2024-02-29\"): %v", err)
 	}
 }
+
+// TestLeapSecondIsRefused is C24, found by the over-acceptance half of the
+// oracle on its first two-minute run.
+//
+// The second was range-checked at 0 to 60 with "60 for leap second" beside it.
+// Accepting it was deliberate and what it answered was not: 60 fell through to
+// time.Date, which normalised it, so a leap second moved the date. It moved on
+// exactly the two dates of the year one can be announced.
+func TestLeapSecondIsRefused(t *testing.T) {
+	for _, in := range []string{
+		"2016-12-31T23:59:60Z",  // a real leap second, the last one announced
+		"2024-06-30 23:59:60",   // the other date one can fall on
+		"20240630235960",        // compact, so it is not the colon being checked
+		"2024-03-15 10:30:60",   // and any other second, which was never a leap one
+		"2024-03-15T10:30:60Z",  //
+		"3/15/2024 10:30:60 AM", //
+	} {
+		if _, err := ParseWith(in, WithBaseTime(time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC))); err == nil {
+			t.Errorf("ParseWith(%q) returned no error; a second of 60 rolled the date forward", in)
+		}
+	}
+	// 59 still parses, on both executor paths.
+	for _, in := range []string{"2016-12-31T23:59:59Z", "20161231235959"} {
+		if _, err := Parse(in); err != nil {
+			t.Errorf("Parse(%q): %v", in, err)
+		}
+	}
+}

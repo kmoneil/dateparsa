@@ -356,12 +356,18 @@ on the machine the section names, and say what produced it.
 count being a property of the code. It comes from the same run as everything
 else.
 
-The zero in it has one exception. A timezone offset is answered from a table of
+The zero in it has two exceptions. A timezone offset is answered from a table of
 `*time.Location` built at init, at 15-minute granularity out to 14 hours, which
 covers every offset in use today. An offset off that grid, `+05:53` for Bombay
 before 1955 or `-00:44` for Monrovia before 1972, is built on first sight and
 cached: three allocations for the first row of such a column and none for the
 rest.
+
+The second is `Layout.ParseBytes`, which is not a row in the table. It copies its
+argument to a string, and the runtime answers that out of a stack buffer for 32
+bytes or less and out of the heap above it: one allocation a row for a format
+wider than 32 bytes, and none for the rest, which is most of them.
+`Layout.Parse` on a string you already hold allocates nothing at any length.
 
 ### Hot path (compiled Layout reuse)
 

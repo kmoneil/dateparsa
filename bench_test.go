@@ -332,10 +332,28 @@ var zeroAllocExtras = []struct{ name, input string }{
 	{"FRAC/3", "2024-03-15 10:30:00.123"},
 	{"FRAC/6", "2024-03-15 10:30:00.123456"},
 	{"FRAC/9", "2024-03-15T10:30:00.123456789Z"},
+
+	// Either side of stringCopyStackMax, which is where ParseBytes stops
+	// converting for free. Everything above is at or under it except
+	// TEXTUAL/weekday at 33, and one input a byte over a boundary is not
+	// coverage of the far side of it.
+	{"LONG/frac9+offset", "2024-03-15T10:30:00.123456789+05:30"}, // 35
+	{"SHORT/at the limit", "2024-03-15T10:30:00.12345+05:30"},    // 32
 }
 
+// stringCopyStackMax is the largest []byte the runtime turns into a string
+// without allocating, which it does out of a fixed stack buffer when escape
+// analysis proves the string does not outlive the call. runtime.tmpBuf is
+// [32]byte and slicebytetostring uses it when the length fits.
+//
+// It is a runtime implementation detail rather than a language guarantee. If a
+// Go release moves it, TestLayoutParseZeroAlloc says so by name and by length,
+// which is the failure this constant is here to make legible.
+const stringCopyStackMax = 32
+
 // TestLayoutParseZeroAlloc verifies that Layout.Parse allocates nothing, for
-// every format in the round-trip table and for the extras above.
+// every format in the round-trip table and for the extras above, and that
+// Layout.ParseBytes allocates nothing beyond the copy it is documented to make.
 //
 // CLAUDE.md calls this "the reason the library exists" and runs it in CI, in
 // make ci, and in the pre-commit hook. It used to parse one input,
@@ -345,6 +363,11 @@ var zeroAllocExtras = []struct{ name, input string }{
 // It runs without -race on purpose. The race detector allocates, so folding
 // this into a -race leg reports green while measuring nothing.
 func TestLayoutParseZeroAlloc(t *testing.T) {
+	// Both sides of the ParseBytes boundary have to be reached, or the half
+	// that is not becomes a branch nothing runs. Exactly one input in the whole
+	// set is over 32 bytes today, so this is one deletion away from vacuous.
+	var shortInputs, longInputs int
+
 	check := func(t *testing.T, name, input string, opts ...Option) {
 		t.Helper()
 		result, err := ParseWith(input, opts...)
@@ -362,6 +385,36 @@ func TestLayoutParseZeroAlloc(t *testing.T) {
 		if allocs > 0 {
 			t.Errorf("%s [%v]: Layout.Parse(%q) allocated %.0f times, want 0",
 				name, layout, input, allocs)
+		}
+
+		// ParseBytes is a second entry point running a second function,
+		// Program.ExecuteBytes, and nothing measured it. It is also the entry
+		// point a caller reaches for *because* they want to avoid a copy.
+		//
+		// It does not allocate zero. It converts to string, and the runtime
+		// answers that conversion out of a 32-byte stack buffer when the string
+		// does not escape and out of the heap when it will not fit, so the cost
+		// is 0 up to stringCopyStackMax and exactly 1 above it. The gate is that
+		// number rather than zero: a 0 that becomes 1 under the limit means the
+		// string started escaping, and a 1 that becomes 2 anywhere means
+		// something new was allocated, and both are regressions this would
+		// otherwise miss. The existing extras list already carries a 33-byte
+		// input, TEXTUAL/weekday, so asserting a flat zero here fails on the
+		// spot.
+		b := []byte(input)
+		want := 0.0
+		if len(input) > stringCopyStackMax {
+			want = 1.0
+			longInputs++
+		} else {
+			shortInputs++
+		}
+		allocsB := testing.AllocsPerRun(1000, func() {
+			_, _ = layout.ParseBytes(b)
+		})
+		if allocsB != want {
+			t.Errorf("%s [%v]: Layout.ParseBytes(%q) allocated %.0f times, want %.0f for a %d-byte input",
+				name, layout, input, allocsB, want, len(input))
 		}
 	}
 
@@ -392,5 +445,11 @@ func TestLayoutParseZeroAlloc(t *testing.T) {
 		t.Run(e.name, func(t *testing.T) {
 			check(t, e.name, e.input)
 		})
+	}
+
+	if shortInputs == 0 || longInputs == 0 {
+		t.Errorf("the ParseBytes gate saw %d inputs at or under %d bytes and %d over: "+
+			"both are needed, add one to zeroAllocExtras",
+			shortInputs, stringCopyStackMax, longInputs)
 	}
 }

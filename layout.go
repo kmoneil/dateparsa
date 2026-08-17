@@ -105,6 +105,17 @@ func (l *Layout) Parse(s string) (time.Time, error) {
 }
 
 // ParseBytes is like Parse but operates on a byte slice.
+//
+// It copies b to a string, which costs one allocation for an input longer than
+// 32 bytes and nothing at or below it, because the runtime answers a short
+// non-escaping conversion out of a stack buffer. Every format the detector
+// produces is shorter than that except a few of the textual ones, so a column
+// of ISO 8601 or SQL timestamps costs nothing and a column of
+// "Fri Jul 03 2015 18:04:07 GMT+0100" costs one allocation a row.
+//
+// Avoiding the copy needs either unsafe.String, which this library does not
+// import, or an executor that reads bytes natively, which nobody has costed.
+// Parse on a string you already hold allocates nothing at any length.
 func (l *Layout) ParseBytes(b []byte) (time.Time, error) {
 	if l.program.N == 0 {
 		return time.Time{}, &ParseError{

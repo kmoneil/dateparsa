@@ -178,6 +178,25 @@ bench-compare: bench
 bench-update: bench
 	@cp benchmarks/current.txt benchmarks/baseline.txt
 
+## bench-vs: benchmark against araddon/dateparse (separate module, needs network)
+#
+# benchmarks/compare is its own module, so `bench` above does not reach it and
+# neither does anything else in this file: ./... stops at a nested go.mod. That
+# is the point. The library has zero dependencies and this comparison needs one,
+# so it is quarantined where `go build ./...`, `go test ./...`, govulncheck and
+# `make ci` cannot see it, and run by hand when somebody wants the numbers.
+#
+# Not part of `ci` on purpose. It downloads a module, and a gate that reaches
+# the network fails when the network does.
+.PHONY: bench-vs
+bench-vs:
+	@cd benchmarks/compare && go test -run='^$$' -bench=. -benchmem -count=6 -timeout=1800s .
+
+## bench-vs-check: run the comparison module's correctness tests
+.PHONY: bench-vs-check
+bench-vs-check:
+	@cd benchmarks/compare && go vet ./... && go test -v -run=Test .
+
 # ── Build and gates ──────────────────────────────────────────────────────────
 
 ## build: compile every package

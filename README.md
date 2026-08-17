@@ -354,6 +354,41 @@ between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
 | "yesterday at 5pm"   | 404   | 2      |
 | "3 days ago"         | 413   | 2      |
 
+### Against araddon/dateparse
+
+`github.com/araddon/dateparse` is the other Go library that detects a format
+rather than being told one. `benchmarks/compare/` measures both on the same 16
+formats and `benchmarks/compare/README.md` has the full tables; `make bench-vs`
+reproduces them. It is a separate module so that the zero-dependency promise
+above stays true, and it is not part of `make ci`.
+
+Ratios rather than nanoseconds here, because that run is `linux/arm64` and this
+section is not. araddon is also unmaintained, last released in April 2021, so
+the shape of the difference is worth more than the margin.
+
+| Question                                      | dateparsa vs araddon         |
+| --------------------------------------------- | ---------------------------- |
+| A column of 10k rows, one unknown format      | **1.03x to 8.1x**, ahead on 16 of 16 |
+| Per row once the format is known              | **1.7x to 5.1x**, ahead on 14 of 14, zero allocs |
+| One value parsed cold, no reuse               | 1.3x to 1.8x ahead on 9, **0.45x to 0.90x behind on 7** |
+| A value that is not a date                    | 1.0x to 1.2x ahead on 2, **0.42x to 0.48x behind on 2** |
+
+The two places it loses are worth stating plainly. Cold, it is behind on the
+formats that miss the trie and fall through to a fallback detector, which
+allocates: `03/15/2024 10:30:00` costs ten allocations and is 2.2x slower than
+araddon. On a value that is not a date, it is about twice as slow on free text,
+because after structured and epoch detection both fail it still tries natural
+language, which a caller who never parses "3 days ago" is paying for and will
+not use.
+
+Both are recovered by the second row of a column, which is the case the library
+is for, and neither is recovered by a caller parsing one date at a time.
+
+On correctness the two agree on every one of the 16 formats, returning the same
+instant for the same input. In the other direction, araddon's `ParseFormat`,
+which is its analogue of a reusable `Layout`, returns a layout that does not
+re-parse its own input for 2 of the 16.
+
 ### Regression tracking
 
 The baseline is checked into `benchmarks/baseline.txt`. To check for

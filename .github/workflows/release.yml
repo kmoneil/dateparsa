@@ -12,8 +12,13 @@ on:
     tags:
       - "v*"
 
+# Read at the workflow level, write on the one job that publishes. The gate job
+# runs the whole test suite and needs to read the repository and nothing else,
+# and it used to hold a write token because this block said `contents: write`
+# and every job inherits it. A token is scoped where it is used or it is scoped
+# everywhere.
 permissions:
-  contents: write
+  contents: read
 
 env:
   GO_VERSION: "1.26"
@@ -23,8 +28,8 @@ jobs:
     name: the full gate, on the tagged commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: install the pinned tools
@@ -41,11 +46,15 @@ jobs:
     name: publish
     needs: gate
     runs-on: ubuntu-latest
+    # The only job that writes anything, and the only one running a
+    # third-party action.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       # Attached to the release because the performance claim is the product
@@ -53,7 +62,7 @@ jobs:
       - name: benchmarks
         run: go test -bench=. -benchmem -count=3 -timeout=600s > /tmp/benchmarks.txt
       - name: create the GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
           files: /tmp/benchmarks.txt

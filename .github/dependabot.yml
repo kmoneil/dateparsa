@@ -20,7 +20,16 @@ updates:
     labels:
       - dependencies
 
-  # The workflows pin actions by major version, so this is what moves them.
+  # The workflows pin actions to a commit SHA with the version in a trailing
+  # comment, which is the form Dependabot reads and rewrites, so this is what
+  # moves them. A major tag is mutable and the actions are the real dependency
+  # surface of a project whose stated supply-chain strategy is having no
+  # dependencies at all.
+  #
+  # Untested, because there is no remote yet: nobody has watched Dependabot
+  # bump a grouped set of SHA pins here. If it turns out not to, the pins rot,
+  # and rotting pins are worse than mutable tags. Check this the week after the
+  # remote exists rather than assuming it works.
   - package-ecosystem: github-actions
     directory: /
     schedule:

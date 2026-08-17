@@ -18,8 +18,8 @@ jobs:
     name: format, vet, lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       # Every tool below is installed at the version the Makefile declares.
@@ -32,9 +32,21 @@ jobs:
           make fmt-check
       - name: vet
         run: make vet
-      - uses: golangci/golangci-lint-action@v9
+      # The version comes from the Makefile like every other tool's, rather
+      # than being written here as well. It was `version: v2.12.2` beside a
+      # `GOLANGCI_LINT_VERSION := v2.12.2` in the Makefile: two places that
+      # agreed, until the day somebody moved one.
+      #
+      # The action stays rather than going the way release.yml does it, which
+      # is `go install`. That builds golangci-lint from source, which a release
+      # can afford once and a pull-request gate should not pay on every run;
+      # the action fetches a released binary and caches it.
+      - name: golangci-lint version
+        id: golangci
+        run: echo "version=$(make -s print-GOLANGCI_LINT_VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: ${{ steps.golangci.outputs.version }}
 
   test:
     name: test (${{ matrix.os }})
@@ -56,8 +68,8 @@ jobs:
         # cut the matrix.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: test
@@ -67,8 +79,8 @@ jobs:
     name: zero-alloc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       # Its own job rather than a step in `test`, because it must run without
@@ -82,8 +94,8 @@ jobs:
     name: vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       # There are no dependencies, so everything this can find is in the
@@ -98,8 +110,8 @@ jobs:
     name: size budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       # Twenty locales of compiled data are most of the linked size, and every
@@ -111,8 +123,8 @@ jobs:
     name: benchmarks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       # Informational and deliberately not a required check. A shared runner's
@@ -144,8 +156,8 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: locate the fuzz cache
@@ -157,7 +169,7 @@ jobs:
       # inputs saves them; restore-keys falls back to the most recent corpus,
       # which is whatever the nightly left behind.
       - name: restore the fuzz corpus
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.gocache.outputs.dir }}
           key: fuzz-corpus-${{ github.run_id }}
@@ -166,7 +178,7 @@ jobs:
         run: make fuzz FUZZTIME=20s
       - name: upload any crashers
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: crashers
           path: "**/testdata/fuzz/"

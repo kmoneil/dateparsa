@@ -355,20 +355,26 @@ deterministically on every `go test`. A format that enters the trie without a
 round-trip spec is a format nothing checks for correctness, and that is treated
 as a defect.
 
-**Every extraction primitive validates what it reads, and two of them rely on
-their caller for the length.** `parse1or2Bounded`, `parseFracSec` and
-`parseTZOffset` check the input length themselves and return `(value, ok)`.
-`parse2Digits` and `parse4Digits` do not: they index `s[off]` through
-`s[off+3]` and are called only from arms that have already established the
-length, `parse2Bounded` among them. All 26 call sites were checked, and no live
-path reaches either one unguarded.
+**Every extraction primitive validates what it reads. Two of the six check the
+input length themselves and four leave it to the caller.** `parse1or2Bounded`
+and `parse2Bounded` test against `len(s)` before they index, and return
+`(value, ok)`. `parse2Digits`, `parse4Digits`, `parseFracSec` and
+`parseTZOffset` index at offsets a caller has already bounded: every executor
+arm that reaches them tests `off+length > slen` first, or goes through
+`parse2Bounded`, which is what 15 of the 31 call sites do. All 31 were walked,
+and no live path reaches any of the four unguarded.
 
-**A twenty-seventh call site has to do the same, and this paragraph is the only
+**A thirty-second call site has to do the same, and this paragraph is the only
 place that says so.** The compiled offsets come from a format definition and the
-input does not have to agree with it, so the length check is not optional
-anywhere; it is only located somewhere else for those two. This used to name a
-`parse1or2Digits`, which does not exist, and claim that none of the five assumed
-a caller had checked.
+input does not have to agree with it, so the length check is never optional; for
+those four it is located in the caller. `parseFracSec` and `parseTZOffset` do
+check the *declared* width, nine digits and at least three bytes, which is a
+different question from whether the input is that long.
+
+This used to name a `parse1or2Digits`, which does not exist, and say that none
+of five functions assumed a caller had checked. The correction was drafted with
+the same error one function narrower, because the card that filed it named two
+unguarded primitives and nobody re-read the other three.
 
 ## Timezone resolution reads nothing
 

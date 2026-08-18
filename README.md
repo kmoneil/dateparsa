@@ -232,6 +232,11 @@ INTEGER column is the second of January 1970, while `"86400"` as a string is ref
 because a short string is far more likely to be a compact date or a bare year than a
 timestamp and there is no such ambiguity once a schema has typed it as a number.
 
+What these paths cost is a table in the Performance section below. The numeric arms
+allocate nothing, and a `Scanner`'s rows allocate nothing after the first, while a
+`FlexTime` field filled straight from a text column runs a full detection on every
+row.
+
 ### Options
 
 ```go
@@ -354,7 +359,8 @@ on the machine the section names, and say what produced it.
 
 **Allocs** is the one column that does not depend on the machine, an allocation
 count being a property of the code. It comes from the same run as everything
-else.
+else, except in the `flextime` table, which carries allocations only and was
+counted elsewhere for the reason given there.
 
 The zero in it has two exceptions. A timezone offset is answered from a table of
 `*time.Location` built at init, at 15-minute granularity out to 14 hours, which
@@ -476,6 +482,57 @@ between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
 | "beginning of month" | 357   | 2      |
 | "yesterday at 5pm"   | 404   | 2      |
 | "3 days ago"         | 413   | 2      |
+
+### Database and JSON (flextime)
+
+Allocations only, and this is the one table in the section not measured on the
+machine named at the top. An allocation count is a property of the code and
+reproduces anywhere, which is what makes this table publishable from a
+`linux/arm64` box; the nanoseconds beside it would not be comparable with the
+tables above, so they are not here. Every row is a benchmark in
+`flextime/bench_test.go`:
+
+```bash
+go test -run '^$' -bench . -benchmem ./flextime/
+```
+
+| Operation                                   | Allocs |
+| ------------------------------------------- | ------ |
+| `FlexTime.Scan`, `time.Time`                | 0      |
+| `FlexTime.Scan`, `int64` or `float64`       | 0      |
+| `FlexTime.Scan`, string                     | 1      |
+| `FlexTime.Scan`, `[]byte`                   | 2      |
+| `Scanner.Scan`, string, after the first row | 0      |
+| `FlexTime.Value`                            | 0      |
+| `UnmarshalJSON`, `null`                     | 0      |
+| `UnmarshalJSON`, integer number             | 0      |
+| `UnmarshalJSON`, number with a fraction     | 2      |
+| `UnmarshalJSON`, string                     | 4      |
+| `MarshalJSON`                               | 3      |
+
+A `FlexTime` field filled by `database/sql` from a text column calls
+`FlexTime.Scan`, which calls `Parse`, which detects the format and returns a
+`Layout` this package then discards: one allocation and one full detection for
+every row of the column. A `Scanner` keeps that layout and re-parses with it,
+which is the zero on the `Scanner.Scan` row and the reason the type exists.
+Both are correct; only one of them charges detection once.
+
+`[]byte` costs one more than a string because Go's conversion to a string
+copies, and a text column arrives as `[]byte` from most drivers. A `Scanner`
+given `[]byte` pays that copy too.
+
+The numeric arms allocate nothing at all. An `int64` or `float64` goes straight
+to the epoch reading, and a JSON number written without a fraction or an
+exponent is read from its bytes. A JSON number carrying either is decoded
+through `encoding/json` into a `float64` instead, which is the 2.
+
+`UnmarshalJSON` on a string is the expensive row, and two of its four
+allocations are `encoding/json` decoding the quoted string. The other two are
+the string it decodes into and the `Layout`. There is no `Scanner` at the JSON
+boundary, because `encoding/json` constructs the value itself, so a JSON API
+pays detection per value with nowhere to cache it. `MarshalJSON` is three: the
+formatted string, boxing it for `json.Marshal`, and the buffer `json.Marshal`
+returns.
 
 ### Against araddon/dateparse
 

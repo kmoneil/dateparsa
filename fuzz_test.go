@@ -1,6 +1,9 @@
 package dateparsa
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // FuzzParse ensures that arbitrary inputs never panic, and that the Layout
 // Parse hands back reproduces the time Parse returned.
@@ -219,5 +222,106 @@ func FuzzDetect(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input string) {
 		// Must not panic.
 		Detect(input)
+	})
+}
+
+// FuzzParserAgreesWithParse is the end-to-end version of FuzzLayoutReuse, and it
+// covers the case that one excludes.
+//
+// FuzzLayoutReuse drives Layout.Parse directly and skips any pair where either
+// side reports a guess, because a cached layout that made the other choice is
+// the other reading rather than a wrong answer. Parser.Parse does not have that
+// escape: it is a whole API a caller uses instead of Parse, so it has to return
+// what Parse returns, guess flag included, whatever it parsed before. It buys
+// that by refusing to reuse an ambiguity-prone layout at all.
+//
+// Nothing checked that. A Parser primed with one value and handed another has to
+// agree with Parse on the instant, on Ambiguous and on Kind, and this asserts all
+// three. flextime's JSON path caches a layout in exactly this way, so the
+// property is load-bearing in two packages now.
+//
+// Both sides take a fixed base time. A relative expression resolved against two
+// different time.Now() calls differs by the time between them, which is a flake
+// and not a finding.
+func FuzzParserAgreesWithParse(f *testing.F) {
+	// The pairs FuzzLayoutReuse learned the hard way, plus the shapes that only
+	// matter once a guess or a Kind is involved.
+	seeds := [][2]string{
+		{"2024-03-15", "2024-03-16T10:30:00Z"},
+		{"2024-03-15", "2024-03-15 10:30:00"},
+		{"2024-03-15T10:30:00Z", "2024-03-15"},
+		{"March 15, 2024", "15 Mar 2024"},
+		{"01/02/2024", "25/12/2024"},
+		{"03/15/2024", "01/02/2024"},
+		{"25/12/2024", "01/02/2024"},
+		{"MAY70", "MAY10"},
+		{"March 32", "March 31"},
+		{"MAr A1AAA", "MArAA1MAY"},
+		{"70/01/1 00", "01/01/1000"},
+		{"1MAY", "1MAr"},
+		{"00:00:00", "00000101"},
+		{"20-1-00", "10:01:00"},
+		{"10:30:45", "12/25/24"},
+		{"2024-03-15", "1710505800"},
+		{"2024-03-15", "yesterday"},
+		{"yesterday", "2024-03-15"},
+		{"2024-03-15", "3 days ago"},
+		{"", ""},
+
+		// The reuse over-acceptance, found by the flextime target that asserts
+		// the same property one package up: GO_TIME_STRING detected from the
+		// first accepts the second, which detection refuses for its trailing
+		// space, and returns the instant detection would have returned if it
+		// had. Here so that a future tightening of the assertion runs into it.
+		{"0000-01-01 00:00:00  0000", "0000-01-01 00:00:00 "},
+	}
+	for _, s := range seeds {
+		f.Add(s[0], s[1])
+	}
+
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+
+	f.Fuzz(func(t *testing.T, primeWith, applyTo string) {
+		p := NewParser(WithBaseTime(base))
+
+		// Priming is allowed to fail. A Parser that never cached anything is a
+		// Parser, and the pair still exercises the slow path on the second call.
+		_, _ = p.Parse(primeWith)
+
+		got, gotErr := p.Parse(applyTo)
+		want, wantErr := ParseWith(applyTo, WithBaseTime(base))
+
+		// One direction only, and this is the direction that matters. Where
+		// detection parses an input, a Parser must parse it too and must agree:
+		// a cache that loses an answer or changes one is a defect.
+		//
+		// The other direction is the reuse over-acceptance this repository has
+		// documented since C10: a layout that fits an input can accept bytes
+		// detection would refuse, because a skip covers a weekday name or
+		// punctuation and its bytes have no single class. It returns the same
+		// instant, which is what the comparison below is for when both parse.
+		// "0000-01-01 00:00:00 " through a GO_TIME_STRING layout is the shape,
+		// and asserting symmetry here would fail on it.
+		if wantErr == nil && gotErr != nil {
+			t.Fatalf("Parser primed with %q refused %q where Parse accepts it: %v",
+				primeWith, applyTo, gotErr)
+		}
+		if gotErr != nil || wantErr != nil {
+			return
+		}
+		if !got.Time.Equal(want.Time) {
+			t.Errorf("Parser primed with %q disagreed with Parse on %q:\n"+
+				"  Parser = %v via %s\n"+
+				"  Parse  = %v via %s",
+				primeWith, applyTo, got.Time, got.Layout, want.Time, want.Layout)
+		}
+		if got.Ambiguous != want.Ambiguous {
+			t.Errorf("Parser primed with %q reported Ambiguous %v on %q where Parse reports %v",
+				primeWith, got.Ambiguous, applyTo, want.Ambiguous)
+		}
+		if got.Kind != want.Kind {
+			t.Errorf("Parser primed with %q reported Kind %v on %q where Parse reports %v",
+				primeWith, got.Kind, applyTo, want.Kind)
+		}
 	})
 }

@@ -10,6 +10,32 @@ import (
 	"github.com/kmoneil/dateparsa/internal/epoch"
 )
 
+// jsonParser holds the layout the last JSON string was parsed with, so a
+// document or a stream of documents in one format detects once rather than once
+// per value.
+//
+// This is package-level state and that is the whole of what is unusual about it.
+// The JSON boundary is the only entry point in this library where a caller cannot
+// bring their own cache: encoding/json constructs the FlexTime itself, so there
+// is no receiver to hang a Parser off and no options to configure. A Scanner
+// covers database/sql for exactly this reason and there is no equivalent here.
+//
+// What it costs is that one value decides which layout the next value is tried
+// against, across goroutines and across unrelated callers in the same binary. A
+// Scanner's cache reaches only the values its owner feeds it; this one is shared.
+// It is bounded by the rule the whole library rests on: a layout that does not
+// fit an input fails and detection runs again, and Parser.Parse refuses to reuse
+// an ambiguity-prone layout at all, so the formats where reuse could return the
+// other reading never take the fast path. FuzzParserAgreesWithParse in the root
+// package is what holds that down, and it exists because of this.
+//
+// Default configuration, which is what this path had before: encoding/json
+// cannot pass options in, so there is nothing here for a caller to have
+// configured differently. See C19 in _plans for why a package-level *default*
+// was refused where this cache was not: a default changes what an input parses
+// to, and a cache changes how long the same answer takes.
+var jsonParser = dateparsa.NewParser()
+
 // MarshalJSON implements json.Marshaler.
 // Encodes as RFC3339Nano string (or custom format via WithJSONFormat).
 // Encodes as JSON null if not valid.
@@ -47,7 +73,7 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 			}
 			s = decoded
 		}
-		result, err := dateparsa.Parse(s)
+		result, err := jsonParser.Parse(s)
 		if err != nil {
 			return fmt.Errorf("flextime: %w", err)
 		}

@@ -2,8 +2,11 @@ package flextime
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/kmoneil/dateparsa"
 )
 
 func TestMarshalJSON(t *testing.T) {
@@ -153,11 +156,18 @@ func TestJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestUnmarshalJSONStringAllocates gates the two allocations UnmarshalJSON makes
-// on a plain ASCII timestamp: the string the body is copied into, and the Layout
-// dateparsa.Parse returns. It made four before the in-place unquote, because
-// encoding/json allocated a decode state and unquoted into a string of its own
-// for a body that has nothing to unquote.
+// TestUnmarshalJSONStringAllocates gates the one allocation UnmarshalJSON makes
+// on a plain ASCII timestamp in a steady stream of one format: the string the
+// quoted body is copied into.
+//
+// It made four originally. Two went when the body stopped being decoded through
+// encoding/json, which has nothing to do for a body with no escape in it, and
+// the third was the Layout, which is now detected once and held in jsonParser
+// rather than built and discarded per value.
+//
+// AllocsPerRun's warmup call is what primes that cache, so this measures the
+// second value onward, which is the case the cache exists for. The first value
+// after a format change costs the Layout as well.
 //
 // The number is exact rather than an upper bound, for the reason
 // TestLayoutParseZeroAlloc is: an escape analysis change three packages away is
@@ -170,8 +180,8 @@ func TestUnmarshalJSONStringAllocates(t *testing.T) {
 			t.Fatalf("UnmarshalJSON: %v", err)
 		}
 	})
-	if got != 2 {
-		t.Errorf("UnmarshalJSON allocated %v times, want 2", got)
+	if got != 1 {
+		t.Errorf("UnmarshalJSON allocated %v times, want 1", got)
 	}
 }
 
@@ -260,4 +270,122 @@ func TestUnmarshalJSONMatchesTheDecodedPath(t *testing.T) {
 			t.Errorf("%q: UnmarshalJSON = %v, decode-then-Scan = %v", in, fast.Time(), slow.Time())
 		}
 	}
+}
+
+// TestUnmarshalJSONAcrossFormats runs values whose formats alternate through the
+// one cache UnmarshalJSON now keeps, and requires each of them to come back as
+// dateparsa.Parse reads it on its own.
+//
+// The cache is a package-level Parser, so this is not a property of one caller's
+// sequence: any value in the process can be the one that primed it. The order
+// below deliberately alternates rather than grouping, so every value but the
+// first is parsed against a layout detected from a different format.
+func TestUnmarshalJSONAcrossFormats(t *testing.T) {
+	values := []string{
+		`"2024-03-15T10:30:00Z"`,
+		`"03/15/2024"`,
+		`"2024-03-15"`,
+		`"March 15, 2024"`,
+		`"2024-03-15 10:30:00"`,
+		`"15 Mar 2024"`,
+		`"2024-03-15T10:30:00Z"`,
+		`"20240315"`,
+		`"2024-03-15"`,
+		`"10:30:45"`,
+		`"2024-03-15T10:30:00Z"`,
+	}
+
+	for i := 0; i < 3; i++ {
+		for _, v := range values {
+			var ft FlexTime
+			if err := ft.UnmarshalJSON([]byte(v)); err != nil {
+				t.Fatalf("UnmarshalJSON(%s): %v", v, err)
+			}
+
+			body := v[1 : len(v)-1]
+			want, err := dateparsa.Parse(body)
+			if err != nil {
+				t.Fatalf("dateparsa.Parse(%q): %v", body, err)
+			}
+			if !ft.Time().Equal(want.Time) {
+				t.Errorf("round %d, %s: UnmarshalJSON = %v, dateparsa.Parse = %v",
+					i, v, ft.Time(), want.Time)
+			}
+			if ft.Ambiguous() != want.Ambiguous {
+				t.Errorf("round %d, %s: Ambiguous = %v, dateparsa.Parse says %v",
+					i, v, ft.Ambiguous(), want.Ambiguous)
+			}
+		}
+	}
+}
+
+// TestUnmarshalJSONAmbiguityThroughTheCache pins the half of the cache that a
+// wrong answer would hide. "01/02/2024" is a guess whichever way it is read, and
+// a layout detected from an unambiguous value of the same shape must not make it
+// look decided. Parser.Parse handles this by refusing to reuse an
+// ambiguity-prone layout at all; this asserts the outcome rather than the
+// mechanism, because the mechanism is in another package.
+func TestUnmarshalJSONAmbiguityThroughTheCache(t *testing.T) {
+	// Prime with a value of the same shape whose day cannot be a month.
+	var primed FlexTime
+	if err := primed.UnmarshalJSON([]byte(`"03/15/2024"`)); err != nil {
+		t.Fatalf("priming UnmarshalJSON: %v", err)
+	}
+	if primed.Ambiguous() {
+		t.Errorf(`"03/15/2024" reported Ambiguous, 15 cannot be a month`)
+	}
+
+	var ft FlexTime
+	if err := ft.UnmarshalJSON([]byte(`"01/02/2024"`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	want, err := dateparsa.Parse("01/02/2024")
+	if err != nil {
+		t.Fatalf("dateparsa.Parse: %v", err)
+	}
+	if !ft.Ambiguous() {
+		t.Error(`"01/02/2024" through a primed cache reported Ambiguous false, want true`)
+	}
+	if !ft.Time().Equal(want.Time) {
+		t.Errorf("UnmarshalJSON = %v, dateparsa.Parse = %v", ft.Time(), want.Time)
+	}
+}
+
+// TestUnmarshalJSONConcurrentFormats is the shape the shared cache is actually
+// exposed to: unrelated goroutines unmarshalling different formats through one
+// package-level Parser. Each goroutine checks its own value, so a layout that
+// leaked an answer across the cache fails here rather than in production. Run
+// under -race, which the suite is.
+func TestUnmarshalJSONConcurrentFormats(t *testing.T) {
+	cases := []struct {
+		json string
+		want time.Time
+	}{
+		{`"2024-03-15T10:30:00Z"`, time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{`"03/15/2024"`, time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{`"2024-03-15"`, time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{`"March 15, 2024"`, time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{`"2024-03-15 10:30:00"`, time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{`"20240315"`, time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+	}
+
+	var wg sync.WaitGroup
+	for _, tc := range cases {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				var ft FlexTime
+				if err := ft.UnmarshalJSON([]byte(tc.json)); err != nil {
+					t.Errorf("UnmarshalJSON(%s): %v", tc.json, err)
+					return
+				}
+				if !ft.Time().Equal(tc.want) {
+					t.Errorf("UnmarshalJSON(%s) = %v, want %v", tc.json, ft.Time(), tc.want)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

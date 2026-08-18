@@ -373,6 +373,12 @@ wider than 32 bytes, and none for the rest, which is most of them.
 
 Apple M2 Max, Go 1.26.6, 12 cores, benchstat over 12 runs, all within ±2%.
 
+Re-verified on 2026-08-18, 29 commits after these were recorded, on two machines: on the
+M2 Max above, where all five land within 1%, and independently on linux/arm64, where
+they land within 3.6%. Both runs established a noise floor first by benchstat'ing one
+binary against itself, because a machine under load disagrees with itself by more than
+the differences in this table.
+
 | Operation                       | ns/op | Allocs | vs `time.Parse` |
 | ------------------------------- | ----- | ------ | --------------- |
 | `Layout.Parse` (compact date)   | 16.8  | 0      | 0.6x            |

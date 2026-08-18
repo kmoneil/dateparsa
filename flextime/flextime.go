@@ -122,6 +122,45 @@ func (ft FlexTime) MarshalText() ([]byte, error) {
 	return []byte(ft.t.Format(time.RFC3339Nano)), nil
 }
 
+// Each of the three parse entry points on a FlexTime holds the layout the last
+// value it saw was detected with, so a column or a document in one format
+// detects once rather than once per value.
+//
+// This is package-level state and that is the whole of what is unusual about it.
+// A FlexTime is constructed by database/sql, by encoding/json or by whatever
+// reads the text form, never by the caller, so there is no receiver to hang a
+// cache off and no options to configure. Scanner exists for the configured case
+// and is the only place a caller can pass options; these are the unconfigured
+// paths, which is every path a drop-in replacement for time.Time actually takes.
+//
+// What it costs is that one value decides which layout the next value is tried
+// against, across goroutines and across unrelated callers in the same binary. A
+// Scanner's cache reaches only the values its owner feeds it; these are shared.
+// It cannot change the instant a value parses to: a layout that does not fit an
+// input fails and detection runs again, and Parser.Parse refuses to reuse an
+// ambiguity-prone layout at all, so the formats where reuse could return the
+// other reading never take the fast path. It can change whether a value parses
+// at all, because a layout that fits accepts bytes detection would refuse.
+// SECURITY.md describes both halves and FuzzScanAcrossFormats,
+// FuzzUnmarshalJSONAcrossFormats and FuzzParserAgreesWithParse hold them down.
+//
+// One per entry point rather than one shared between them. A process reading a
+// database column in one format and unmarshalling JSON in another would evict
+// each cache with the other's layout on every value and pay full detection on
+// both, which is what this is here to stop.
+//
+// Default configuration, which is what these paths had before: none of them can
+// be passed an option, so there is nothing here a caller could have configured
+// differently. See C19 in _plans for why a package-level *default* was refused
+// where these caches were not. A default changes what an input parses to; a
+// cache changes how long the same answer takes, and, as above, whether an input
+// detection refuses is accepted.
+var (
+	scanParser = dateparsa.NewParser()
+	jsonParser = dateparsa.NewParser()
+	textParser = dateparsa.NewParser()
+)
+
 // UnmarshalText implements encoding.TextUnmarshaler.
 // Parses using dateparsa auto-detection.
 func (ft *FlexTime) UnmarshalText(data []byte) error {
@@ -134,7 +173,7 @@ func (ft *FlexTime) UnmarshalText(data []byte) error {
 		ft.set(time.Time{}, false, false)
 		return nil
 	}
-	result, err := dateparsa.Parse(s)
+	result, err := textParser.Parse(s)
 	if err != nil {
 		return fmt.Errorf("flextime: %w", err)
 	}

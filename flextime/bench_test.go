@@ -168,6 +168,20 @@ func BenchmarkUnmarshalJSONFloat(b *testing.B) {
 	}
 }
 
+// UnmarshalText is the third parse entry point on a FlexTime and the third that
+// keeps a layout, and nothing measured it. It is what a YAML or TOML decoder
+// reaches, and what encoding/json uses for a map key.
+func BenchmarkUnmarshalText(b *testing.B) {
+	data := []byte("2024-03-15T10:30:00Z")
+	var ft FlexTime
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ft.UnmarshalText(data)
+	}
+	_ = ft
+}
+
 // A null column is what the NULL-safe promise is about, and it is a string
 // compare and a store.
 func BenchmarkUnmarshalJSONNull(b *testing.B) {

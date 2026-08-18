@@ -219,10 +219,11 @@ At the JSON boundary there is no `Scanner` to configure, because `encoding/json`
 constructs the value. `Ambiguous()` after unmarshalling is the equivalent: it is set
 on every path that parses a string.
 
-That boundary keeps one package-level layout so a document of one format detects
-once rather than once per value. It cannot change what a value parses to, and it can
-change whether a value is accepted at all: a layout that fits accepts bytes detection
-would refuse. The allocation table in the Performance section has the detail.
+Each parse entry point keeps one package-level layout, so a document or a column of
+one format detects once rather than once per value. It cannot change what a value
+parses to, and it can change whether a value is accepted at all: a layout that fits
+accepts bytes detection would refuse. The allocation table in the Performance section
+has the detail.
 
 A numeric column or a bare JSON number takes its precision from how many digits it
 is written with, the same reading a string of those digits gets: 10 to 12 digits are
@@ -237,10 +238,12 @@ INTEGER column is the second of January 1970, while `"86400"` as a string is ref
 because a short string is far more likely to be a compact date or a bare year than a
 timestamp and there is no such ambiguity once a schema has typed it as a number.
 
-What these paths cost is a table in the Performance section below. The numeric arms
-allocate nothing, and a `Scanner`'s rows allocate nothing after the first, while a
-`FlexTime` field filled straight from a text column runs a full detection on every
-row.
+What these paths cost is a table in the Performance section below. A string column
+costs nothing per row after the first, because each parse entry point keeps the layout
+it last detected, and the numeric arms allocate nothing at any point. That cache is
+also why a value detection would refuse can be accepted after a value it fits: same
+instant, different answer to whether it parses. The table's prose has the detail and so
+does `SECURITY.md`.
 
 ### Options
 
@@ -501,30 +504,36 @@ tables above, so they are not here. Every row is a benchmark in
 go test -run '^$' -bench . -benchmem ./flextime/
 ```
 
-| Operation                                   | Allocs |
-| ------------------------------------------- | ------ |
-| `FlexTime.Scan`, `time.Time`                | 0      |
-| `FlexTime.Scan`, `int64` or `float64`       | 0      |
-| `FlexTime.Scan`, string                     | 1      |
-| `FlexTime.Scan`, `[]byte`                   | 2      |
-| `Scanner.Scan`, string, after the first row | 0      |
-| `FlexTime.Value`                            | 0      |
-| `UnmarshalJSON`, `null`                     | 0      |
-| `UnmarshalJSON`, integer number             | 0      |
-| `UnmarshalJSON`, number with a fraction     | 2      |
-| `UnmarshalJSON`, string                     | 1      |
-| `MarshalJSON`                               | 3      |
+| Operation                               | Allocs |
+| --------------------------------------- | ------ |
+| `FlexTime.Scan`, `time.Time`            | 0      |
+| `FlexTime.Scan`, `int64` or `float64`   | 0      |
+| `FlexTime.Scan`, string                 | 0      |
+| `FlexTime.Scan`, `[]byte`               | 1      |
+| `Scanner.Scan`, string                  | 0      |
+| `FlexTime.Value`                        | 0      |
+| `UnmarshalText`                         | 1      |
+| `UnmarshalJSON`, `null`                 | 0      |
+| `UnmarshalJSON`, integer number         | 0      |
+| `UnmarshalJSON`, number with a fraction | 2      |
+| `UnmarshalJSON`, string                 | 1      |
+| `MarshalJSON`                           | 3      |
 
-A `FlexTime` field filled by `database/sql` from a text column calls
-`FlexTime.Scan`, which calls `Parse`, which detects the format and returns a
-`Layout` this package then discards: one allocation and one full detection for
-every row of the column. A `Scanner` keeps that layout and re-parses with it,
-which is the zero on the `Scanner.Scan` row and the reason the type exists.
-Both are correct; only one of them charges detection once.
+Every row that parses is steady state, the second value of a format onward. The
+first value of a format costs one more, the `Layout` its detection returns, and
+that layout is what the values after it reuse.
 
-`[]byte` costs one more than a string because Go's conversion to a string
-copies, and a text column arrives as `[]byte` from most drivers. A `Scanner`
-given `[]byte` pays that copy too.
+A string column costs nothing per row. The string arrives as a string, so there
+is nothing to copy, and the layout its first row was detected with is what the
+rest are parsed by. `[]byte` costs one, the conversion to a string that Go
+requires, and a text column arrives as `[]byte` from most drivers; a `Scanner`
+given `[]byte` pays that same copy.
+
+`Scanner` is not faster than a bare `FlexTime` field any more, and it is not
+supposed to be. It is the only place parse options can be passed, because
+`database/sql`, `encoding/json` and the text decoders all construct the value
+themselves. Reach for it when a column is day-first or needs strict mode, not
+for speed.
 
 The numeric arms allocate nothing at all. An `int64` or `float64` goes straight
 to the epoch reading, and a JSON number written without a fraction or an
@@ -537,20 +546,20 @@ It was four. Two went when the body stopped being decoded through
 timestamp is printable ASCII, so the bytes between the quotes already are the
 string, and a body carrying a backslash, an embedded quote, a control character
 or any byte over 0x7f is handed to the decoder unchanged. The third was the
-`Layout`, and it went when the JSON path started keeping one.
+`Layout`, and it went when the JSON path started keeping one, the same as the
+other two.
 
-That cache is the one piece of state this library holds behind a caller's back,
-and it is worth knowing about. `encoding/json` constructs the value itself, so
-there is no `Scanner` to configure and no receiver to hang a cache off: the
-package keeps the layout the last JSON string was detected with, and every
-caller in the binary shares it. **It cannot change the instant a value parses
-to.** A layout that does not fit fails and detection runs again, and a format
-whose reading is a guess is never reused, so the answer always comes from
-parsing that value. **What it can change is whether a value parses at all**: a
-layout that fits accepts bytes detection would refuse, so
+Those three caches are the state this library holds behind a caller's back, and
+they are worth knowing about. `Scan`, `UnmarshalText` and `UnmarshalJSON` each
+keep the layout the last value they saw was detected with, one cache per entry
+point, and every caller in the binary shares them. **They cannot change the
+instant a value parses to.** A layout that does not fit fails and detection runs
+again, and a format whose reading is a guess is never reused, so the answer
+always comes from parsing that value. **What they can change is whether a value
+parses at all**: a layout that fits accepts bytes detection would refuse, so
 `"2024-03-15 10:30:00 "` with its trailing space is an error against a cold
 cache and 2024-03-15 10:30:00 against one primed by a Go time string, which is
-the instant detection would have returned had it accepted the value. Parse with
+the instant detection would have returned had it accepted the value. Call
 `dateparsa.Parse` directly if acceptance has to be a property of the value
 alone. `SECURITY.md` says this in its own terms.
 

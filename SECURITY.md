@@ -142,9 +142,9 @@ Nothing but the Go standard library reaches your binary through this library, so
 there is no transitive dependency to audit and nothing here for a compromised
 upstream package to ride in on.
 
-**Two pieces of global mutable state a caller can observe: a pair of exported
-sentinel vars the language does not let this library make immutable, and one
-layout cache at the JSON boundary.** Everything else that is global is either
+**Two kinds of global mutable state a caller can observe: a pair of exported
+sentinel vars the language does not let this library make immutable, and the
+three layout caches in `flextime`.** Everything else that is global is either
 read-only after `init()` or a cache whose contents cannot be told apart from
 what a fresh computation would produce. Locale data registers itself through
 `init()` and is read-only from then on.
@@ -188,36 +188,40 @@ cost. Before either, an off-grid offset built a Location on **every** call:
 three allocations per row for a column of historical records, against a promise
 of zero.
 
-**A fifth cache holds a layout built from a caller's input, it is shared between
-callers, and it is the one piece of state here that a caller can tell is
-there.** `FlexTime.UnmarshalJSON` keeps the layout the last JSON string was
-detected with,
-in a package-level `dateparsa.Parser`. `encoding/json` constructs the value
-itself, so there is no receiver to hang a cache off and no `Scanner` to
-configure, and without it a JSON API detects the format again for every value.
-It is written repeatedly rather than once per key, what it holds is derived from
-a caller's input rather than from the compiled-in tables, and it is shared by
-every caller in the binary rather than owned by one.
+**The `flextime` caches hold layouts built from callers' input, they are shared
+between callers, and they are the only state here a caller can tell is there.**
+`FlexTime.Scan`, `FlexTime.UnmarshalText` and `FlexTime.UnmarshalJSON` each keep
+the layout the last value they saw was detected with, in a package-level
+`dateparsa.Parser`, one per entry point. `database/sql`, `encoding/json` and the
+text decoders all construct the value themselves, so there is no receiver to hang
+a cache off and no `Scanner` to configure, and without them a column or a
+document detects its format again for every value. They are written repeatedly
+rather than once per key, what they hold is derived from a caller's input rather
+than from the compiled-in tables, and they are shared by every caller in the
+binary rather than owned by one. One cache per entry point rather than one
+shared, so that a process reading a database column in one format and
+unmarshalling JSON in another does not evict each with the other's layout.
 
-What it cannot change is the instant a value parses to. A layout that does not
+What they cannot change is the instant a value parses to. A layout that does not
 fit an input fails and detection runs again, and a format whose reading is a
 guess is never reused, which is the rule described under *A guess is never reused
-across rows* below. `FuzzUnmarshalJSONAcrossFormats` parses each value twice,
-once through a cache primed by another value and once through a cache that was
-just reset, and requires the same instant, the same `Ambiguous` and the same
-validity. `FuzzParserAgreesWithParse` asserts the same property one package down,
-where the mechanism is: a `Parser` must parse whatever `Parse` parses and agree
-with it.
+across rows* below. `FuzzScanAcrossFormats` and `FuzzUnmarshalJSONAcrossFormats`
+parse each value twice, once through a cache primed by another value and once
+through a cache that was just reset, and require the same instant, the same
+`Ambiguous` and the same validity. `FuzzParserAgreesWithParse` asserts the same
+property one package down, where the mechanism is: a `Parser` must parse whatever
+`Parse` parses and agree with it.
 
-What it can change is whether a value parses at all, and that is the honest cost
-of this. A layout that fits an input accepts bytes detection would have refused,
-because a skip covers a weekday name or punctuation and its bytes have no single
-character class. `"2024-03-15 10:30:00 "`, with a trailing space, is an error
-against a cold cache and 2024-03-15 10:30:00 against one primed by a Go time
-string, which is the instant detection would have returned had it accepted the
-value. So acceptance at the JSON boundary is a property of the value and of what
-the process parsed before it. A caller who needs it to be a property of the value
-alone should call `dateparsa.Parse` rather than unmarshalling into a `FlexTime`.
+What they can change is whether a value parses at all, and that is the honest
+cost of this. A layout that fits an input accepts bytes detection would have
+refused, because a skip covers a weekday name or punctuation and its bytes have
+no single character class. `"2024-03-15 10:30:00 "`, with a trailing space, is an
+error against a cold cache and 2024-03-15 10:30:00 against one primed by a Go
+time string, which is the instant detection would have returned had it accepted
+the value. So acceptance through a `FlexTime` is a property of the value and of
+what the process parsed before it. A caller who needs it to be a property of the
+value alone should call `dateparsa.Parse` rather than scanning or unmarshalling
+into a `FlexTime`.
 
 `Layout` holds a value-type `Program`
 and no pointers into caller memory, which is why it is safe to share across

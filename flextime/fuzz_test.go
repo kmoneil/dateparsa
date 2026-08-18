@@ -211,9 +211,7 @@ func FuzzUnmarshalJSONAcrossFormats(f *testing.F) {
 }
 
 // jsonValueIsAbsolute reports whether applyTo, as UnmarshalJSON would read it,
-// parses to something whose answer does not move between two calls. It returns
-// true for anything that fails to parse, because a failure is deterministic and
-// the target compares those too.
+// parses to something whose answer does not move between two calls.
 func jsonValueIsAbsolute(data []byte) bool {
 	s, ok := unquoteJSONString(data)
 	if !ok {
@@ -223,9 +221,83 @@ func jsonValueIsAbsolute(data []byte) bool {
 		}
 		s = decoded
 	}
+	return parsesAbsolute(s)
+}
+
+// parsesAbsolute reports whether s parses to a value that does not depend on
+// when it was parsed. A relative expression does: "in 0 s" is resolved against
+// time.Now() on every call, so two parses of one differ by the time between
+// them whatever a cache does. Anything that fails to parse is absolute for this
+// purpose, because a failure is deterministic and the targets compare those too.
+func parsesAbsolute(s string) bool {
 	r, err := dateparsa.Parse(s)
 	if err != nil {
 		return true
 	}
 	return r.Kind == dateparsa.KindAbsolute
+}
+
+// FuzzScanAcrossFormats is FuzzUnmarshalJSONAcrossFormats for the sql.Scanner
+// path, and it holds the same property: what a value scans to cannot depend on
+// what was scanned before it. Both paths keep a package-level layout, so "before
+// it" is not something a caller controls, which is why the sequence is the input
+// rather than a table.
+//
+// One-directional for the same reason as the JSON target. A value the cold path
+// parses must survive the cache unchanged; a value only the warm path parses is
+// the reuse over-acceptance the root package has documented since C10, where a
+// layout that fits accepts bytes detection would refuse and answers with the
+// instant detection would have returned.
+func FuzzScanAcrossFormats(f *testing.F) {
+	seeds := [][2]string{
+		{"2024-03-15T10:30:00Z", "03/15/2024"},
+		{"03/15/2024", "01/02/2024"},
+		{"25/12/2024", "01/02/2024"},
+		{"2024-03-15", "2024-03-15 10:30:00"},
+		{"March 15, 2024", "15 Mar 2024"},
+		{"MAY70", "MAY10"},
+		{"10:30:45", "12/25/24"},
+		{"20-1-00", "10:01:00"},
+		{"MAr A1AAA", "MArAA1MAY"},
+		{"1710505800", "2024-03-15"},
+		{"", ""},
+		{"0", "in0S"},
+		{"0000-01-01 00:00:00  0000", "0000-01-01 00:00:00 "},
+	}
+	for _, s := range seeds {
+		f.Add(s[0], s[1])
+	}
+
+	f.Fuzz(func(t *testing.T, primeWith, applyTo string) {
+		if !parsesAbsolute(applyTo) {
+			return
+		}
+
+		scanParser.Reset()
+		var primed FlexTime
+		_ = primed.Scan(primeWith)
+
+		var warm FlexTime
+		warmErr := warm.Scan(applyTo)
+
+		scanParser.Reset()
+		var cold FlexTime
+		coldErr := cold.Scan(applyTo)
+
+		if coldErr == nil && warmErr != nil {
+			t.Fatalf("primed with %q, scanning %q: warm refused what cold scanned: %v",
+				primeWith, applyTo, warmErr)
+		}
+		if warmErr != nil || coldErr != nil {
+			return
+		}
+		if !warm.Time().Equal(cold.Time()) {
+			t.Errorf("primed with %q, scanning %q: warm = %v, cold = %v",
+				primeWith, applyTo, warm.Time(), cold.Time())
+		}
+		if warm.Ambiguous() != cold.Ambiguous() {
+			t.Errorf("primed with %q, scanning %q: warm Ambiguous = %v, cold = %v",
+				primeWith, applyTo, warm.Ambiguous(), cold.Ambiguous())
+		}
+	})
 }

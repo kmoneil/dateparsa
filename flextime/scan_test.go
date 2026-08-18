@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,3 +275,172 @@ var (
 	_ driver.Valuer = FlexTime{}
 	_ driver.Valuer = (*FlexTime)(nil)
 )
+
+// TestScanAllocates gates what a scanned row costs in a column of one format.
+// A string arrives as a string, so there is nothing to copy and nothing to
+// detect once scanParser holds the layout: zero. A []byte costs the conversion
+// Go's string() requires and nothing else, and UnmarshalText the same.
+//
+// AllocsPerRun's warmup call primes the cache, so these measure the second row
+// onward, which is the case the caches exist for. The first row of a column, and
+// the first row after a format change, costs the Layout as well.
+//
+// Exact numbers rather than upper bounds, for the reason TestLayoutParseZeroAlloc
+// uses them: an escape analysis change three packages away is how this regresses
+// and a bound hides it.
+func TestScanAllocates(t *testing.T) {
+	const value = "2024-03-15T10:30:00Z"
+	var ft FlexTime
+
+	var str any = value
+	var raw any = []byte(value)
+	text := []byte(value)
+
+	cases := []struct {
+		name string
+		want float64
+		run  func()
+	}{
+		{"Scan string", 0, func() { _ = ft.Scan(str) }},
+		{"Scan []byte", 1, func() { _ = ft.Scan(raw) }},
+		{"UnmarshalText", 1, func() { _ = ft.UnmarshalText(text) }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := testing.AllocsPerRun(1000, tc.run); got != tc.want {
+				t.Errorf("%s allocated %v times, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanAcrossFormats runs values whose formats alternate through the caches
+// Scan and UnmarshalText keep, and requires each to come back as
+// dateparsa.Parse reads it on its own. The caches are package-level, so the
+// sequence that primes them is not something one caller controls; the order here
+// alternates rather than groups so that every value but the first meets a layout
+// detected from a different format.
+func TestScanAcrossFormats(t *testing.T) {
+	values := []string{
+		"2024-03-15T10:30:00Z",
+		"03/15/2024",
+		"2024-03-15",
+		"March 15, 2024",
+		"2024-03-15 10:30:00",
+		"15 Mar 2024",
+		"20240315",
+		"2024-03-15",
+		"10:30:45",
+		"2024-03-15T10:30:00Z",
+	}
+
+	for i := 0; i < 3; i++ {
+		for _, v := range values {
+			want, err := dateparsa.Parse(v)
+			if err != nil {
+				t.Fatalf("dateparsa.Parse(%q): %v", v, err)
+			}
+
+			var fromString FlexTime
+			if err := fromString.Scan(v); err != nil {
+				t.Fatalf("Scan(%q): %v", v, err)
+			}
+			var fromBytes FlexTime
+			if err := fromBytes.Scan([]byte(v)); err != nil {
+				t.Fatalf("Scan([]byte(%q)): %v", v, err)
+			}
+			var fromText FlexTime
+			if err := fromText.UnmarshalText([]byte(v)); err != nil {
+				t.Fatalf("UnmarshalText(%q): %v", v, err)
+			}
+
+			for _, got := range []struct {
+				path string
+				ft   FlexTime
+			}{
+				{"Scan string", fromString},
+				{"Scan []byte", fromBytes},
+				{"UnmarshalText", fromText},
+			} {
+				if !got.ft.Time().Equal(want.Time) {
+					t.Errorf("round %d, %s(%q) = %v, dateparsa.Parse = %v",
+						i, got.path, v, got.ft.Time(), want.Time)
+				}
+				if got.ft.Ambiguous() != want.Ambiguous {
+					t.Errorf("round %d, %s(%q) Ambiguous = %v, dateparsa.Parse says %v",
+						i, got.path, v, got.ft.Ambiguous(), want.Ambiguous)
+				}
+			}
+		}
+	}
+}
+
+// TestScanAmbiguityThroughTheCache is the half a wrong answer would hide.
+// "01/02/2024" is a guess whichever way it is read, and a layout detected from
+// an unambiguous value of the same shape must not make it look decided. The
+// mechanism is in the root package, where Parser.Parse refuses to reuse an
+// ambiguity-prone layout; this asserts the outcome at the boundary a caller
+// touches.
+func TestScanAmbiguityThroughTheCache(t *testing.T) {
+	var primed FlexTime
+	if err := primed.Scan("03/15/2024"); err != nil {
+		t.Fatalf("priming Scan: %v", err)
+	}
+	if primed.Ambiguous() {
+		t.Errorf(`"03/15/2024" reported Ambiguous, 15 cannot be a month`)
+	}
+
+	var ft FlexTime
+	if err := ft.Scan("01/02/2024"); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	want, err := dateparsa.Parse("01/02/2024")
+	if err != nil {
+		t.Fatalf("dateparsa.Parse: %v", err)
+	}
+	if !ft.Ambiguous() {
+		t.Error(`"01/02/2024" through a primed cache reported Ambiguous false, want true`)
+	}
+	if !ft.Time().Equal(want.Time) {
+		t.Errorf("Scan = %v, dateparsa.Parse = %v", ft.Time(), want.Time)
+	}
+}
+
+// TestScanConcurrentFormats is the shape the shared cache is exposed to: rows of
+// different formats scanned by unrelated goroutines through one package-level
+// Parser. Each goroutine checks its own value. Run under -race, which the suite
+// is.
+func TestScanConcurrentFormats(t *testing.T) {
+	cases := []struct {
+		value string
+		want  time.Time
+	}{
+		{"2024-03-15T10:30:00Z", time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{"03/15/2024", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"2024-03-15", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"March 15, 2024", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+		{"2024-03-15 10:30:00", time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)},
+		{"20240315", time.Date(2024, 3, 15, 0, 0, 0, 0, time.UTC)},
+	}
+
+	var wg sync.WaitGroup
+	for _, tc := range cases {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				var ft FlexTime
+				if err := ft.Scan(tc.value); err != nil {
+					t.Errorf("Scan(%q): %v", tc.value, err)
+					return
+				}
+				if !ft.Time().Equal(tc.want) {
+					t.Errorf("Scan(%q) = %v, want %v", tc.value, ft.Time(), tc.want)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}

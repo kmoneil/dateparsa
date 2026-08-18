@@ -118,13 +118,22 @@ func NewWithOptions(t time.Time, opts ...MarshalOption) FlexTime {
 // and is itself safe for concurrent use; the configuration behind it is fixed
 // when NewScanner returns and is never written again.
 //
-// The cache is why this type exists. A column of one format is detected once
-// and every later row runs the compiled layout, which is the difference
-// between about 160 ns and about 30 ns a row. A column whose format changes
-// partway through still parses correctly: a layout that does not fit the row
-// fails and detection runs again.
+// Options are why this type exists, and they are the only reason left. It is
+// the one configured parse path in this package, because database/sql,
+// encoding/json and the text decoders all construct a FlexTime themselves and
+// cannot be handed one that was configured. See ParseOption.
 //
-// It is also the only configured parse path in this package. See ParseOption.
+// The cache used to be the other reason and is not any more: FlexTime.Scan,
+// UnmarshalText and UnmarshalJSON each keep a layout of their own now, so a
+// bare FlexTime field costs what a Scanner costs on a column of one format,
+// 30.83 ns against 31.65 on linux/arm64. What a Scanner still gives that cache
+// is ownership. Its layout comes only from the values its owner scans, where the
+// package-level ones are shared by every caller in the binary, and that is
+// visible in what they accept rather than in what they return: see the
+// FlexTime cache comment in flextime.go and SECURITY.md.
+//
+// A column whose format changes partway through still parses correctly either
+// way: a layout that does not fit the row fails and detection runs again.
 type Scanner struct {
 	p *dateparsa.Parser
 }

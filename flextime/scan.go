@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kmoneil/dateparsa"
 	"github.com/kmoneil/dateparsa/internal/epoch"
 )
 
@@ -74,7 +73,7 @@ func (ft *FlexTime) scanString(s string) error {
 	if s == "" {
 		return fmt.Errorf("flextime: cannot scan empty string")
 	}
-	result, err := dateparsa.Parse(s)
+	result, err := scanParser.Parse(s)
 	if err != nil {
 		// Name the boundary and nothing else. The wrapped error already quotes
 		// the input, bounded, and repeating it here doubled the length of an

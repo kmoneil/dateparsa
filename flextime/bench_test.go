@@ -5,13 +5,21 @@ import (
 	"time"
 )
 
+// The src arguments are boxed into an any once, outside the loop, because a
+// database driver hands sql.Scanner a value that is already an interface. A
+// benchmark that writes ft.Scan(now) boxes a time.Time on every iteration and
+// reports the compiler's decision about that box rather than the cost of the
+// method it names: this one measured 21.00 ns and 1 alloc/op that way against
+// 2.1 to 2.5 ns and 0 allocs, and the []byte arm reported 3 allocations where
+// Scan makes 2. See README's flextime allocation table, whose rows are these
+// benchmarks.
 func BenchmarkScanTimeTime(b *testing.B) {
-	now := time.Now()
+	var src any = time.Now()
 	var ft FlexTime
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ft.Scan(now)
+		ft.Scan(src)
 	}
 	_ = ft
 }
@@ -27,12 +35,12 @@ func BenchmarkScanString(b *testing.B) {
 }
 
 func BenchmarkScanBytes(b *testing.B) {
-	data := []byte("2024-03-15T10:30:00Z")
+	var src any = []byte("2024-03-15T10:30:00Z")
 	var ft FlexTime
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ft.Scan(data)
+		ft.Scan(src)
 	}
 	_ = ft
 }
@@ -53,7 +61,7 @@ func BenchmarkScanInt64(b *testing.B) {
 // column scanned through it paid per row what the library exists to charge once.
 //
 // These are here so that stops being invisible. See
-// _plans/backlog/p5-flextime-scanner-rebuilds-its-options-per-row.md.
+// _plans/backlog/done/p5-flextime-scanner-rebuilds-its-options-per-row.md.
 func BenchmarkScanner_Default(b *testing.B) {
 	s := NewScanner()
 	var ft FlexTime

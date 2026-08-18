@@ -33,11 +33,19 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// Try as quoted string first.
+	// Try as quoted string first. A timestamp is printable ASCII with nothing to
+	// unescape, so the bytes between the quotes are already the string and the
+	// decode encoding/json would perform is a copy of bytes it has just checked.
+	// unquoteJSONString refuses anything it is not certain of and the fallback
+	// below is what defines the answer in that case.
 	if len(data) > 0 && data[0] == '"' {
-		var s string
-		if err := json.Unmarshal(data, &s); err != nil {
-			return fmt.Errorf("flextime: invalid JSON string: %w", err)
+		s, ok := unquoteJSONString(data)
+		if !ok {
+			var decoded string
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				return fmt.Errorf("flextime: invalid JSON string: %w", err)
+			}
+			s = decoded
 		}
 		result, err := dateparsa.Parse(s)
 		if err != nil {
@@ -83,6 +91,32 @@ func (ft *FlexTime) UnmarshalJSON(data []byte) error {
 	}
 	ft.set(t, true, false)
 	return nil
+}
+
+// unquoteJSONString returns the body of a JSON string whose bytes already are the
+// string, and reports whether data is one. It is the string half of what
+// isJSONInteger does for numbers: read the bytes rather than decode them, in the
+// case where decoding cannot change them.
+//
+// It refuses more than it strictly has to and never guesses, because
+// encoding/json is the definition of the answer and this only skips the work
+// where the two provably agree. A backslash opens an escape sequence. A quote
+// means the string token ended before the last byte, so there is trailing
+// content and the value is malformed. A byte under 0x20 is a control character
+// that JSON forbids unescaped, which encoding/json rejects. A byte over 0x7f is
+// UTF-8, which encoding/json validates and replaces where it is malformed, and
+// this cannot reproduce that. Every one of those goes back to the decoder.
+func unquoteJSONString(data []byte) (string, bool) {
+	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return "", false
+	}
+	body := data[1 : len(data)-1]
+	for _, c := range body {
+		if c == '\\' || c == '"' || c < 0x20 || c > 0x7f {
+			return "", false
+		}
+	}
+	return string(body), true
 }
 
 // isJSONInteger reports whether data is a JSON number written without a fraction

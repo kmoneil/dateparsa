@@ -507,7 +507,7 @@ go test -run '^$' -bench . -benchmem ./flextime/
 | `UnmarshalJSON`, `null`                     | 0      |
 | `UnmarshalJSON`, integer number             | 0      |
 | `UnmarshalJSON`, number with a fraction     | 2      |
-| `UnmarshalJSON`, string                     | 4      |
+| `UnmarshalJSON`, string                     | 2      |
 | `MarshalJSON`                               | 3      |
 
 A `FlexTime` field filled by `database/sql` from a text column calls
@@ -526,13 +526,20 @@ to the epoch reading, and a JSON number written without a fraction or an
 exponent is read from its bytes. A JSON number carrying either is decoded
 through `encoding/json` into a `float64` instead, which is the 2.
 
-`UnmarshalJSON` on a string is the expensive row, and two of its four
-allocations are `encoding/json` decoding the quoted string. The other two are
-the string it decodes into and the `Layout`. There is no `Scanner` at the JSON
-boundary, because `encoding/json` constructs the value itself, so a JSON API
-pays detection per value with nowhere to cache it. `MarshalJSON` is three: the
+`UnmarshalJSON` on a string is two: the string the quoted body is copied into,
+and the `Layout`. It was four until the body stopped going through
+`encoding/json` to be decoded. A timestamp is printable ASCII with nothing to
+unescape, so the bytes between the quotes already are the string, and a body
+carrying a backslash, an embedded quote, a control character or any byte over
+0x7f is handed back to the decoder unchanged. `MarshalJSON` is three: the
 formatted string, boxing it for `json.Marshal`, and the buffer `json.Marshal`
 returns.
+
+There is no `Scanner` at the JSON boundary, because `encoding/json` constructs
+the value itself, so a JSON API still pays detection per value with nowhere to
+cache it. That is the `Layout` in the count above, and it is also most of what
+the call costs: the detection is the ISO 8601 datetime row of the first-call
+table further up.
 
 ### Against araddon/dateparse
 

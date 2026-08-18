@@ -152,3 +152,112 @@ func TestJSONRoundTrip(t *testing.T) {
 		t.Error("DeletedAt should be invalid (null)")
 	}
 }
+
+// TestUnmarshalJSONStringAllocates gates the two allocations UnmarshalJSON makes
+// on a plain ASCII timestamp: the string the body is copied into, and the Layout
+// dateparsa.Parse returns. It made four before the in-place unquote, because
+// encoding/json allocated a decode state and unquoted into a string of its own
+// for a body that has nothing to unquote.
+//
+// The number is exact rather than an upper bound, for the reason
+// TestLayoutParseZeroAlloc is: an escape analysis change three packages away is
+// how this regresses, and a bound hides that.
+func TestUnmarshalJSONStringAllocates(t *testing.T) {
+	data := []byte(`"2024-03-15T10:30:00Z"`)
+	var ft FlexTime
+	got := testing.AllocsPerRun(1000, func() {
+		if err := ft.UnmarshalJSON(data); err != nil {
+			t.Fatalf("UnmarshalJSON: %v", err)
+		}
+	})
+	if got != 2 {
+		t.Errorf("UnmarshalJSON allocated %v times, want 2", got)
+	}
+}
+
+// TestUnquoteJSONStringAgreesWithEncodingJSON is the one-directional rule the
+// in-place unquote lives under: it may refuse anything at all, because the
+// fallback decodes it, but whatever it accepts has to be exactly what
+// encoding/json would have produced. A fast path that accepts a value the
+// decoder rejects, or that returns different bytes, is a wrong answer rather
+// than a slow one.
+func TestUnquoteJSONStringAgreesWithEncodingJSON(t *testing.T) {
+	inputs := []string{
+		`"2024-03-15T10:30:00Z"`,
+		`""`,
+		`"03/15/2024"`,
+		`"a b c"`,
+		`"Z"`,
+		`"2024-03-15T10:30:00Z"`,
+		`"a\"b"`,
+		`"a"b"`,
+		`"x`,
+		`"`,
+		``,
+		`"x" `,
+		` "x"`,
+		`"café"`,
+		"\"caf\xc3\xa9\"",
+		"\"caf\xff\"",
+		"\"tab\there\"",
+		"\"nl\nhere\"",
+		"\"\x00\"",
+		`"15 février 2024"`,
+		`null`,
+		`1710505800`,
+	}
+
+	for _, in := range inputs {
+		got, ok := unquoteJSONString([]byte(in))
+		var want string
+		err := json.Unmarshal([]byte(in), &want)
+		switch {
+		case ok && err != nil:
+			t.Errorf("unquoteJSONString(%q) accepted %q, encoding/json refuses it: %v", in, got, err)
+		case ok && got != want:
+			t.Errorf("unquoteJSONString(%q) = %q, encoding/json says %q", in, got, want)
+		}
+	}
+}
+
+// TestUnmarshalJSONMatchesTheDecodedPath runs both routes end to end and
+// requires the same outcome. The table above compares the two decoders; this
+// compares the two parses, because the value a caller sees is what matters and
+// the fast path changes which bytes reach dateparsa.Parse.
+func TestUnmarshalJSONMatchesTheDecodedPath(t *testing.T) {
+	inputs := []string{
+		`"2024-03-15T10:30:00Z"`,
+		`"2024-03-15T10:30:00Z"`,
+		`"03/15/2024"`,
+		`""`,
+		`"a"b"`,
+		`"x" `,
+		"\"caf\xff\"",
+		"\"2024-03-15\xff\"",
+		`"not a date"`,
+		`"15 février 2024"`,
+	}
+
+	for _, in := range inputs {
+		var fast FlexTime
+		fastErr := fast.UnmarshalJSON([]byte(in))
+
+		var slow FlexTime
+		var decoded string
+		slowErr := json.Unmarshal([]byte(in), &decoded)
+		if slowErr == nil {
+			slowErr = slow.Scan(decoded)
+		}
+
+		if (fastErr == nil) != (slowErr == nil) {
+			t.Errorf("%q: UnmarshalJSON err = %v, decode-then-Scan err = %v", in, fastErr, slowErr)
+			continue
+		}
+		if fastErr != nil {
+			continue
+		}
+		if !fast.Time().Equal(slow.Time()) {
+			t.Errorf("%q: UnmarshalJSON = %v, decode-then-Scan = %v", in, fast.Time(), slow.Time())
+		}
+	}
+}

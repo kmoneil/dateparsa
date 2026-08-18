@@ -1,6 +1,7 @@
 package flextime
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -71,6 +72,46 @@ func FuzzUnmarshalJSON(f *testing.F) {
 			if len(b) == 0 {
 				t.Error("MarshalJSON returned empty bytes")
 			}
+		}
+	})
+}
+
+// FuzzJSONUnquoteAgreesWithEncodingJSON is the fuzzing half of
+// TestUnquoteJSONStringAgreesWithEncodingJSON. Refusal is always allowed, since
+// the decoder runs on refusal; acceptance is a claim that encoding/json would
+// return the same string, and that is what this checks.
+//
+// The seeds are the shapes the table found by hand, plus the two the byte scan
+// exists for: a body carrying UTF-8, and a body carrying bytes that are not.
+func FuzzJSONUnquoteAgreesWithEncodingJSON(f *testing.F) {
+	seeds := []string{
+		`"2024-03-15T10:30:00Z"`,
+		`""`,
+		`"Z"`,
+		`"a\"b"`,
+		`"a"b"`,
+		`"x`,
+		"\"caf\xc3\xa9\"",
+		"\"caf\xff\"",
+		"\"tab\there\"",
+		"\"\x00\"",
+		`"x" `,
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, ok := unquoteJSONString(data)
+		if !ok {
+			return
+		}
+		var want string
+		if err := json.Unmarshal(data, &want); err != nil {
+			t.Fatalf("unquoteJSONString(%q) accepted %q, encoding/json refuses it: %v", data, got, err)
+		}
+		if got != want {
+			t.Fatalf("unquoteJSONString(%q) = %q, encoding/json says %q", data, got, want)
 		}
 	})
 }

@@ -55,6 +55,20 @@ func BenchmarkScanInt64(b *testing.B) {
 	_ = ft
 }
 
+// A float64 column takes the other epoch arm, epoch.FromSeconds, and nothing
+// measured it: the int64 arm has had a benchmark since this file was written
+// and its float sibling has not.
+func BenchmarkScanFloat64(b *testing.B) {
+	var src any = 1710505800.5
+	var ft FlexTime
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ft.Scan(src)
+	}
+	_ = ft
+}
+
 // Scanner is the type documented as being for database rows, and it was the one
 // type in this file nothing measured. It used to rebuild its []dateparsa.Option
 // from fixed configuration on every value and then run a full detection, so a
@@ -132,6 +146,32 @@ func BenchmarkUnmarshalJSONString(b *testing.B) {
 
 func BenchmarkUnmarshalJSONNumber(b *testing.B) {
 	data := []byte("1710505800")
+	var ft FlexTime
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ft.UnmarshalJSON(data)
+	}
+}
+
+// A number written with a fraction takes the seconds arm, which decodes through
+// encoding/json rather than reading the bytes, so it is the one numeric shape
+// that allocates. "A JSON number costs nothing" is true of the integer form
+// above and false here, and nothing measured the difference until this.
+func BenchmarkUnmarshalJSONFloat(b *testing.B) {
+	data := []byte("1710505800.5")
+	var ft FlexTime
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ft.UnmarshalJSON(data)
+	}
+}
+
+// A null column is what the NULL-safe promise is about, and it is a string
+// compare and a store.
+func BenchmarkUnmarshalJSONNull(b *testing.B) {
+	data := []byte("null")
 	var ft FlexTime
 	b.ReportAllocs()
 	b.ResetTimer()

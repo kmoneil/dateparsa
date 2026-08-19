@@ -1,14 +1,50 @@
-# dateparsa
+<p align="center">
+  <img src="docs/assets/dateparsa.png" alt="dateparsa" width="440">
+</p>
 
-High-performance date parsing for Go. Detect the format once, parse millions of rows at native speed.
+<p align="center">
+  <b>Date parsing for Go, for input whose format you do not control.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/kmoneil/dateparsa/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/kmoneil/dateparsa/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue"></a>
+  <a href="go.mod"><img alt="Go" src="https://img.shields.io/badge/go-1.26%2B-00ADD8"></a>
+  <a href="go.mod"><img alt="Dependencies" src="https://img.shields.io/badge/dependencies-0-brightgreen"></a>
+  <a href="#performance"><img alt="Allocations" src="https://img.shields.io/badge/Layout.Parse-0%20allocs-brightgreen"></a>
+</p>
 
 ```go
 result, err := dateparsa.Parse("2024-03-15T10:30:00Z")
 fmt.Println(result.Time)   // 2024-03-15 10:30:00 +0000 UTC
 
-// Reuse the detected layout — zero allocations, faster than stdlib
+// Reuse the detected layout: zero allocations, faster than stdlib
 t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 ```
+
+Detection and parsing are separate problems, and the detection result is
+reusable. `Parse` hands back the time **and** a compiled `Layout`, and that
+layout re-parses the same format with zero allocations, at 24.6 ns for an ISO
+date. The cost of not knowing the format is paid once per column, not once per
+row.
+
+### What you get
+
+|  | |
+| --- | --- |
+| **Detect once, reuse forever** | The first call returns a `Layout`. Every row after it skips detection entirely and allocates nothing. |
+| **Faster than `time.Parse`** | 2.9x to 4.0x on the same format, both sides told the layout, zero allocations on either. |
+| **One API for two problems** | ISO, RFC, SQL, syslog, epochs and compact formats, plus "3 days ago" and "next friday at 2pm". |
+| **20 languages, compiled in** | Month and day names for 20 locales, registered at init. No file to ship, no path to configure. |
+| **Ambiguity is reported, never hidden** | `DD/MM` against `MM/DD` is a guess, and `ParseResult.Ambiguous` says it was one. Strict mode returns both readings instead. |
+| **Zero dependencies** | `go.mod` has no `require` block. Nothing here reaches the network or the filesystem. |
+
+**Jump to:** [Install](#install) &nbsp;·&nbsp; [Usage](#usage) &nbsp;·&nbsp;
+[Supported formats](#supported-formats) &nbsp;·&nbsp;
+[Ambiguity](#ambiguity-handling) &nbsp;·&nbsp;
+[Database and JSON](#database-and-json-integration) &nbsp;·&nbsp;
+[Performance](#performance) &nbsp;·&nbsp;
+[How it works](#how-it-works)
 
 ## Why dateparsa
 
@@ -17,8 +53,6 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 **When you don't know the format** — CSV imports, log ingestion, API responses from third parties, user-submitted data, multi-source pipelines — that's where dateparsa comes in.
 
 One `Parse()` call handles ISO 8601, RFC 3339, RFC 2822, RFC 850, ANSIC, SQL timestamps, syslog, Common Log Format, spreadsheet dates, compact formats, Unix timestamps, partial dates, and natural language expressions like "3 days ago" or "next friday at 2pm". In 20 languages.
-
-The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at 33 ns with zero allocations, against 44 ns for `time.Parse` on the same format. A shorter format is further ahead: a compact date is 23 ns.
 
 ### When to use dateparsa
 
@@ -219,11 +253,20 @@ At the JSON boundary there is no `Scanner` to configure, because `encoding/json`
 constructs the value. `Ambiguous()` after unmarshalling is the equivalent: it is set
 on every path that parses a string.
 
-Each parse entry point keeps one package-level layout, so a document or a column of
-one format detects once rather than once per value. It cannot change what a value
-parses to, and it can change whether a value is accepted at all: a layout that fits
-accepts bytes detection would refuse. The allocation table in the Performance section
-has the detail.
+`Scan`, `UnmarshalText` and `UnmarshalJSON` each keep the layout the last value
+they saw was detected with, one cache per entry point, and every caller in the
+binary shares them, so a document or a column of one format detects once rather
+than once per value. **They cannot change the instant a value parses to.** A
+layout that does not fit fails and detection runs again, and a format whose
+reading is a guess is never reused, so the answer always comes from parsing that
+value. **What they can change is whether a value parses at all**: a layout that
+fits accepts bytes detection would refuse, so `"2024-03-15 10:30:00 "` with its
+trailing space is an error against a cold cache and 2024-03-15 10:30:00 against
+one primed by a Go time string, which is the instant detection would have
+returned had it accepted the value. Call `dateparsa.Parse` directly if
+acceptance has to be a property of the value alone. `SECURITY.md` says this in
+its own terms, and the allocation table under
+[Performance](#performance) has what the paths cost.
 
 A numeric column or a bare JSON number takes its precision from how many digits it
 is written with, the same reading a string of those digits gets: 10 to 12 digits are
@@ -238,12 +281,9 @@ INTEGER column is the second of January 1970, while `"86400"` as a string is ref
 because a short string is far more likely to be a compact date or a bare year than a
 timestamp and there is no such ambiguity once a schema has typed it as a number.
 
-What these paths cost is a table in the Performance section below. A string column
-costs nothing per row after the first, because each parse entry point keeps the layout
-it last detected, and the numeric arms allocate nothing at any point. That cache is
-also why a value detection would refuse can be accepted after a value it fits: same
-instant, different answer to whether it parses. The table's prose has the detail and so
-does `SECURITY.md`.
+A string column costs nothing per row after the first, because the entry point
+keeps the layout it last detected, and the numeric arms allocate nothing at any
+point.
 
 ### Options
 
@@ -419,7 +459,8 @@ claimed improvement has to clear before it is an improvement.
 | `Parser` (cached layout)        | 35.6  | 0      | 0.8x            |
 | `time.Parse` (stdlib baseline)  | 43.9  | 0      | 1.0x            |
 
-### Against `time.Parse` on the same format
+<details>
+<summary><b>Against time.Parse on the same format, and what the fast path costs Detect</b></summary>
 
 Both sides are given the format, so this is the fair comparison: `Compile` and
 `time.Parse` each get a layout and parse the same string. `BenchmarkCompiledLayout_vs_Stdlib`
@@ -454,7 +495,10 @@ anything that reuses the layout is a third to a half faster. For a library whose
 reason to exist is parsing the second row through the ten-millionth with the
 format found on the first, that is the right side of the trade.
 
-### Full detection + parse (first call)
+</details>
+
+<details>
+<summary><b>Cold path: first call, bulk columns, and natural language</b></summary>
 
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
@@ -482,7 +526,7 @@ which is more work than a detector that does neither, and it is what stops
 `2024-02-30` becoming the first of March. It is paid once per column, and the
 hot path table is what every row after the first costs.
 
-### Bulk (10M rows)
+#### Bulk (10M rows)
 
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
@@ -493,7 +537,7 @@ A column costs one detection and then a compiled parse per row. The difference
 between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
 `Layout.Parse` hands back one value and allocates nothing.
 
-### Natural language
+#### Natural language
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
@@ -504,7 +548,10 @@ between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
 | "yesterday at 5pm"   | 508   | 2      |
 | "3 days ago"         | 567   | 2      |
 
-### Database and JSON (flextime)
+</details>
+
+<details>
+<summary><b>Database and JSON (flextime): allocations and what they cost</b></summary>
 
 Measured in the same run as everything above, which it was not before: the
 nanoseconds used to be omitted here because this table was counted on a
@@ -561,24 +608,13 @@ or any byte over 0x7f is handed to the decoder unchanged. The third was the
 `Layout`, and it went when the JSON path started keeping one, the same as the
 other two.
 
-Those three caches are the state this library holds behind a caller's back, and
-they are worth knowing about. `Scan`, `UnmarshalText` and `UnmarshalJSON` each
-keep the layout the last value they saw was detected with, one cache per entry
-point, and every caller in the binary shares them. **They cannot change the
-instant a value parses to.** A layout that does not fit fails and detection runs
-again, and a format whose reading is a guess is never reused, so the answer
-always comes from parsing that value. **What they can change is whether a value
-parses at all**: a layout that fits accepts bytes detection would refuse, so
-`"2024-03-15 10:30:00 "` with its trailing space is an error against a cold
-cache and 2024-03-15 10:30:00 against one primed by a Go time string, which is
-the instant detection would have returned had it accepted the value. Call
-`dateparsa.Parse` directly if acceptance has to be a property of the value
-alone. `SECURITY.md` says this in its own terms.
-
 `MarshalJSON` is three: the formatted string, boxing it for `json.Marshal`, and
 the buffer `json.Marshal` returns.
 
-### Against araddon/dateparse
+</details>
+
+<details>
+<summary><b>Against araddon/dateparse, the other detecting library</b></summary>
 
 `github.com/araddon/dateparse` is the other Go library that detects a format
 rather than being told one. `benchmarks/compare/` measures both on the same 16
@@ -613,7 +649,10 @@ instant for the same input. In the other direction, araddon's `ParseFormat`,
 which is its analogue of a reusable `Layout`, returns a layout that does not
 re-parse its own input for 2 of the 16.
 
-### Regression tracking
+</details>
+
+<details>
+<summary><b>Reproducing these numbers, and the machine that produced them</b></summary>
 
 The baseline is checked into `benchmarks/baseline.txt`. To check for
 regressions on the machine in front of you:
@@ -682,6 +721,8 @@ ignore its nanoseconds, which are a property of whichever machine you are on.
 
 Promote a run in a commit that says what moved and why.
 
+</details>
+
 ## How It Works
 
 ### Trie-based format detection
@@ -704,16 +745,6 @@ Where a format's fields are all fixed-width, the `Layout` skips the instruction 
 First parse:    input → signature → trie → compile → execute → time.Time + Layout
 Subsequent:     input → execute (same instructions) → time.Time
 ```
-
-## Roadmap
-
-- [x] Phase 1: Core detection and parsing (ISO, RFC, SQL, textual months)
-- [x] Phase 2: Extended formats (compact, timestamps, week dates, syslog, AM/PM)
-- [x] Phase 3: English natural language ("3 days ago", "next friday", "yesterday at 5pm")
-- [x] Phase 4: 20 locale support (French, German, Spanish, Russian, CJK, Arabic, ...)
-- [x] Phase 5: Batch optimization and allocation elimination pass
-- [x] Phase 6: `flextime` subpackage — `sql.Scanner`/`driver.Valuer`/JSON integration
-- [ ] Phase 7: Documentation and v0.1.0 release
 
 ## License
 

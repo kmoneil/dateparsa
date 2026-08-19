@@ -1,3 +1,9 @@
+# golangci-lint v2 schema. The key names matter more than they look: this file
+# said `version: "2"` while using the v1 names `linters-settings` and
+# `issues.exclude-dirs`, and an unknown top-level key is ignored rather than
+# rejected by `golangci-lint run`. So `govet: enable-all` was never in effect,
+# and nothing said so. `golangci-lint config verify` is what catches it, which
+# is why `make lint` runs that first.
 version: "2"
 
 run:
@@ -11,16 +17,17 @@ linters:
     - govet
     - ineffassign
     - unused
-
-linters-settings:
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+  exclusions:
+    paths:
+      - _plans
+      - _tmp
+      - _reviews
 
 issues:
-  exclude-dirs:
-    - _plans
-    - _tmp
   max-issues-per-linter: 0
   max-same-issues: 0

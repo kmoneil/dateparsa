@@ -31,6 +31,13 @@ func FuzzParse(f *testing.F) {
 		"not a date",
 		"2024-03-15T10:30:00.123456789Z",
 
+		// C26: a skipped run holding a word that decides the day. The first
+		// answered 2024-03-01 where the words name the 4th, with a nil error
+		// and Ambiguous false; the second is the shape that must keep parsing,
+		// because "of" sits in a skipped run in an ordinary English date.
+		"first monday of march 2024",
+		"the 3rd of March 2024",
+
 		// Panicked in detect.trimAtSuffix with a slice bounds error. It took
 		// the index of " at " from a strings.ToLower copy and sliced the
 		// original with it; the invalid bytes lower to a three-byte U+FFFD

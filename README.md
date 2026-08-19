@@ -337,6 +337,34 @@ being refused for having no month 13.
 | Partial dates     | `Mar 15`, `15 Mar`, `March 2024`                                                          |
 | Unix timestamps   | `1710500000` (sec), `1710500000000` (ms), `1710500000000000` (us), `1710500000.123`       |
 
+### Words around a date
+
+A textual format finds its fields by scanning, so words it does not read can sit
+between them. `Fri, 15 Mar 2024 10:30:00 +0000` has a weekday name, `the 15th of
+March 2024` has an article and an `of`, and `March 15, 2024 at 10:30` has an
+`at`. All three parse, and so does `invoice 15 March 2024 paid`.
+
+**A word that changes what the date means is refused instead.** Selectors
+(`last`, `next`, `this`), ordinals (`first` through `fifth`), boundaries
+(`beginning`, `start`, `end`), the relative words and the unit names all decide
+a date, and a format that dropped them would answer a different day than the one
+written:
+
+```go
+_, err := dateparsa.Parse("first monday of march 2024")
+// *ParseError wrapping ErrNoMatch: the first Monday is the 4th, and
+// MONTH_YEAR would have answered the 1st
+```
+
+An error is the answer, not a guess: `last day of february 2024`,
+`end of march 2024` and `third thursday of november 2024` are all refused. The
+cost is that free text carrying one of those words is refused too, so
+`Last modified: March 15, 2024` no longer parses. Nothing in the sentence tells
+that case apart from the ones above.
+
+The check reads whole words, so it never fires on a language whose date
+separator is a unit name: `2024年3月15日` is unaffected.
+
 ### Ambiguity Handling
 
 When a date like `01/02/2024` could be MM/DD or DD/MM:

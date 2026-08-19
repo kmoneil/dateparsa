@@ -2052,12 +2052,18 @@ func buildLocaleMonths(loc *locale.Data) *localeMonths {
 	// months 11 and 12 wrong.
 	//
 	// Sorted longest-first only where such a pair exists, which is those three.
-	// Sorting every locale costs the other seventeen the order their month
-	// names are usually looked up in: German went from hitting "März" third to
-	// scanning September and Dezember first, +5.47% on
-	// BenchmarkParse_Locale_GermanMonth and +6.61% on Parse_Miss_Locales. The
-	// check below is quadratic over at most 36 short strings, once per locale,
-	// behind the same cache as the rest of this.
+	// That is to keep the change of behaviour to the locales that need it, and
+	// not for speed: sorting all twenty measured +5.47% on
+	// BenchmarkParse_Locale_GermanMonth and +6.61% on Parse_Miss_Locales on a
+	// development container, and both of those turned out to be noise. On the
+	// machine benchmarks/baseline.env names, this narrowed version is
+	// +0.78% geomean, German is 0.64% faster, and Parse_Miss_Locales is
+	// unchanged, so the numbers that argued for narrowing did not survive being
+	// measured properly. If somebody wants the simpler unconditional sort, the
+	// measurement to make is that one on the pinned machine, not on a laptop.
+	//
+	// The check below is quadratic over at most 36 short strings, once per
+	// locale, behind the same cache as the rest of this.
 	if hasSuffixPair(lm.spellings) {
 		slices.SortStableFunc(lm.spellings, func(a, b monthSpelling) int {
 			return len(b.name) - len(a.name)

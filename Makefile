@@ -57,9 +57,17 @@ fmt-check:
 vet:
 	@go vet ./...
 
-## lint: golangci-lint
+## lint: golangci-lint, config first
+#
+# `config verify` before `run`, because `run` ignores a top-level key it does
+# not recognise instead of refusing it. .golangci.yml said `version: "2"` and
+# used the v1 names `linters-settings` and `issues.exclude-dirs` for its whole
+# life, so `govet: enable-all` was never actually on, `make lint` was green
+# throughout, and the first CI run to execute the golangci-lint action failed
+# on a config the local gate had never checked.
 .PHONY: lint
 lint:
+	@golangci-lint config verify
 	@golangci-lint run --timeout=2m
 
 # ── Test ─────────────────────────────────────────────────────────────────────

@@ -90,8 +90,14 @@ jobs:
           name: benchmarks
       # Attached to the release because the performance claim is the product
       # here. A reader comparing two versions should not have to run them.
+      # `prerelease` defaults to false and the action does not infer it, so a
+      # v0.0.1-rc.1 would publish as an ordinary release and GitHub would mark
+      # it the latest one, which is the version a reader is told to use. A
+      # hyphen is exactly what separates a semver prerelease from a release, so
+      # that is the test.
       - name: create the GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: current.txt

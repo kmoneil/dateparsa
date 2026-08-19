@@ -440,7 +440,24 @@ func newResult(name, goLayout string, fields []compile.Field, ambig AmbigKind, p
 
 // Detect analyzes a date string and returns the matching FormatDef.
 // Returns ok=false if no structured format matches.
+//
+// The detectors are in detectFormat; what this wrapper adds is the last check,
+// which every detector needs and none of them can do on its own: a format whose
+// skipped runs hold a word that decides the answer has not described the input,
+// it has discarded part of it. See skipwords.go, and C26 for the four English
+// phrases that were answered with the wrong day until this ran.
 func Detect(s string, cfg Config) (Result, bool) {
+	r, ok := detectFormat(s, cfg)
+	if !ok {
+		return Result{}, false
+	}
+	if skipRunCarriesMeaning(s, r.Def, cfg.Locales) {
+		return Result{}, false
+	}
+	return r, true
+}
+
+func detectFormat(s string, cfg Config) (Result, bool) {
 	// Every position below becomes a compile.Field.Offset or Len, which are
 	// int32. Nothing here can describe an input longer than that, and Compile
 	// refuses any field past byte 255 in any case, so an input this long has no

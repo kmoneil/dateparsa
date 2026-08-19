@@ -122,14 +122,17 @@ func TestEval_NDaysAgo(t *testing.T) {
 		input    string
 		expected time.Time
 	}{
-		{"3 days ago", base.AddDate(0, 0, -3)},
-		{"1 day ago", base.AddDate(0, 0, -1)},
-		{"2 weeks ago", base.AddDate(0, 0, -14)},
-		{"1 month ago", base.AddDate(0, -1, 0)},
-		{"1 year ago", base.AddDate(-1, 0, 0)},
-		{"5 hours ago", base.Add(-5 * time.Hour)},
-		{"10 minutes ago", base.Add(-10 * time.Minute)},
-		{"30 seconds ago", base.Add(-30 * time.Second)},
+		// Literal dates, not base.AddDate(...). See the comment on
+		// daysInMonthRef in arith_test.go: the month and year rows here were
+		// computing their expectation with the operation under test.
+		{"3 days ago", time.Date(2024, 3, 12, 12, 0, 0, 0, time.UTC)},
+		{"1 day ago", time.Date(2024, 3, 14, 12, 0, 0, 0, time.UTC)},
+		{"2 weeks ago", time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)},
+		{"1 month ago", time.Date(2024, 2, 15, 12, 0, 0, 0, time.UTC)},
+		{"1 year ago", time.Date(2023, 3, 15, 12, 0, 0, 0, time.UTC)},
+		{"5 hours ago", time.Date(2024, 3, 15, 7, 0, 0, 0, time.UTC)},
+		{"10 minutes ago", time.Date(2024, 3, 15, 11, 50, 0, 0, time.UTC)},
+		{"30 seconds ago", time.Date(2024, 3, 15, 11, 59, 30, 0, time.UTC)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -149,9 +152,10 @@ func TestEval_NFromNow(t *testing.T) {
 		input    string
 		expected time.Time
 	}{
-		{"3 days from now", base.AddDate(0, 0, 3)},
-		{"2 weeks from now", base.AddDate(0, 0, 14)},
-		{"1 month from now", base.AddDate(0, 1, 0)},
+		// Literal, for the reason in TestEval_NDaysAgo.
+		{"3 days from now", time.Date(2024, 3, 18, 12, 0, 0, 0, time.UTC)},
+		{"2 weeks from now", time.Date(2024, 3, 29, 12, 0, 0, 0, time.UTC)},
+		{"1 month from now", time.Date(2024, 4, 15, 12, 0, 0, 0, time.UTC)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

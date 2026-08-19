@@ -175,6 +175,11 @@ Supported patterns: `now`, `today`, `yesterday`, `tomorrow`, `N units ago`,
 `last/next/this <month>`, `last/next week/month/year`,
 `beginning/end of day/week/month/year`, plus `at <time>` suffixes.
 
+A month or year shift clamps to the end of the target month rather than
+overflowing it: one month before `2024-03-31` is `2024-02-29`, and one year
+after `2024-02-29` is `2025-02-28`. Go's `time.AddDate` normalises instead,
+which answers `2024-03-02` for the first of those.
+
 Two bounds apply on this path and nowhere else. The expression is at most 512
 bytes, which admits about fifty terms, and `N` is at most six digits. Both refuse
 rather than truncate, and neither is reachable by a structured format: this path

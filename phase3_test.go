@@ -39,11 +39,16 @@ func TestParse_NL_NDaysAgo(t *testing.T) {
 		input    string
 		expected time.Time
 	}{
-		{"3 days ago", nlBase.AddDate(0, 0, -3)},
-		{"2 weeks ago", nlBase.AddDate(0, 0, -14)},
-		{"1 month ago", nlBase.AddDate(0, -1, 0)},
-		{"5 hours ago", nlBase.Add(-5 * time.Hour)},
-		{"a week ago", nlBase.AddDate(0, 0, -7)},
+		// Literal dates, not nlBase.AddDate(...). The expectation used to be
+		// computed with the same call the parser makes, which made this an
+		// assertion that AddDate equals AddDate; it stayed green while
+		// "1 month ago" from the 31st of a month returned a date in that same
+		// month. See C25 and internal/natural/arith_test.go.
+		{"3 days ago", time.Date(2024, 3, 12, 12, 0, 0, 0, time.UTC)},
+		{"2 weeks ago", time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)},
+		{"1 month ago", time.Date(2024, 2, 15, 12, 0, 0, 0, time.UTC)},
+		{"5 hours ago", time.Date(2024, 3, 15, 7, 0, 0, 0, time.UTC)},
+		{"a week ago", time.Date(2024, 3, 8, 12, 0, 0, 0, time.UTC)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -301,5 +306,68 @@ func BenchmarkParse_NL_In10Minutes(b *testing.B) {
 	opts := []Option{WithBaseTime(nlBase)}
 	for b.Loop() {
 		ParseWith("in 10 minutes", opts...)
+	}
+}
+
+// TestParse_NL_MonthEndClamps is C25's regression at the public API. The
+// arithmetic itself is covered by the property test in
+// internal/natural/arith_test.go; this pins that the fix is reachable through
+// Parse, through the compound form, and through the prefix-ago form the
+// romance and germanic locales use, which is a fourth caller of addUnit that
+// no English test touches.
+func TestParse_NL_MonthEndClamps(t *testing.T) {
+	// The 31st of March. Nothing below can be expressed with AddDate.
+	monthEnd := time.Date(2024, 3, 31, 12, 0, 0, 0, time.UTC)
+	// The 29th of February, for the year arm.
+	leapDay := time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		input   string
+		base    time.Time
+		locales []Locale
+		want    time.Time
+	}{
+		// Before the fix this was 2024-03-02: a date inside the month the
+		// expression was asked to leave.
+		{"1 month ago", monthEnd, nil, time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)},
+		{"in 1 month", monthEnd, nil, time.Date(2024, 4, 30, 12, 0, 0, 0, time.UTC)},
+		{"1 month from now", monthEnd, nil, time.Date(2024, 4, 30, 12, 0, 0, 0, time.UTC)},
+		{"1 year ago", leapDay, nil, time.Date(2023, 2, 28, 12, 0, 0, 0, time.UTC)},
+		{"in 1 year", leapDay, nil, time.Date(2025, 2, 28, 12, 0, 0, 0, time.UTC)},
+
+		// Months apply before days, so the 31st of March goes to the 29th of
+		// February and then back one day.
+		{"1 month and 1 day ago", monthEnd, nil, time.Date(2024, 2, 28, 12, 0, 0, 0, time.UTC)},
+
+		// evalPrefixAgo, the caller with no English spelling.
+		{"il y a 1 mois", monthEnd, []Locale{FR}, time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)},
+		{"hace 1 mes", monthEnd, []Locale{ES}, time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)},
+		{"vor 1 Monat", monthEnd, []Locale{DE}, time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC)},
+
+		// Shifts that need no clamp must not move.
+		{"2 months ago", monthEnd, nil, time.Date(2024, 1, 31, 12, 0, 0, 0, time.UTC)},
+		{"1 year ago", monthEnd, nil, time.Date(2023, 3, 31, 12, 0, 0, 0, time.UTC)},
+		{"12 months ago", monthEnd, nil, time.Date(2023, 3, 31, 12, 0, 0, 0, time.UTC)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input+"/"+tt.base.Format("2006-01-02"), func(t *testing.T) {
+			opts := []Option{WithBaseTime(tt.base)}
+			if len(tt.locales) > 0 {
+				opts = append(opts, WithLocales(tt.locales...))
+			}
+			result, err := ParseWith(tt.input, opts...)
+			if err != nil {
+				t.Fatalf("ParseWith(%q) error: %v", tt.input, err)
+			}
+			if !result.Time.Equal(tt.want) {
+				t.Errorf("ParseWith(%q, base %s) = %s, want %s",
+					tt.input, tt.base.Format(time.RFC3339),
+					result.Time.Format(time.RFC3339), tt.want.Format(time.RFC3339))
+			}
+			if result.Kind != KindRelative {
+				t.Errorf("kind = %v, want KindRelative", result.Kind)
+			}
+		})
 	}
 }

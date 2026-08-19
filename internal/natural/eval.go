@@ -641,11 +641,86 @@ func addUnit(t time.Time, n int, unit Unit) time.Time {
 	case UnitWeek:
 		return t.AddDate(0, 0, n*7)
 	case UnitMonth:
-		return t.AddDate(0, n, 0)
+		return addMonths(t, n)
 	case UnitYear:
-		return t.AddDate(n, 0, 0)
+		// A year is twelve months, and it has to clamp for the same reason:
+		// one year after 2024-02-29 is 2025-02-28, not the 1st of March.
+		return addMonths(t, n*12)
 	}
 	return t
+}
+
+// addMonths shifts t by n calendar months, clamping the day to the last day of
+// the target month instead of letting it overflow into the next one.
+//
+// time.AddDate is not used here, and it is not wrong: it documents that it
+// normalises, so adding a month to October 31 gives December 1. That is the
+// right answer to a different question. Somebody who writes "1 month ago" on
+// the 31st of March means the end of February, and AddDate answered
+// 2024-03-02 for it: a date two days into the month the expression was asked
+// to leave, returned with a nil error and Ambiguous false.
+//
+// n is bounded by maxQuantityDigits in the scanner, so n*12 is at most
+// 11999988 and the month total cannot overflow an int. That bound is the
+// reason there is no range check here; see the comment on maxQuantityDigits
+// before removing it.
+func addMonths(t time.Time, n int) time.Time {
+	y, m, d := t.Date()
+
+	total := int(m) - 1 + n
+	ty := y + floorDiv(total, 12)
+	tm := time.Month(floorMod(total, 12) + 1)
+
+	if last := daysInMonth(tm, ty); d > last {
+		d = last
+	}
+
+	hh, mm, ss := t.Clock()
+	return time.Date(ty, tm, d, hh, mm, ss, t.Nanosecond(), t.Location())
+}
+
+// floorDiv and floorMod divide toward negative infinity. Go's operators
+// truncate toward zero, which puts January minus one month in January of the
+// same year: -1/12 is 0 and -1%12 is -1, so the year never moves and the month
+// index goes out of range.
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
+}
+
+func floorMod(a, b int) int {
+	r := a % b
+	if r != 0 && (r < 0) != (b < 0) {
+		r += b
+	}
+	return r
+}
+
+// daysInMonth is this package's own copy of the calendar. internal/compile has
+// monthLengths and isLeap, and natural does not import compile: the dependency
+// is locale only, and a new edge between two internal packages for four lines
+// of arithmetic is the more expensive of the two options.
+func daysInMonth(m time.Month, y int) int {
+	switch m {
+	case time.April, time.June, time.September, time.November:
+		return 30
+	case time.February:
+		if isLeapYear(y) {
+			return 29
+		}
+		return 28
+	default:
+		return 31
+	}
+}
+
+// isLeapYear is the full Gregorian rule. Divisibility by 4 alone gets 1900 and
+// 2100 wrong, and 1900 is inside the range this library parses.
+func isLeapYear(y int) bool {
+	return y%4 == 0 && (y%100 != 0 || y%400 == 0)
 }
 
 func resolveWeekday(base time.Time, target time.Weekday, sel Selector, preferFuture bool) time.Time {

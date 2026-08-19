@@ -30,11 +30,23 @@ coverage.out
 *.prof
 
 # make bench writes this on every run; benchmarks/baseline.txt is the tracked
-# reference and current.txt is the thing measured against it
+# reference and current.txt is the thing measured against it. The cloud runner
+# writes current.env beside it with the machine it measured on, and current.log
+# only when a run on the VM did not finish.
 benchmarks/current.txt
+benchmarks/current.env
+benchmarks/current.log
 
 # Secrets / credentials
 *.env
 *.env.*
 credentials.*
 tokens.json
+
+# benchmarks/baseline.env is provenance, not a secret: it records the machine
+# that produced benchmarks/baseline.txt, and a baseline whose machine is not in
+# the repository is a baseline nobody else can reproduce. It has to be un-ignored
+# explicitly because `*.env` above matches it in every directory, which is how it
+# went untracked in the first place. `make bench-cloud-update` checks that this
+# negation still works and says so if it stops.
+!benchmarks/baseline.env

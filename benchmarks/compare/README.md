@@ -22,8 +22,12 @@ median of 6 runs everywhere except the one-shot table, which is the median of 5
 from a later run, after the allocations that table describes were removed. The
 reuse and column tables were not re-run because that change cannot reach them,
 reuse being `Layout.Parse` and a column amortising one detection over ten
-thousand rows. Every number reproduces with `make bench-vs`. None of them are
-the M2 Max figures the root README quotes and none should be read against them.
+thousand rows. Every number reproduces with `make bench-vs`. None of them
+are the `c4-standard-8` figures the root README quotes and none should be read
+against them: `make bench-vs` runs wherever you run it, and `make bench-cloud`,
+which is what produces the root README's numbers on a fixed machine, does not
+reach this module. It is a separate module for the reason the next section
+gives, and that is also why it is not measured with the rest.
 
 **dateparsa does not win everything.** It is behind on 7 of 16 formats when
 each value is parsed cold, and behind on the two text-shaped misses. Those

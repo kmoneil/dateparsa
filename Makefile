@@ -16,6 +16,14 @@ EXCLUDE := ^_plans/\|^_tmp/\|^_reviews/
 FUZZTIME ?= 30s
 FUZZPKGS ?= $(shell $(MAKE) -s fuzz-packages)
 
+# How many times every benchmark is repeated, and how long a package gets.
+# Three is enough to eyeball a local run and too few for benchstat to give a
+# confidence interval worth reading, which is why the cloud runner raises it to
+# ten. Both live here so the cloud runner overrides one definition rather than
+# carrying a second copy of the flags.
+BENCH_COUNT ?= 3
+BENCH_TIMEOUT ?= 900s
+
 # The linked size a caller pays for importing this library. Twenty locales of
 # compiled data are the bulk of it, so this is the gate that notices when a
 # data addition starts costing every downstream binary.
@@ -154,6 +162,11 @@ size:
 
 ## bench: run the benchmarks into benchmarks/current.txt
 #
+# Bash with pipefail, because `go test | tee` reports tee's exit status and not
+# go test's. A build failure or a panicking benchmark then writes a short file
+# and returns success, and a short file is the one thing that must never reach
+# benchmarks/baseline.txt.
+#
 # ./... because the benchmarks are not all in the root package. This swept the
 # root package alone, which is 40 of the 50 benchmark functions in the tree; the
 # other 10 are flextime's, so the surface a caller actually scans database rows
@@ -165,18 +178,106 @@ size:
 # package, and write its PASS lines into the benchmark file. benchstat ignores
 # them, a reader does not, and `make check` is where tests belong.
 .PHONY: bench
+bench: SHELL := /usr/bin/env bash
+bench: .SHELLFLAGS := -o pipefail -c
 bench:
-	@go test -run='^$$' -bench=. -benchmem -count=3 -timeout=900s ./... | tee benchmarks/current.txt
+	@go test -run='^$$' -bench=. -benchmem -count=$(BENCH_COUNT) -timeout=$(BENCH_TIMEOUT) ./... | tee benchmarks/current.txt
 
 ## bench-compare: benchstat current against the committed baseline
+#
+# Two things have to be normalised into a temporary copy or benchstat compares
+# nothing, and says so only by printing a table with one column where there
+# should be two.
+#
+#   the -N suffix   Go writes GOMAXPROCS into every benchmark name. The cloud
+#                   runner pins it to 3 and a laptop uses however many cores it
+#                   has, and benchstat matches rows by name.
+#   goos/goarch/cpu benchstat reads those header lines as the configuration a
+#                   run belongs to, so two files that disagree about them land
+#                   in separate tables instead of being compared.
+#
+# The warning above it is the mistake this repository has already made once: a
+# baseline recorded on one machine and a current run recorded on another produce
+# deltas that are the difference between two machines, printed in a table that
+# says they are the difference between two commits. Allocations survive that
+# (they are a property of the code) and nanoseconds do not.
+#
+# It compares the goos/goarch/cpu header the two files carry, not the cpu_model
+# in baseline.env, because Go writes no `cpu:` line at all on some platforms and
+# this printed `this run was measured on ''` on the first machine that tried it.
 .PHONY: bench-compare
 bench-compare: bench
-	@benchstat benchmarks/baseline.txt benchmarks/current.txt
+	@want=$$(sed -n 's/^goos: /goos=/p;s/^goarch: /goarch=/p;s/^cpu: /cpu=/p' benchmarks/baseline.txt | awk '!seen[$$0]++' | paste -sd' ' -); \
+	have=$$(sed -n 's/^goos: /goos=/p;s/^goarch: /goarch=/p;s/^cpu: /cpu=/p' benchmarks/current.txt | awk '!seen[$$0]++' | paste -sd' ' -); \
+	if [ "$$want" != "$$have" ]; then \
+		echo "WARNING: the baseline was measured on"; \
+		echo "           $$want"; \
+		echo "         this run was measured on"; \
+		echo "           $$have"; \
+		echo "         Read the allocs/op columns below and ignore the rest:"; \
+		echo "         an allocation count is a property of the code, a"; \
+		echo "         nanosecond is a property of the machine."; \
+		echo "         For a comparable delta: make bench-cloud"; \
+		echo; \
+	fi
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	for f in baseline current; do \
+		sed -E 's/^(Benchmark[^ 	]*)-[0-9]+/\1/' "benchmarks/$$f.txt" \
+			| grep -v -E '^(goos|goarch|cpu):' > "$$tmp/$$f.txt"; \
+	done; \
+	benchstat "$$tmp/baseline.txt" "$$tmp/current.txt"
 
 ## bench-update: promote current to baseline (a deliberate act, say why in the commit)
+#
+# Refused once a cloud baseline exists, because promoting a laptop run over it
+# retargets the committed reference to a different machine and every later
+# comparison silently measures the move. `make bench-cloud-update` is the way to
+# move it. BENCH_ALLOW_LOCAL_BASELINE=1 overrides, deliberately and in writing.
 .PHONY: bench-update
 bench-update: bench
+	@if [ -f benchmarks/baseline.env ] && [ -z "$(BENCH_ALLOW_LOCAL_BASELINE)" ]; then \
+		echo "refusing: benchmarks/baseline.txt was measured on a pinned cloud machine"; \
+		sed -n 's/^machine_type=/  machine:  /p;s/^cpu_model=/  cpu:      /p;s/^measured_at=/  measured: /p' benchmarks/baseline.env; \
+		echo "  use: make bench-cloud-update"; \
+		echo "  or:  make bench-update BENCH_ALLOW_LOCAL_BASELINE=1"; \
+		exit 1; \
+	fi
 	@cp benchmarks/current.txt benchmarks/baseline.txt
+	@rm -f benchmarks/baseline.env
+
+## bench-cloud: benchmark on a fresh Compute Engine VM, then delete it
+#
+# The point is repeatability. A laptop throttles, has a browser open, and is not
+# the machine it was three months ago, so a delta measured on one is as likely
+# to be the machine as the change. scripts/bench-gcloud.sh rents one pinned
+# machine type with SMT off and the turbo clock held, measures on it, and gives
+# it back. scripts/bench-gcloud.sh says what each pin is for.
+#
+# The VM is deleted by a trap, by --max-run-duration on the instance itself, and
+# by `make bench-cloud-reap`. Costs roughly $0.30 a run.
+.PHONY: bench-cloud
+bench-cloud:
+	@scripts/bench-gcloud.sh run
+
+## bench-cloud-update: same, and promote the result to benchmarks/baseline.txt
+.PHONY: bench-cloud-update
+bench-cloud-update:
+	@scripts/bench-gcloud.sh run --update
+
+## bench-cloud-dirty: same as bench-cloud, but measure the working tree
+.PHONY: bench-cloud-dirty
+bench-cloud-dirty:
+	@scripts/bench-gcloud.sh run --dirty
+
+## bench-cloud-list: show any benchmark VMs still running
+.PHONY: bench-cloud-list
+bench-cloud-list:
+	@scripts/bench-gcloud.sh list
+
+## bench-cloud-reap: delete every leftover benchmark VM in the project
+.PHONY: bench-cloud-reap
+bench-cloud-reap:
+	@scripts/bench-gcloud.sh reap
 
 ## bench-vs: benchmark against araddon/dateparse (separate module, needs network)
 #
@@ -229,7 +330,7 @@ tools:
 ## clean: drop build and benchmark artifacts
 .PHONY: clean
 clean:
-	@rm -f benchmarks/current.txt coverage.out *.test
+	@rm -f benchmarks/current.txt benchmarks/current.env benchmarks/current.log coverage.out *.test
 	@go clean -testcache
 
 # Print one variable, so CI installs the version this file declares rather than

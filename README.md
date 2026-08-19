@@ -12,13 +12,13 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 
 ## Why dateparsa
 
-**When you already know the format**, use `time.Parse`. It's about 28 ns, zero allocs, stdlib. Nothing should replace it.
+**When you already know the format**, use `time.Parse`. It's 44 ns on the machine the Performance section names, zero allocs, stdlib. Nothing should replace it.
 
 **When you don't know the format** — CSV imports, log ingestion, API responses from third parties, user-submitted data, multi-source pipelines — that's where dateparsa comes in.
 
 One `Parse()` call handles ISO 8601, RFC 3339, RFC 2822, RFC 850, ANSIC, SQL timestamps, syslog, Common Log Format, spreadsheet dates, compact formats, Unix timestamps, partial dates, and natural language expressions like "3 days ago" or "next friday at 2pm". In 20 languages.
 
-The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at about 25 ns with zero allocations, against 28 ns for `time.Parse` on the same format. A shorter format is further ahead: a compact date is 17 ns.
+The key insight: **detect the format once, parse millions of rows at native speed.** The first call returns both the parsed time and a compiled `Layout`. Reusing that `Layout` bypasses all detection and runs at 33 ns with zero allocations, against 44 ns for `time.Parse` on the same format. A shorter format is further ahead: a compact date is 23 ns.
 
 ### When to use dateparsa
 
@@ -57,7 +57,7 @@ fmt.Println(result.Ambiguous) // false
 result, _ := dateparsa.Parse("2024-03-15T10:30:00Z")
 layout := result.Layout
 
-// Parse millions — zero alloc, ~25 ns/op for this format
+// Parse millions, zero alloc, 33 ns/op for this format
 for _, row := range rows {
     t, err := layout.Parse(row)
     // ...
@@ -349,26 +349,48 @@ yesterday and `आने वाला कल` is tomorrow.
 
 ## Performance
 
-**One machine, and it is named here.** Every number below is an Apple M2 Max,
-`darwin/arm64`, 12 cores, Go 1.26.6. "Hot path" and "Against `time.Parse`" are
-benchstat over 12 runs; the rest are the median of the three runs in
-`benchmarks/baseline.txt`. Where the two methods cover the same benchmark they
-agree to within 3%.
+**One machine, and it is rented.** Every number below is a Compute Engine
+`c4-standard-8`, `linux/amd64`, an Intel Xeon Platinum 8581C (Emerald Rapids) at
+2.30GHz, Debian 13, Go 1.26.6. Simultaneous multithreading is off, so the eight
+vCPUs are four physical cores with no sibling sharing one. The turbo clock is
+held at its all-core value rather than boosting with however many cores happen
+to be busy. The measurement runs on cores 1 to 3 at `GOMAXPROCS=3`, with core 0
+left to the kernel and the interrupts. Every figure is the median of the ten
+runs in `benchmarks/baseline.txt`, and `benchmarks/baseline.env` records the
+instance that produced them, down to the zone, the image and the kernel.
+`make bench-cloud` rents that machine again and measures the same way;
+**Regression tracking** below says what it costs and how it is torn down.
 
-The tables used to be split across two machines, and were labelled as such. The
-change that made the hot path what it is was measured on a `linux/arm64` box,
-and `benchmarks/baseline.txt` was deliberately not overwritten with its numbers,
-because retargeting the committed reference would have made every later
-`make bench-compare` on the M2 Max print deltas that were really the difference
-between two machines. The suite has since been re-run here and the baseline
-regenerated from it, so the split is gone and `make bench-compare` measures a
-change again rather than a machine. If you change a number in a table, change it
-on the machine the section names, and say what produced it.
+Spread across the ten runs has a median of 1.2%. Six of the 66 benchmarks exceed
+4% and the worst is 6.5%, so a difference smaller than a few percent is the
+machine and not the code. Those are the numbers to hold a claimed improvement
+against, and `make bench-cloud` prints benchstat's own confidence intervals.
+
+It was an Apple M2 Max until 2026-08-19. The reason for moving is the history of
+this section: the tables were once split across two machines and labelled as
+such, `benchmarks/baseline.txt` was deliberately not overwritten with the second
+machine's numbers because retargeting the committed reference would have made
+every later comparison print deltas that were really the difference between two
+machines, and the split was then closed by re-running everything on the laptop.
+That holds until the laptop is busy, or warm, or replaced. A rented machine is
+the same machine on every run and is nobody's laptop.
+
+None of the move is a claim about the code. Every ns/op below is larger than the
+M2 Max figure it replaces, by between a quarter and a half, because a 2.3GHz
+Xeon is not an M2 Max. The exception is the `time.Parse` baseline, which is 57%
+larger, and that is worth knowing because it is why two ratio columns moved in
+this library's favour without a line of code changing.
+
+One thing did change on its merits. The `flextime` table is measured in the same
+run as everything else now, and its allocation counts agree with what that table
+already claimed. The previous `benchmarks/baseline.txt` disagreed with it, and
+the baseline was the wrong one: it predated the commit that fixed those
+benchmarks, which had been reporting the cost of boxing a `time.Time` into an
+`any` rather than the cost of the method they name.
 
 **Allocs** is the one column that does not depend on the machine, an allocation
 count being a property of the code. It comes from the same run as everything
-else, except in the `flextime` table, which carries allocations only and was
-counted elsewhere for the reason given there.
+else, the `flextime` table included.
 
 The zero in it has two exceptions. A timezone offset is answered from a table of
 `*time.Location` built at init, at 15-minute granularity out to 14 hours, which
@@ -385,21 +407,17 @@ wider than 32 bytes, and none for the rest, which is most of them.
 
 ### Hot path (compiled Layout reuse)
 
-Apple M2 Max, Go 1.26.6, 12 cores, benchstat over 12 runs, all within ±2%.
-
-Re-verified on 2026-08-18, 29 commits after these were recorded, on two machines: on the
-M2 Max above, where all five land within 1%, and independently on linux/arm64, where
-they land within 3.6%. Both runs established a noise floor first by benchstat'ing one
-binary against itself, because a machine under load disagrees with itself by more than
-the differences in this table.
+Median of the ten runs in `benchmarks/baseline.txt`, on the machine named above.
+These five spread at most 4.2% across those ten runs, which is the figure a
+claimed improvement has to clear before it is an improvement.
 
 | Operation                       | ns/op | Allocs | vs `time.Parse` |
 | ------------------------------- | ----- | ------ | --------------- |
-| `Layout.Parse` (compact date)   | 16.8  | 0      | 0.6x            |
-| `Layout.Parse` (ISO date)       | 17.9  | 0      | 0.6x            |
-| `Layout.Parse` (ISO datetime+Z) | 24.4  | 0      | 0.9x            |
-| `Parser` (cached layout)        | 26.6  | 0      | 1.0x            |
-| `time.Parse` (stdlib baseline)  | 27.9  | 0      | 1.0x            |
+| `Layout.Parse` (compact date)   | 23.1  | 0      | 0.5x            |
+| `Layout.Parse` (ISO date)       | 24.6  | 0      | 0.6x            |
+| `Layout.Parse` (ISO datetime+Z) | 33.3  | 0      | 0.8x            |
+| `Parser` (cached layout)        | 35.6  | 0      | 0.8x            |
+| `time.Parse` (stdlib baseline)  | 43.9  | 0      | 1.0x            |
 
 ### Against `time.Parse` on the same format
 
@@ -409,10 +427,10 @@ is the source, same machine and method as above.
 
 | Format       | dateparsa | `time.Parse` |          |
 | ------------ | --------- | ------------ | -------- |
-| SQL datetime | 24.2 ns   | 91.9 ns      | **3.8x** |
-| ISO date     | 18.0 ns   | 57.3 ns      | **3.2x** |
-| US slash     | 18.2 ns   | 53.4 ns      | **2.9x** |
-| RFC 3339     | 24.7 ns   | 27.7 ns      | **1.1x** |
+| SQL datetime | 31.6 ns   | 125 ns       | **4.0x** |
+| ISO date     | 24.4 ns   | 75.7 ns      | **3.1x** |
+| US slash     | 24.9 ns   | 72.2 ns      | **2.9x** |
+| RFC 3339     | 32.2 ns   | 42.3 ns      | **1.3x** |
 
 Zero allocations on every row, both sides. RFC 3339 is close because it is the
 one layout the standard library hand-writes a dedicated parser for; the other
@@ -427,54 +445,49 @@ a weekday, a variable-width number, or an ISO week, and they run the instruction
 interpreter as before.
 
 The trade is that `Detect` on its own got **16% slower**: it does the planning
-and never runs the program, so it pays and does not collect. That figure is the
-one measurement in this section still carrying `linux/arm64` numbers (137 ns to
-160 ns), because it is an A/B across two commits and only one of them is checked
-out here; `Detect` measures 153 ns on the M2 Max today. `Parse`, which does run
-the program, is flat to slightly faster, and anything that reuses the layout is
-a third to a half faster. For a library whose reason to exist is parsing the
-second row through the ten-millionth with the format found on the first, that is
-the right side of the trade.
+and never runs the program, so it pays and does not collect. That percentage is
+an A/B across two commits, measured on `linux/arm64` when the change landed
+(137 ns to 160 ns), and it is not re-measurable here because only one of the two
+commits is checked out. `Detect` measures 221 ns on the machine this section
+names. `Parse`, which does run the program, is flat to slightly faster, and
+anything that reuses the layout is a third to a half faster. For a library whose
+reason to exist is parsing the second row through the ten-millionth with the
+format found on the first, that is the right side of the trade.
 
 ### Full detection + parse (first call)
 
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| Unix timestamp       | 80    | 1      |
-| ISO ordinal          | 122   | 2      |
-| Compact date         | 130   | 1      |
-| ISO 8601 date        | 133   | 1      |
-| SQL datetime         | 174   | 1      |
-| ISO 8601 datetime    | 177   | 1      |
-| SQL datetime + frac6 | 198   | 1      |
-| ISO week date        | 233   | 2      |
-| Ambiguous slash      | 245   | 2      |
-| Textual month        | 345   | 2      |
+| Unix timestamp       | 110   | 1      |
+| Compact date         | 174   | 1      |
+| ISO ordinal          | 185   | 2      |
+| ISO 8601 date        | 187   | 1      |
+| SQL datetime         | 248   | 1      |
+| ISO 8601 datetime    | 260   | 1      |
+| ISO week date        | 302   | 2      |
+| SQL datetime + frac6 | 307   | 1      |
+| Ambiguous slash      | 318   | 2      |
+| Textual month        | 494   | 2      |
 
 One allocation is the `Layout` the call returns. A format the trie matches needs
 nothing else, because its fields were built at init. A format that falls through
 to a detector needs one more, holding the fields it worked out and the
 definition that describes them, and that is the whole of the second column
 above: it was four for a textual month and ten for `03/15/2024 10:30:00`, in
-scratch slices that were dead before `Parse` returned. The `ns/op` column
-predates that change and is high on the four rows whose allocation count moved,
-by 7% to 34% measured on `linux/arm64`.
+scratch slices that were dead before `Parse` returned.
 
-Eight of these ten are slower than in the baseline this replaces, by 3% to 29%.
-The cause is the range and separator checking the correctness fixes added: a
-detection that describes every byte of its input and refuses a numeric part
-wider than the field that reads it does more work than one that does neither.
-It is paid once per column. The two rows that moved the other way moved
-further. A textual month is half what it was, because a month name is now
-matched against words rather than against every position, and a Unix timestamp
-is 17% quicker.
+These rows are the expensive path and are meant to be. Detection describes every
+byte of its input and refuses a numeric part wider than the field that reads it,
+which is more work than a detector that does neither, and it is what stops
+`2024-02-30` becoming the first of March. It is paid once per column, and the
+hot path table is what every row after the first costs.
 
 ### Bulk (10M rows)
 
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
-| `Layout.Parse` 10M rows       | 248ms | 24.8 ns |
-| `Parser.ParseColumn` 10M rows | 296ms | 29.6 ns |
+| `Layout.Parse` 10M rows       | 327ms | 32.7 ns |
+| `Parser.ParseColumn` 10M rows | 459ms | 45.9 ns |
 
 A column costs one detection and then a compiled parse per row. The difference
 between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
@@ -484,40 +497,39 @@ between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| "yesterday"          | 302   | 2      |
-| "in 10 minutes"      | 332   | 2      |
-| "next friday"        | 352   | 2      |
-| "beginning of month" | 357   | 2      |
-| "yesterday at 5pm"   | 404   | 2      |
-| "3 days ago"         | 413   | 2      |
+| "yesterday"          | 381   | 2      |
+| "in 10 minutes"      | 447   | 2      |
+| "next friday"        | 470   | 2      |
+| "beginning of month" | 479   | 2      |
+| "yesterday at 5pm"   | 508   | 2      |
+| "3 days ago"         | 567   | 2      |
 
 ### Database and JSON (flextime)
 
-Allocations only, and this is the one table in the section not measured on the
-machine named at the top. An allocation count is a property of the code and
-reproduces anywhere, which is what makes this table publishable from a
-`linux/arm64` box; the nanoseconds beside it would not be comparable with the
-tables above, so they are not here. Every row is a benchmark in
-`flextime/bench_test.go`:
+Measured in the same run as everything above, which it was not before: the
+nanoseconds used to be omitted here because this table was counted on a
+different machine from the rest of the section and would not have been
+comparable. Every row is a benchmark in `flextime/bench_test.go`:
 
 ```bash
 go test -run '^$' -bench . -benchmem ./flextime/
 ```
 
-| Operation                               | Allocs |
-| --------------------------------------- | ------ |
-| `FlexTime.Scan`, `time.Time`            | 0      |
-| `FlexTime.Scan`, `int64` or `float64`   | 0      |
-| `FlexTime.Scan`, string                 | 0      |
-| `FlexTime.Scan`, `[]byte`               | 1      |
-| `Scanner.Scan`, string                  | 0      |
-| `FlexTime.Value`                        | 0      |
-| `UnmarshalText`                         | 1      |
-| `UnmarshalJSON`, `null`                 | 0      |
-| `UnmarshalJSON`, integer number         | 0      |
-| `UnmarshalJSON`, number with a fraction | 2      |
-| `UnmarshalJSON`, string                 | 1      |
-| `MarshalJSON`                           | 3      |
+| Operation                               | ns/op | Allocs |
+| --------------------------------------- | ----- | ------ |
+| `FlexTime.Value`                        | 0.65  | 0      |
+| `UnmarshalJSON`, `null`                 | 1.9   | 0      |
+| `FlexTime.Scan`, `time.Time`            | 2.3   | 0      |
+| `FlexTime.Scan`, `float64`              | 8.0   | 0      |
+| `FlexTime.Scan`, `int64`                | 11.6  | 0      |
+| `Scanner.Scan`, string                  | 38.3  | 0      |
+| `FlexTime.Scan`, string                 | 38.5  | 0      |
+| `UnmarshalJSON`, integer number         | 43.6  | 0      |
+| `FlexTime.Scan`, `[]byte`               | 52.3  | 1      |
+| `UnmarshalText`                         | 53.0  | 1      |
+| `UnmarshalJSON`, string                 | 67.5  | 1      |
+| `MarshalJSON`                           | 167   | 3      |
+| `UnmarshalJSON`, number with a fraction | 241   | 2      |
 
 Every row that parses is steady state, the second value of a format onward. The
 first value of a format costs one more, the `Layout` its detection returns, and
@@ -604,16 +616,71 @@ re-parse its own input for 2 of the 16.
 ### Regression tracking
 
 The baseline is checked into `benchmarks/baseline.txt`. To check for
-regressions:
+regressions on the machine in front of you:
 
 ```bash
 make bench-compare
 ```
 
 That runs every benchmark in the tree, root package and `flextime` both, into
-`benchmarks/current.txt` and benchstats it against the baseline. Promote a run
-to the baseline with `make bench-update`, on the machine the baseline names, in
-a commit that says what moved and why.
+`benchmarks/current.txt` and benchstats it against the baseline. It is the fast
+check, and it is only as good as the machine: a laptop throttles, has a browser
+open, and is not the machine it was three months ago, so a small delta from it
+is as likely to be the machine as the change.
+
+#### The repeatable one
+
+```bash
+make bench-cloud          # measure, print the delta, delete the VM
+make bench-cloud-update   # the same, and promote the result to the baseline
+make bench-cloud-reap     # delete anything a crashed run left behind
+```
+
+`scripts/bench-gcloud.sh` rents one Compute Engine VM, measures on it, and gives
+it back. The point is that the machine is the same one every time:
+`c4-standard-8`, which is a single CPU platform rather than whichever generation
+the zone happens to have; SMT off, so no hyperthread sibling shares a core with
+the benchmark; the turbo clock held at its all-core value instead of boosting
+with whatever else is running; the measurement pinned to cores 1 to 3 with core
+0 left to the kernel; `GOMAXPROCS` set explicitly, because Go writes it into
+every benchmark name; and an exact Go toolchain, fetched through the module
+proxy and verified against `sum.golang.org`. It measures a commit, not a working
+tree, unless you pass `--dirty`. It runs `-count=10`, which on this
+machine puts the median run-to-run spread at 1.2% and the worst at 6.5%.
+
+The VM is deleted three ways, because one way is how you pay for a VM you
+forgot: a trap covering Ctrl-C and any failure, `--max-run-duration` on the
+instance so Compute Engine deletes it whatever happens to your shell, and
+`make bench-cloud-reap` for anything that still slipped through. A run costs
+roughly $0.30 and takes about twenty minutes, most of it the measurement. The
+script's header comment says what each pin is for, and every knob is an
+environment variable.
+
+Two of those knobs exist because of what the first live run hit. A zone runs out
+of a machine type, so `BENCH_ZONE_FALLBACKS` is a list and the run walks it: all
+four `us-central1` zones refused a `c4-standard-8` within a minute of each other
+on the day this landed. And a network that reaches `googleapis.com` does not
+necessarily reach a VM's own address on port 22, so `BENCH_SSH_TRANSPORT`
+defaults to `auto` and switches to `--tunnel-through-iap` after a minute of
+silence, which needs no inbound path of its own. Set it to `iap` outright to
+skip the wait. Neither knob changes what is measured: the CPU platform follows
+from the machine type in every zone, and how the file gets copied back is not
+part of the number.
+
+`benchmarks/baseline.env` records the machine that produced
+`benchmarks/baseline.txt`: instance type, CPU platform, kernel, Go version,
+commit, and the date. It sits beside the numbers rather than inside them,
+because benchstat reads `key: value` lines at the top of a benchmark file as
+configuration and would split the table on a commit hash that differs between
+the two files, which is the one thing that always differs. Once it exists,
+`make bench-update` refuses to promote a local run over the baseline and says
+so, since retargeting the committed reference to a different machine is the
+mistake described at the top of this section. `make bench-compare` still runs
+from a laptop and still warns, reading the `goos`/`goarch`/`cpu` header the two
+files carry: read its allocs/op column, which is a property of the code, and
+ignore its nanoseconds, which are a property of whichever machine you are on.
+
+Promote a run in a commit that says what moved and why.
 
 ## How It Works
 

@@ -6,7 +6,36 @@
 # mechanical mistake, not the substantive one.
 set -e
 
-header=$(head -1 "$1")
+# The subject is what git will record, which is not the first line of this file.
+# git takes everything up to the first blank line and joins it with spaces, so a
+# wrapped subject is one long subject to every reader there will ever be. This
+# read `head -1`, so a subject wrapped at 72 by an editor passed the 72 check and
+# was recorded at 78.
+#
+# Comment lines are skipped because git strips them before recording and this
+# hook runs before that happens. Reading line 1 also meant that a message written
+# in an editor, whose first line is git's own "# Please enter..." comment, was
+# checked for Conventional Commit shape against the comment and refused.
+subject_of() {
+	awk '
+		/^#/ { next }
+		/^[[:space:]]*$/ { if (started) exit; next }
+		{ started = 1; print }
+	' "$1"
+}
+
+# Everything after the blank line that ends the subject. Comment lines are left
+# in, which is why the heading rule below matches two hashes and not one.
+body_of() {
+	awk '
+		st == 0 { if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next; st = 1; next }
+		st == 1 { if ($0 ~ /^[[:space:]]*$/) st = 2; next }
+		{ print }
+	' "$1"
+}
+
+lines=$(subject_of "$1")
+header=$(printf '%s' "$lines" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 
 # A merge, revert, or fixup carries its own conventions.
 case "$header" in
@@ -28,6 +57,24 @@ if ! printf '%s' "$header" | grep -Eq "$pattern"; then
 fi
 
 subject=${header#*: }
+
+# A subject git will record as one line, written here as two. The length check
+# below cannot catch this: each line is short and their join is not. Two short
+# lines where the author meant the second to be the body land here too, which is
+# the case length could never have caught.
+if [ "$(printf '%s' "$lines" | wc -l)" -gt 0 ]; then
+	echo "commit-msg: the subject is wrapped across $(($(printf '%s' "$lines" | wc -l) + 1)) lines."
+	echo
+	printf '%s\n' "$lines" | sed 's/^/  /'
+	echo
+	echo "  git joins those with spaces and records one subject, ${#header} characters:"
+	echo
+	echo "  $header"
+	echo
+	echo "  Put a blank line before the body, or shorten the subject."
+	exit 1
+fi
+
 if [ ${#header} -gt 72 ]; then
 	echo "commit-msg: the header is ${#header} characters; keep it under 72."
 	echo "  $header"
@@ -53,7 +100,18 @@ esac
 # Headings are matched from two hashes rather than one. This file still holds
 # git's own comment lines when a message is written in an editor, and those
 # start with a single hash, so "# " cannot be told apart from an H1 here.
-body=$(tail -n +2 "$1")
+body=$(body_of "$1")
+
+# A machine wrote this body and no human can rewrite it. Dependabot's message is
+# markdown by construction, it reaches main through GitHub rather than through
+# this hook, and so the rules below can never actually be enforced against it.
+# Applying them anyway has exactly one effect: this repository's own history
+# fails its own gate, and a gate that refuses the history is a gate somebody
+# switches off. The header rules above still apply, and Dependabot's header
+# passes them, which is the part a bot can get wrong.
+if printf '%s\n' "$body" | grep -q '^Signed-off-by: dependabot\[bot\]'; then
+	exit 0
+fi
 
 flag() {
 	echo "commit-msg: $1 in the body, and a commit message is plain text."

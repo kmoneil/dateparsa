@@ -2,6 +2,7 @@ package detect
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -2039,7 +2040,47 @@ func buildLocaleMonths(loc *locale.Data) *localeMonths {
 			}
 		}
 	}
+
+	// A spelling is looked for anywhere in the string, so one that is a suffix
+	// of another in the same locale is only ever reachable if it is tried
+	// second. This list was built in month order, so "1월" came before "11월"
+	// and Korean November read as January. A digit is what makes that reachable
+	// here and not in English: IsWordChar counts letters and bytes over 0x7f,
+	// so a digit is not a word character and the boundary check that stops
+	// "mar" matching inside "march" does not stop "1월" matching inside "11월".
+	// Every CJK locale spells its months with digits, so ja, ko and zh all had
+	// months 11 and 12 wrong.
+	//
+	// Sorted longest-first only where such a pair exists, which is those three.
+	// Sorting every locale costs the other seventeen the order their month
+	// names are usually looked up in: German went from hitting "März" third to
+	// scanning September and Dezember first, +5.47% on
+	// BenchmarkParse_Locale_GermanMonth and +6.61% on Parse_Miss_Locales. The
+	// check below is quadratic over at most 36 short strings, once per locale,
+	// behind the same cache as the rest of this.
+	if hasSuffixPair(lm.spellings) {
+		slices.SortStableFunc(lm.spellings, func(a, b monthSpelling) int {
+			return len(b.name) - len(a.name)
+		})
+	}
 	return lm
+}
+
+// hasSuffixPair reports whether any spelling is a proper suffix of another,
+// which is the only arrangement where the order they are tried in changes
+// which month a string reads as.
+func hasSuffixPair(sp []monthSpelling) bool {
+	for i := range sp {
+		for j := range sp {
+			if i == j || len(sp[i].name) >= len(sp[j].name) {
+				continue
+			}
+			if strings.HasSuffix(sp[j].name, sp[i].name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func classifySpelling(name string) spellingLookup {

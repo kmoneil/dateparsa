@@ -12,7 +12,14 @@ both dated 2026-04-04, and linked each to a GitHub release. Neither was ever
 published: there was no remote, the two local tags were never pushed, and both
 were deleted on 2026-08-13. A version number in this file means a release
 somebody can fetch, so everything built so far is collected here and the first
-published tag will be `v0.1.0`.
+version this file records will be `0.1.0`.
+
+`v0.0.1-rc.1` is published ahead of it and is deliberately not recorded here as
+a version. It exists to run `.github/workflows/release.yml` against a real tag
+once, because that workflow publishes through a third-party action that has
+never executed and a tag cannot be moved afterwards. It carries no content this
+file does not already list, and GitHub marks it a prerelease, so it is not
+offered as the version to use.
 
 ### Added
 

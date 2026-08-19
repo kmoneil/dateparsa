@@ -11,6 +11,16 @@ on:
   push:
     tags:
       - "v*"
+  # A manual run, so this file can be exercised without spending a version
+  # number on finding out whether it works. It had never executed once: it
+  # triggers on v* and nothing else, so the first run would have been a real
+  # release, on a tag that cannot be moved afterwards, through a third-party
+  # action that had just gone up a major version.
+  #
+  # A manual run does not release anything. `publish` is guarded on the ref
+  # being a v* tag, so on a dispatch that job never starts, no tag is created,
+  # and nothing reaches the module proxy, which only ever sees tags.
+  workflow_dispatch:
 
 # Read at the workflow level, write on the one job that publishes. The gate job
 # runs the whole test suite and needs to read the repository and nothing else,
@@ -41,10 +51,31 @@ jobs:
       # timing and should not decide whether a release happens.
       - name: gate
         run: make fmt-check vet lint test alloc vuln size
+      # `make bench` rather than a second copy of the flags written out here.
+      # This ran `go test -bench=.` on the root package with no -run filter, so
+      # it swept 40 of the 50 benchmarks in the tree and wrote the test suite's
+      # PASS lines into the file attached to the release. The Makefile fixed
+      # both of those for `make bench` and this never picked the fix up.
+      #
+      # It runs in the gate job so that a manual run exercises it, and so that
+      # the publishing job needs nothing from the repository but this file.
+      - name: benchmarks
+        run: make bench
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmarks
+          path: benchmarks/current.txt
+          retention-days: 7
+          if-no-files-found: error
 
-  release:
+  publish:
     name: publish
     needs: gate
+    # Where a manual run stops. Guarded at the job and not at the step, so the
+    # job never starts rather than starting and skipping its last thing: a
+    # write token that is never minted cannot be misused by anything running
+    # beside it.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # The only job that writes anything, and the only one running a
     # third-party action.
@@ -54,15 +85,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          go-version: ${{ env.GO_VERSION }}
+          name: benchmarks
       # Attached to the release because the performance claim is the product
       # here. A reader comparing two versions should not have to run them.
-      - name: benchmarks
-        run: go test -bench=. -benchmem -count=3 -timeout=600s > /tmp/benchmarks.txt
       - name: create the GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
-          files: /tmp/benchmarks.txt
+          files: current.txt

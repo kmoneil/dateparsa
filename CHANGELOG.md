@@ -7,19 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing has been released. This file previously recorded `0.1.0` and `0.2.0`,
-both dated 2026-04-04, and linked each to a GitHub release. Neither was ever
-published: there was no remote, the two local tags were never pushed, and both
-were deleted on 2026-08-13. A version number in this file means a release
-somebody can fetch, so everything built so far is collected here and the first
-version this file records will be `0.1.0`.
+Nothing yet.
 
-`v0.0.1-rc.1` is published ahead of it and is deliberately not recorded here as
-a version. It exists to run `.github/workflows/release.yml` against a real tag
-once, because that workflow publishes through a third-party action that has
+## [0.1.0] - 2026-08-19
+
+The first release anybody can fetch. This file previously recorded `0.1.0` and
+`0.2.0`, both dated 2026-04-04, and linked each to a GitHub release. Neither was
+ever published: there was no remote, the two local tags were never pushed, and
+both were deleted on 2026-08-13. Everything built so far is collected here.
+
+`v0.0.1-rc.1` was published ahead of this one and is deliberately not recorded
+as a version. It existed to run `.github/workflows/release.yml` against a real
+tag once, because that workflow publishes through a third-party action that had
 never executed and a tag cannot be moved afterwards. It carries no content this
-file does not already list, and GitHub marks it a prerelease, so it is not
-offered as the version to use.
+release does not, and it is marked a prerelease, so it is not offered as the
+version to use.
 
 ### Added
 
@@ -35,12 +37,14 @@ offered as the version to use.
   `CompileWithTimezone()` turn a Go reference layout such as `"2006-01-02"`
   into the same instruction-based executor detection produces
 - **`Layout.Parse()` and `Layout.ParseBytes()`**: zero-allocation parsing once
-  the format is known, at roughly 37 ns/op against 27 ns/op for `time.Parse`
-  with a known layout, and 19 ns/op for a compact date
-- **Trie-based detection**: O(n) character-class signature matching over 33
-  fixed-signature formats, with no backtracking, plus a cascade of special-case
-  detectors for the variable-width and textual forms a fixed signature cannot
-  describe
+  the format is known, at 33 ns/op against 44 ns/op for `time.Parse` with a
+  known layout, and 23 ns/op for a compact date. Measured on the machine
+  README's Performance section names, which is the one `benchmarks/baseline.env`
+  records
+- **Trie-based detection**: O(n) character-class signature matching with no
+  backtracking, over the fixed-width members of the thirty-one supported
+  formats, plus a cascade of special-case detectors for the variable-width and
+  textual forms a fixed signature cannot describe
 - **Epoch timestamps**: Unix seconds, milliseconds, microseconds, and
   nanoseconds, distinguished by range
 - **Natural language**: relative expressions ("3 days ago", "next friday",
@@ -71,10 +75,12 @@ offered as the version to use.
   - `flextime.Scanner`: a pre-configured scanner taking `WithPreferDayFirst`,
     `WithTimezone`, and `WithJSONFormat`
 - **Zero dependencies**: `go.mod` declares no requirements, direct or indirect
-- **Testing**: unit, integration, and format-coverage tests; benchmarks; eight
-  fuzz targets across two packages; and a semantic round-trip fuzzer running 28
-  formats at 1000 random dates each, which is what catches a parse that
-  succeeds and returns the wrong time
+- **Testing**: unit, integration, and format-coverage tests; benchmarks; 23
+  fuzz targets across five packages, swept on every merge and nightly; a
+  semantic round-trip generator running 31 formats at 1000 random dates each,
+  which is what catches a parse that succeeds and returns the wrong time; an
+  oracle asserting agreement with `time.Parse` in both directions; and a
+  zero-allocation gate on `Layout.Parse` that runs on every commit
 
 ### Changed
 
@@ -90,4 +96,5 @@ offered as the version to use.
   its general layout parser. Use `Parse` to have the width detected rather than
   declared
 
-[Unreleased]: https://github.com/kmoneil/dateparsa
+[Unreleased]: https://github.com/kmoneil/dateparsa/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kmoneil/dateparsa/releases/tag/v0.1.0

@@ -746,6 +746,12 @@ First parse:    input → signature → trie → compile → execute → time.Ti
 Subsequent:     input → execute (same instructions) → time.Time
 ```
 
+## How this was built
+
+Built with AI assistance. I directed, reviewed, and accepted every part of it,
+and I'm responsible for the result. Noted for transparency, not as a selling
+point or an excuse.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

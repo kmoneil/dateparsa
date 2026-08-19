@@ -686,10 +686,52 @@ func TestLocaleMonthsMatchesTheLocaleData(t *testing.T) {
 			t.Errorf("%s: prepared %d spellings, the data has %d", tag, len(got), len(want))
 			continue
 		}
-		for i := range want {
-			if got[i].name != want[i].name || got[i].num != want[i].num {
-				t.Errorf("%s: spelling %d is (%q, %d), want (%q, %d)",
-					tag, i, got[i].name, got[i].num, want[i].name, want[i].num)
+
+		// Compared as a set. This used to compare position by position, which
+		// asserted the prepared list was in month order, and month order is
+		// what had Korean November reading as January: "1월" was tried before
+		// "11월" and matched inside it. The property this test is named for is
+		// that the prepared list holds the data's spellings, not the order it
+		// holds them in, and the order that is actually required is asserted
+		// directly below.
+		have := make(map[monthSpelling]int, len(got))
+		for _, sp := range got {
+			have[monthSpelling{name: sp.name, num: sp.num}]++
+		}
+		for _, w := range want {
+			if have[w] == 0 {
+				t.Errorf("%s: the data has (%q, %d) and the prepared list does not", tag, w.name, w.num)
+				continue
+			}
+			have[w]--
+		}
+		for sp, n := range have {
+			if n > 0 {
+				t.Errorf("%s: the prepared list has (%q, %d) %d times over", tag, sp.name, sp.num, n)
+			}
+		}
+
+		// The order that matters, stated as the property rather than as a
+		// sort: a spelling that is a proper suffix of another must not be
+		// tried first, or the longer one is unreachable and its month reads as
+		// the shorter one's. "1월" before "11월" is how Korean November read as
+		// January. Asserted for every locale, including the seventeen that are
+		// deliberately left in month order because no such pair exists in them.
+		pos := make(map[string]int, len(got))
+		for i, sp := range got {
+			if _, seen := pos[sp.name]; !seen {
+				pos[sp.name] = i
+			}
+		}
+		for _, short := range got {
+			for _, long := range got {
+				if len(short.name) >= len(long.name) || !strings.HasSuffix(long.name, short.name) {
+					continue
+				}
+				if pos[short.name] < pos[long.name] {
+					t.Errorf("%s: %q is tried at %d, before the longer %q at %d, so %q can never match",
+						tag, short.name, pos[short.name], long.name, pos[long.name], long.name)
+				}
 			}
 		}
 	}

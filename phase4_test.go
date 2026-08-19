@@ -3,6 +3,8 @@ package dateparsa
 import (
 	"testing"
 	"time"
+
+	"github.com/kmoneil/dateparsa/internal/locale"
 )
 
 var localeBase = time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC)
@@ -301,5 +303,81 @@ func BenchmarkParse_Locale_RussianNL(b *testing.B) {
 	opts := []Option{WithLocales(RU), WithBaseTime(localeBase)}
 	for b.Loop() {
 		ParseWith("3 дня назад", opts...)
+	}
+}
+
+// Every month name of every registered locale, through the public API.
+//
+// This is the test that was missing. phase4_test.go had month-name cases for 9
+// of the 20 locales and relative-expression cases for 4, so Arabic, Danish,
+// Finnish, Korean, Norwegian, Swedish and Ukrainian were referenced by no test
+// at all, and the CJK locales were tested only in the year月day form.
+//
+// What it found: buildLocaleMonths listed spellings in month order, so "1월"
+// was tried before "11월" and Korean November parsed as January. A month name
+// beginning with digits is what makes that reachable, and every CJK locale
+// spells its months that way, so ja, ko and zh all had months 11 and 12 wrong.
+//
+// Written as a loop over locale.Tags() rather than a table, so a locale added
+// later is covered by having been added rather than by somebody remembering.
+func TestParse_EveryLocaleMonthName(t *testing.T) {
+	for _, tag := range Locales() {
+		loc, ok := LookupLocale(tag)
+		if !ok {
+			t.Errorf("%s is in Locales() and LookupLocale does not know it", tag)
+			continue
+		}
+		d := locale.Lookup(tag)
+		for i := range 12 {
+			for _, name := range []string{d.MonthsWide[i], d.MonthsAbbr[i]} {
+				if name == "" {
+					continue
+				}
+				in := "15 " + name + " 2024"
+				r, err := ParseWith(in, WithLocales(loc))
+				if err != nil {
+					t.Errorf("%s: ParseWith(%q) failed: %v", tag, in, err)
+					continue
+				}
+				if got := int(r.Time.Month()); got != i+1 {
+					t.Errorf("%s: ParseWith(%q) read month %d, want %d (%s)",
+						tag, in, got, i+1, r.Time.Format("2006-01-02"))
+				}
+				if r.Time.Day() != 15 || r.Time.Year() != 2024 {
+					t.Errorf("%s: ParseWith(%q) = %s, want 2024-%02d-15",
+						tag, in, r.Time.Format("2006-01-02"), i+1)
+				}
+			}
+		}
+	}
+}
+
+// The forms a reader would actually write, for the three locales whose months
+// are digits and a character. The loop above uses one synthetic shape for every
+// locale; these are the real ones, and 11 and 12 are the months that were wrong.
+func TestParse_CJKNativeMonths(t *testing.T) {
+	tests := []struct {
+		tag, in string
+		month   int
+	}{
+		{"ja", "2024年1月15日", 1},
+		{"ja", "2024年11月15日", 11},
+		{"ja", "2024年12月15日", 12},
+		{"zh", "2024年11月15日", 11},
+		{"zh", "2024年12月15日", 12},
+		{"ko", "2024년 1월 15일", 1},
+		{"ko", "2024년 11월 15일", 11},
+		{"ko", "2024년 12월 15일", 12},
+	}
+	for _, tc := range tests {
+		loc, _ := LookupLocale(tc.tag)
+		r, err := ParseWith(tc.in, WithLocales(loc))
+		if err != nil {
+			t.Errorf("%s: ParseWith(%q) failed: %v", tc.tag, tc.in, err)
+			continue
+		}
+		if got := int(r.Time.Month()); got != tc.month {
+			t.Errorf("%s: ParseWith(%q) read month %d, want %d", tc.tag, tc.in, got, tc.month)
+		}
 	}
 }

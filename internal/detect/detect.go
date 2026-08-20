@@ -127,35 +127,89 @@ func (r Result) Readings() []Reading {
 // dayOrYearReadings reads the bare number beside a month name as the day of the
 // month, which is what Detect chose, and as a two-digit year, which is what it
 // did not: "March 15" is the fifteenth of March or March 2015.
+//
+// With a two-digit year already written the two numbers swap rather than one
+// changing kind: "01MAY10" is the first of May 2010 or the tenth of May 2001,
+// and the reading that makes 01 the year has to give the day slot to 10 or it
+// describes an input with two years and no day in it. Re-kinding the day alone
+// was what this did for every input, because until C27 the only input that
+// reached it had one number.
 func (r Result) dayOrYearReadings() []Reading {
-	dayAt, monthAt := -1, -1
+	dayAt, monthAt, yearAt := -1, -1, -1
 	for i := range r.Def.Fields {
 		switch r.Def.Fields[i].Kind {
 		case compile.FDay2:
 			dayAt = i
 		case compile.FMonthName:
 			monthAt = i
+		case compile.FYear2:
+			yearAt = i
 		}
 	}
 	if dayAt < 0 || monthAt < 0 {
 		return nil
 	}
 
-	// Which side of the month name the number sits on is what the labels differ
-	// by, and it is read off the offsets rather than off the format name for the
-	// reason on Reading.
-	dayLabel, yearLabel := "MONTH_DAY", "MONTH_YEAR"
-	if r.Def.Fields[dayAt].Offset < r.Def.Fields[monthAt].Offset {
-		dayLabel, yearLabel = "DAY_MONTH", "YEAR_MONTH"
-	}
-
 	fields := copyFields(r.Def.Fields)
 	fields[dayAt].Kind = compile.FYear2
+	if yearAt >= 0 {
+		fields[yearAt].Kind = compile.FDay2
+	}
+
+	// The alternative holds the day where the chosen reading holds the year and
+	// the year where it holds the day, so the two index pairs are each other
+	// reversed. Both labels are built from offsets rather than from the format
+	// name, for the reason on Reading.
+	dayLabel := textualLabel(r.Def.Fields, monthAt, dayAt, yearAt)
+	yearLabel := textualLabel(fields, monthAt, yearAt, dayAt)
 
 	return []Reading{
 		{Def: r.Def, Label: dayLabel},
 		{Def: &compile.FormatDef{Name: yearLabel, Fields: fields}, Label: yearLabel},
 	}
+}
+
+// labelPart is one named part of a reading and where it sits in the input.
+type labelPart struct {
+	offset int32
+	name   string
+}
+
+// textualLabel names a reading by the parts it has, in the order the input
+// writes them: "MONTH_DAY" for "MAY10" and "YEAR_MONTH_DAY" for the reading of
+// "01MAY10" that Detect did not take.
+//
+// A part the reading does not have is left out, which is how the one-number
+// case still comes back MONTH_DAY against MONTH_YEAR: pass -1 for it. The name
+// is not always Def.Name, and for "May 10, 24" it is deliberately not:
+// classifyTextualPattern counts numbers and calls that MONTH_DAY_YEAR, while
+// buildTextualFields reads the 10 as the year, so the label the caller is
+// offered says MONTH_YEAR_DAY because that is the reading being offered.
+func textualLabel(fields []compile.Field, monthAt, dayAt, yearAt int) string {
+	var buf [3]labelPart
+	parts := buf[:0]
+	if monthAt >= 0 {
+		parts = append(parts, labelPart{fields[monthAt].Offset, "MONTH"})
+	}
+	if dayAt >= 0 {
+		parts = append(parts, labelPart{fields[dayAt].Offset, "DAY"})
+	}
+	if yearAt >= 0 {
+		parts = append(parts, labelPart{fields[yearAt].Offset, "YEAR"})
+	}
+	for i := 1; i < len(parts); i++ {
+		for j := i; j > 0 && parts[j].offset < parts[j-1].offset; j-- {
+			parts[j], parts[j-1] = parts[j-1], parts[j]
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0].name
+	for i := 1; i < len(parts); i++ {
+		out += "_" + parts[i].name
+	}
+	return out
 }
 
 // fieldOrderReadings reads the three numeric parts in the order Detect chose,
@@ -1489,38 +1543,90 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 // It returns prone, meaning the day-or-year question arises for this shape at
 // all, and guess, meaning this input actually needed it answered.
 func textualDayIsAGuess(s string, fields []compile.Field) (prone, guess bool) {
+	dayAt, yearAt := -1, -1
 	for i := range fields {
 		switch fields[i].Kind {
-		case compile.FYear2:
-			// A year is written out, so the other number is not one, and this
-			// input needed no guess. The format still did: buildTextualFields
-			// calls a bare number over 31 a year and one at or under 31 a day,
-			// and both emit a two-byte field at the same offset. The programs
-			// are the same shape, so a layout built under one reading accepts
-			// input that wanted the other and answers with the wrong instant.
-			//
-			// "MAY70" builds a year field and reads "MAY10" as 2010-05-01,
-			// where detection reads the tenth of May. "March 32" reads
-			// "March 31" as 2031-03-01 against the thirty-first of March. Both
-			// used to come back with Ambiguous false and no error, because
-			// prone was false here and Parser reuses a layout it is not told to
-			// re-detect.
-			return true, false
-		case compile.FYear4:
-			// Four digits cannot be a day, so nothing about this shape is
-			// decided by value and no later row can flip it.
-			return false, false
+		case compile.FYear2, compile.FYear4:
+			yearAt = i
 		case compile.FDay1or2, compile.FDay2:
 			if ordinalSuffixLen(s, int(fields[i].Offset+fields[i].Len)) > 0 {
 				continue
 			}
-			prone = true
-			if fields[i].Kind == compile.FDay2 && fields[i].Len == 2 {
-				guess = true
-			}
+			dayAt = i
 		}
 	}
-	return prone, guess
+
+	// A four-digit year settles the shape. Nothing else in the input can be
+	// read as the year, so the number read as the day is a day under every
+	// reading and no later row can flip it.
+	if yearAt >= 0 && fields[yearAt].Kind == compile.FYear4 {
+		return false, false
+	}
+
+	// Otherwise the shape was decided by value: buildTextualFields calls a bare
+	// number over 31 a year and one at or under 31 a day, and both emit a
+	// two-byte field at the same offset. The programs are the same shape, so a
+	// layout built under one reading accepts input that wanted the other and
+	// answers with the wrong instant.
+	//
+	// "MAY70" builds a year field and reads "MAY10" as 2010-05-01, where
+	// detection reads the tenth of May. "March 32" reads "March 31" as
+	// 2031-03-01 against the thirty-first of March. Both used to come back with
+	// Ambiguous false and no error, because prone was false here and Parser
+	// reuses a layout it is not told to re-detect.
+	prone = dayAt >= 0 || yearAt >= 0
+	if !prone {
+		return false, false
+	}
+
+	// The width of the number read as the day is what separates a guess from a
+	// certainty. One digit is a day and nothing else, because no year is
+	// written with one.
+	if dayAt < 0 || fields[dayAt].Kind != compile.FDay2 || fields[dayAt].Len != 2 {
+		return prone, false
+	}
+
+	// With no year written, the day can be read as one and the year slot is
+	// simply empty in that reading: "MAY10" is the tenth of May or May 2010.
+	if yearAt < 0 {
+		return prone, true
+	}
+
+	// With a two-digit year written, the two numbers swap: "01MAY10" is the
+	// first of May 2010 or the tenth of May 2001. The swap needs the written
+	// year to be a possible day, which is what keeps "70MAY10" certain. 70 is
+	// not a day, so it is the year under both readings and 10 is the day under
+	// both.
+	//
+	// This is the arm the FYear2 case used to return from. It returned before
+	// the loop reached the day, so which reading came out depended on which
+	// number the input wrote first, and "01MAY10" reported no guess while
+	// "MAY10" reported one for the same question with less evidence.
+	written, ok := shortFieldValue(s, fields[yearAt])
+	return prone, ok && written <= 31
+}
+
+// shortFieldValue reads the number a one- or two-byte field covers.
+//
+// It returns ok=false rather than a value for anything it cannot read, which
+// caller-side reads as "no second reading to offer": a field that does not
+// point at digits is a detector bug, and dayOrYearReadings would build an
+// alternative out of the same bytes and be equally wrong about them. prone is
+// unaffected, so Parser still declines the cache either way.
+func shortFieldValue(s string, f compile.Field) (int, bool) {
+	at, n := int(f.Offset), int(f.Len)
+	if n < 1 || n > 2 || at < 0 || at+n > len(s) {
+		return 0, false
+	}
+	v := 0
+	for i := 0; i < n; i++ {
+		c := s[at+i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		v = v*10 + int(c-'0')
+	}
+	return v, true
 }
 
 // classifyTextualPattern determines the format name based on how numbers

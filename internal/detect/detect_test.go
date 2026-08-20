@@ -877,6 +877,14 @@ func TestAmbiguousResultCarriesItsReadings(t *testing.T) {
 		"01/02/2024 10:30:00",
 		"March 15", "MAY 15", "MAY15", "15 March", "December 25",
 		"Mar 15 10:30:00", "Sept 09",
+
+		// C27. Two two-digit numbers around a month name ask the same
+		// day-or-year question with more evidence and no more certainty, and
+		// the two numbers swap rather than one of them changing kind. RFC 822
+		// and RFC 850 are here because a two-digit year is what they write:
+		// nothing in "15 Mar 24 10:30 UTC" says it is not "YY Mon DD".
+		"01MAY10", "01-MAY-10", "01 MAY 10", "15 MAY 20", "MAY15 20",
+		"May 10, 24", "15 Mar 24 10:30 UTC", "Friday, 15-Mar-24 10:30:00 UTC",
 	}
 	for _, in := range inputs {
 		r, ok := Detect(in, Config{})
@@ -941,6 +949,13 @@ func TestUnambiguousResultHasNoReadings(t *testing.T) {
 	inputs := []string{
 		"2024-03-15", "13/01/2024", "March 15, 2024", "March 2024", "March 32",
 		"MAY70", "March 5", "March 15th", "15th March", "2024-03-15T10:30:00Z",
+
+		// C27's other side. A number over 31 cannot be a day, so it is the year
+		// under every reading and the number beside it is the day under every
+		// reading; a four-digit year says the same thing more loudly. These are
+		// the inputs the swap must not reach.
+		"70MAY1", "70MAY10", "70-MAY-01", "01MAY2010", "May 10, 2024",
+		"Fri, 15 Mar 2024 10:30:00 +0000",
 	}
 	for _, in := range inputs {
 		r, ok := Detect(in, Config{})

@@ -466,6 +466,81 @@ func TestLayoutReusableAgreesWithParse(t *testing.T) {
 	}
 }
 
+// TestReusableSaysYesToALayoutParserWillNotReuse pins the half of C27 that is
+// still open, and it is written to fail when that half lands.
+//
+// Reusable is l != nil && l.program.N != 0, so it answers "this is not a
+// sentinel" while its doc comment offers it as the check a caller makes before
+// using what they were handed, and README.md shows exactly that. Parser answers
+// a second question the caller cannot: an ambiguity-prone layout is one whose
+// fields were decided by looking at the values, so it accepts the next row
+// whichever way that row wanted to be read, and Parser declines its own cache
+// on one. A caller holding the same layout is told nothing.
+//
+// So this is the reuse hazard C27 was filed for, and the flag fix did not close
+// it. Parse reports the guess now, which is what strict mode and the fuzz
+// target act on, and the layout it hands back still parses the next row the
+// first row's way.
+//
+// Whichever way the API question is answered, this test changes: Reusable goes
+// false for a prone layout, or a second predicate arrives, or Layout.Parse
+// refuses. Until then the answer is written down here rather than found again.
+func TestReusableSaysYesToALayoutParserWillNotReuse(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+
+	seed, err := ParseWith("70MAY1", WithBaseTime(base))
+	if err != nil {
+		t.Fatalf(`ParseWith("70MAY1"): %v`, err)
+	}
+	if !seed.Layout.Reusable() {
+		t.Fatal(`ParseWith("70MAY1").Layout.Reusable() = false: C27's second half has ` +
+			"landed and this test is the thing it was written to break. Replace it with " +
+			"the property that half asserts.")
+	}
+
+	// The value the caller gets from the layout they were told they could reuse.
+	got, err := seed.Layout.Parse("01MAY10")
+	if err != nil {
+		t.Fatalf(`layout from "70MAY1" on "01MAY10": %v`, err)
+	}
+	if want := "2001-05-10"; got.Format("2006-01-02") != want {
+		t.Fatalf(`layout from "70MAY1" on "01MAY10" = %s, want %s`,
+			got.Format("2006-01-02"), want)
+	}
+
+	// And the value detection gives for the same bytes, nine years and nine
+	// days away from it.
+	fresh, err := ParseWith("01MAY10", WithBaseTime(base))
+	if err != nil {
+		t.Fatalf(`ParseWith("01MAY10"): %v`, err)
+	}
+	if want := "2010-05-01"; fresh.Time.Format("2006-01-02") != want {
+		t.Fatalf(`ParseWith("01MAY10") = %s, want %s`, fresh.Time.Format("2006-01-02"), want)
+	}
+
+	// What the flag fix did buy. Detection says it guessed, so a caller who
+	// checks Ambiguous has been told, and Parser re-detects rather than reusing.
+	if !fresh.Ambiguous {
+		t.Error(`ParseWith("01MAY10").Ambiguous = false: C27's first half has regressed`)
+	}
+	p := NewParser(WithBaseTime(base))
+	for _, c := range []struct{ in, want string }{
+		{"70MAY1", "1970-05-01"},
+		{"01MAY10", "2010-05-01"},
+		{"70MAY1", "1970-05-01"},
+	} {
+		r, err := p.Parse(c.in)
+		if err != nil {
+			t.Errorf("Parser.Parse(%q): %v", c.in, err)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("Parser.Parse(%q) = %s, want %s: Parser declines the cache for a "+
+				"prone layout and that gate is what keeps the column right", c.in, got, c.want)
+		}
+	}
+}
+
 // TestLayoutRefusesTrailingInput pins the property Parser depends on: a layout
 // describes a whole input or refuses it. Without this, a cached ISO8601_DATE
 // accepted "2024-03-16T10:30:00Z" and returned midnight with no error, so one

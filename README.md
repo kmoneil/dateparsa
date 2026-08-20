@@ -105,9 +105,22 @@ day later. Ask before keeping one:
 
 ```go
 if result.Layout.Reusable() {
-    // safe for the rest of the column
+    // not a sentinel, so it will re-parse
 }
 ```
+
+`Reusable()` answers whether the layout will re-parse at all. It does not answer
+whether the answer will be right, and for one family of formats those are
+different questions. Where detection chose between readings by looking at the
+values, both readings compile to the same program, so the layout accepts the
+next row and reads it the first row's way: keep the layout from `70MAY1` and
+`01MAY10` comes back as 2001-05-10, where detection reads 2010-05-01. The same
+holds for `25/12/2024` against `01/02/2024`.
+
+Use `Parser` for a column and this is handled for you: it declines its own cache
+on exactly those formats and re-detects per row. If you hold the layout
+yourself, check `result.Ambiguous` on every row, or parse in strict mode, which
+refuses instead of guessing.
 
 ### Batch parsing
 
@@ -402,6 +415,29 @@ _, err := dateparsa.ParseWith("March 15", dateparsa.WithStrictMode(true))
 
 An ordinal suffix settles it and reports nothing: `March 15th` is a day, since
 no year is written `15th`.
+
+Two numbers beside a month name ask the same question, since whichever one is
+the year the other is the day, and both readings are real dates:
+
+```go
+r, _ := dateparsa.Parse("01MAY10")
+fmt.Println(r.Time)      // 2010-05-01, the first of May 2010
+fmt.Println(r.Ambiguous) // true: 2001-05-10 reads the same bytes
+
+_, err := dateparsa.ParseWith("01MAY10", dateparsa.WithStrictMode(true))
+// *AmbiguousDateError: DAY_MONTH_YEAR 2010-05-01 and YEAR_MONTH_DAY 2001-05-10
+```
+
+A number over 31 is not a day, so it settles both slots and reports nothing:
+`70MAY10` is the tenth of May 1970 and nothing else. A four-digit year settles
+them for any value, which is why `01 May 2010` and every RFC 2822 date are
+unaffected.
+
+**RFC 822 and RFC 850 write a two-digit year, so they report it.**
+`15 Mar 24 10:30 UTC` is the fifteenth of March 2024 or the twenty-fourth of
+March 2015, and nothing in the bytes says which. The lenient path still reads it
+day-first; strict mode refuses it. The weekday in the RFC 850 form would settle
+it, and weekday names are skipped without being read.
 
 A word can be ambiguous too, and is reported the same way. Hindi writes both
 yesterday and tomorrow as `कल`, choosing between them with the verb, which a

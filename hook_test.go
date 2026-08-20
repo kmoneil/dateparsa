@@ -145,6 +145,43 @@ func TestCommitMsgHookQuotesTheJoinedSubject(t *testing.T) {
 	}
 }
 
+// GitHub appends " (#123)" to the header when a pull request is squashed, and
+// the hook never sees that: the message it checks is written on this machine and
+// the suffix is added on GitHub's. A 69-character subject entered this history
+// at 75 that way, and the history test below caught it, which is the only reason
+// this is a rule rather than a surprise.
+func TestCommitMsgHookDiscountsASquashSuffix(t *testing.T) {
+	const subject = "chore(ci): take a squash header from the commit, not the pull request"
+	if len(subject) != 69 {
+		t.Fatalf("the fixture is %d characters, not the 69 this test is about", len(subject))
+	}
+
+	squashed := subject + " (#10)"
+	if len(squashed) != 75 {
+		t.Fatalf("the squashed fixture is %d characters, not 75", len(squashed))
+	}
+	if ok, out := runHook(t, squashed+"\n\nA body.\n"); !ok {
+		t.Errorf("hook refuses a header GitHub squashed, which the author cannot prevent:\n%s", out)
+	}
+
+	// The discount is the suffix and nothing else: the same length written by
+	// hand is still refused, or the rule has been widened to 78 by accident.
+	sameLength := subject + " today"
+	if len(sameLength) != 75 {
+		t.Fatalf("the control fixture is %d characters, not 75", len(sameLength))
+	}
+	if ok, _ := runHook(t, sameLength+"\n\nA body.\n"); ok {
+		t.Error("hook accepted 75 characters that no squash produced")
+	}
+
+	// Only a number is a pull request reference. Anything else in the same
+	// shape is text the author wrote and is measured.
+	notARef := subject + " (#ten)"
+	if ok, _ := runHook(t, notARef+"\n\nA body.\n"); ok {
+		t.Errorf("hook discounted %q, which is not a pull request reference", " (#ten)")
+	}
+}
+
 // The rule that matters more than refusing bad messages: a gate that refuses
 // the project's own history is a gate somebody turns off. Skipped rather than
 // failed where the history is not there, because CI checks out one commit.

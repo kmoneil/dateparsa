@@ -75,9 +75,24 @@ if [ "$(printf '%s' "$lines" | wc -l)" -gt 0 ]; then
 	exit 1
 fi
 
-if [ ${#header} -gt 72 ]; then
-	echo "commit-msg: the header is ${#header} characters; keep it under 72."
-	echo "  $header"
+# The length is measured on what the author wrote, which is not always what git
+# ends up recording. GitHub appends " (#123)" to the header when a pull request
+# is squashed, five or six characters this hook never sees and the author cannot
+# prevent, and that is how a 69-character subject entered this history at 75.
+#
+# Discounting the suffix rather than tightening the limit is the choice. The
+# limit that would survive a squash is 66, and the last fifty subjects here
+# include eleven between 67 and 72, so tightening would refuse the project's own
+# history, and a gate that refuses the history is a gate somebody turns off.
+#
+# It still shows in `git log --oneline` at its full width, so a subject near the
+# limit is one that reads long after the merge. That is a reason to write short
+# subjects, not a reason to refuse this one.
+measured=$(printf '%s' "$header" | sed 's/ (#[0-9][0-9]*)$//')
+
+if [ ${#measured} -gt 72 ]; then
+	echo "commit-msg: the header is ${#measured} characters; keep it under 72."
+	echo "  $measured"
 	exit 1
 fi
 case "$subject" in

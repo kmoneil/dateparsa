@@ -150,8 +150,22 @@ else
 fi
 
 say "== merge behaviour =="
-# Squash only. The subject comes from the pull request title, and the body from
-# the commits on the branch.
+# Squash and rebase, and never a merge commit. Squash is for a branch that is
+# one change, which is nearly all of them here. Rebase is for a branch that is
+# deliberately a series, where each commit is meant to stay readable and
+# bisectable on its own; two breaking changes with two BREAKING CHANGE footers
+# are the case that cannot be squashed without losing one of them. Merge commits
+# are off here and refused again by required_linear_history on main.
+#
+# COMMIT_OR_PR_TITLE rather than PR_TITLE, and the difference shows up only on a
+# squash. .githooks/commit-msg runs on the machine that writes the commit, and a
+# squash message is composed on GitHub, so a header taken from the pull request
+# title is the one commit header in the repository that nothing checked: a
+# missing type, a subject over 72, or a breaking change with no `!` all reach
+# main unread. COMMIT_OR_PR_TITLE takes the commit's own header whenever the
+# branch holds exactly one commit, which is the ordinary shape here and the
+# header the hook already validated, and falls back to the pull request title
+# only when there is more than one commit and no single header to take.
 #
 # COMMIT_MESSAGES rather than PR_BODY, for two reasons that only show up later
 # in `git log`. GitHub re-wraps a pull request description at about 70 columns
@@ -164,7 +178,7 @@ run gh api -X PATCH "repos/$REPO" \
 	-F allow_merge_commit=false \
 	-F allow_rebase_merge=true \
 	-F delete_branch_on_merge=true \
-	-F squash_merge_commit_title=PR_TITLE \
+	-F squash_merge_commit_title=COMMIT_OR_PR_TITLE \
 	-F squash_merge_commit_message=COMMIT_MESSAGES \
 	>/dev/null
 

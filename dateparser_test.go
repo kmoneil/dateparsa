@@ -1571,8 +1571,25 @@ func TestPaddedTextualDateKeepsItsYear(t *testing.T) {
 	// Past what a program can address, the C4 guard takes over. Refusing is the
 	// right answer there and this pins that it is a refusal and not a wrong
 	// offset.
-	if got, err := Parse(strings.Repeat(" ", 300) + "March 15, 2024"); err == nil {
-		t.Errorf("Parse with 300 bytes of padding = %v, want an error", got.Time)
+	//
+	// The filler is hyphens rather than the spaces this used to use. F9 trims
+	// surrounding whitespace before anything looks at the input, so padding no
+	// longer pushes a field anywhere: 300 spaces and one space describe the
+	// same value and both parse. What still reaches the guard is a run of
+	// something that is not padding, which is what a field past byte 255
+	// actually needs.
+	if got, err := Parse(strings.Repeat("-", 300) + "March 15, 2024"); err == nil {
+		t.Errorf("Parse with 300 bytes of leading filler = %v, want an error", got.Time)
+	}
+
+	// And the case that moved: whitespace of any length is padding, so the
+	// value is the same value and the length bound applies to it rather than to
+	// what surrounds it. 614 bytes is past compile.MaxDescribableLen, which
+	// used to refuse this at the door.
+	if got, err := Parse(strings.Repeat(" ", 600) + "March 15, 2024"); err != nil {
+		t.Errorf("Parse with 600 bytes of padding: %v, want 2024-03-15", err)
+	} else if s := got.Time.UTC().Format("2006-01-02"); s != "2024-03-15" {
+		t.Errorf("Parse with 600 bytes of padding = %s, want 2024-03-15", s)
 	}
 
 	// A genuinely relative string is still natural language. The fix moves

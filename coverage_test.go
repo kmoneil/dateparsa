@@ -7,10 +7,20 @@ import (
 )
 
 // coverageCase is one advertised format and an input in it.
+//
+// ambiguous is what Parse reports for that input, and it is here because
+// nothing else checks it. C27 changed what RFC 822 and RFC 850 report, and the
+// whole suite stayed green: this test asserted the input parses, oracle_test.go
+// compares the instant against time.Parse, and no round-trip spec writes a
+// two-digit year beside a month name. A format this file advertises can change
+// what it says about its own certainty, which is a change every caller sees,
+// and 31 round-trip formats, 23 fuzz targets and the oracle can all be right
+// through it.
 type coverageCase struct {
-	input    string
-	dayFirst bool
-	desc     string
+	input     string
+	dayFirst  bool
+	ambiguous bool
+	desc      string
 }
 
 // coverageCases is the list of formats this library advertises, one input each.
@@ -30,7 +40,7 @@ var coverageCases = []coverageCase{
 
 	// === Text-based RFC formats ===
 	{input: "Fri, 15 Mar 2024 10:30:00 +0000", desc: "8. RFC 2822"},
-	{input: "Friday, 15-Mar-24 10:30:00 UTC", desc: "9. RFC 850"},
+	{input: "Friday, 15-Mar-24 10:30:00 UTC", ambiguous: true, desc: "9. RFC 850"},
 	{input: "Fri Mar 15 10:30:00 2024", desc: "10. ANSIC"},
 	{input: "Fri Mar 15 10:30:00 UTC 2024", desc: "11. Unix date"},
 
@@ -60,8 +70,8 @@ var coverageCases = []coverageCase{
 	{input: "10:30:00.123456", desc: "28. time with micros"},
 
 	// === Partial dates ===
-	{input: "Mar 15", desc: "29. partial month day"},
-	{input: "15 Mar", desc: "30. partial day month"},
+	{input: "Mar 15", ambiguous: true, desc: "29. partial month day"},
+	{input: "15 Mar", ambiguous: true, desc: "30. partial day month"},
 	{input: "March 2024", desc: "31. partial month year"},
 
 	// === Unix timestamps ===
@@ -81,7 +91,7 @@ var coverageCases = []coverageCase{
 	{input: "2024-074", desc: "41. ISO ordinal"},
 
 	// === Syslog / log formats ===
-	{input: "Mar 15 10:30:00", desc: "42. syslog"},
+	{input: "Mar 15 10:30:00", ambiguous: true, desc: "42. syslog"},
 	{input: "15/Mar/2024:10:30:00 +0000", desc: "43. common log format"},
 
 	// === SQL datetime variants ===
@@ -97,7 +107,7 @@ var coverageCases = []coverageCase{
 
 	// === Go reference / RFC 822 / RFC 1123 ===
 	{input: "Fri Mar 15 10:30:00 EDT 2024", desc: "51. Go reference time"},
-	{input: "15 Mar 24 10:30 UTC", desc: "52. RFC 822"},
+	{input: "15 Mar 24 10:30 UTC", ambiguous: true, desc: "52. RFC 822"},
 	{input: "Fri, 15 Mar 2024 10:30:00 UTC", desc: "53. RFC 1123"},
 }
 
@@ -121,6 +131,15 @@ func TestFormatCoverage(t *testing.T) {
 				failed++
 				t.Errorf("FAIL: %s\n  input:  %q\n  error:  %v", tc.desc, tc.input, err)
 				return
+			}
+
+			// What the format says about its own certainty is part of what it
+			// advertises. Five of these report a guess, and each one is a
+			// two-digit number beside a month name that could have been read
+			// as a year.
+			if result.Ambiguous != tc.ambiguous {
+				t.Errorf("%s: Parse(%q).Ambiguous = %v, want %v",
+					tc.desc, tc.input, result.Ambiguous, tc.ambiguous)
 			}
 
 			passed++

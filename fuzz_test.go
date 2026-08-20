@@ -222,13 +222,20 @@ func FuzzLayoutReuse(f *testing.F) {
 	})
 }
 
-// reusable reports whether a Layout can be re-applied to another input.
+// reusable reports whether a Layout parses anything at all, which is the gate
+// this target needs and is deliberately not Layout.Reusable.
 //
 // It asks the layout rather than comparing it against the two sentinels by
 // identity, which is what it used to do and what a third sentinel would have
-// broken silently.
+// broken silently. It called Reusable until C27's second half, when Reusable
+// stopped answering "will this parse" and started answering "should this be
+// kept": it is false for an ambiguity-prone layout now, and a prone layout
+// accepting a row it does not describe is the whole of what this target hunts.
+// Gating on Reusable would have left the target reading green over the family
+// it was written to search, which is the shape of the bug rather than a change
+// in what it found.
 func reusable(l *Layout) bool {
-	return l.Reusable()
+	return l.hasProgram()
 }
 
 // FuzzDetect ensures that format detection never panics.

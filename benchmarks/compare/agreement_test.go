@@ -81,14 +81,27 @@ func TestReuseIsTheSameAnswer(t *testing.T) {
 			if err != nil {
 				t.Skipf("dateparsa refuses %q", c.Input)
 			}
-			if reusable(ours.Layout) {
-				got, err := ours.Layout.Parse(c.Input)
-				if err != nil {
-					t.Errorf("dateparsa Layout.Parse(%q): %v", c.Input, err)
-				} else if !got.Equal(ours.Time) {
-					t.Errorf("dateparsa Layout.Parse(%q) = %v, Parse = %v",
-						c.Input, got, ours.Time)
-				}
+			// The gate is whether the layout re-parses, which is the gate
+			// BenchmarkReuse uses, and not Reusable. Since C27 those differ:
+			// Reusable is false for an ambiguity-prone layout, which parses
+			// perfectly well and is timed by the benchmark, so gating here on
+			// Reusable would stop checking a third of what the benchmark
+			// claims.
+			ourReparse, perr := ours.Layout.Parse(c.Input)
+			switch {
+			case perr != nil:
+				// A sentinel, and BenchmarkReuse skips it by the same test.
+			case !ourReparse.Equal(ours.Time):
+				t.Errorf("dateparsa Layout.Parse(%q) = %v, Parse = %v",
+					c.Input, ourReparse, ours.Time)
+			}
+
+			// And the library's own advice, checked from outside it: a layout
+			// it says to keep is one that parses. The converse does not hold
+			// and is the point of the method.
+			if reusable(ours.Layout) && perr != nil {
+				t.Errorf("dateparsa says Layout %v is reusable and it refuses %q: %v",
+					ours.Layout, c.Input, perr)
 			}
 
 			theirs, err := araddon.ParseAny(c.Input)
@@ -175,9 +188,18 @@ func araddonCanReuse(input string) (string, bool) {
 	return layout, true
 }
 
-// reusable reports whether a Layout can re-parse. Epoch and natural-language
-// results are sentinels with no program, by design, and asking one to re-parse
-// is an error rather than a slow path.
+// reusable reports whether keeping a Layout for the rest of a column is sound,
+// which is what an ordinary caller of this library asks and therefore what this
+// comparison should be timing. Epoch and natural-language results are sentinels
+// with no program, by design, and asking one to re-parse is an error rather
+// than a slow path.
+//
+// Since C27 it also excludes an ambiguity-prone layout, which parses but may
+// answer the wrong day for a row that wanted the other reading. So the corpus
+// entries in the numeric slash family and the textual formats with a two-digit
+// year are skipped by TestReuseIsTheSameAnswer now: dateparsa does not offer a
+// reusable layout for them, and timing one would be timing something it tells
+// callers not to do.
 //
 // This used to call Parse("") and then string-compare Layout.String() against
 // the two sentinel labels, because the library had no way to ask. It does now,

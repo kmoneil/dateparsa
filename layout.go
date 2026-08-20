@@ -50,22 +50,44 @@ var (
 	LayoutNaturalLanguage = &Layout{label: "NATURAL_LANGUAGE"}
 )
 
-// Reusable reports whether this Layout can parse another input.
-//
-// It is false for the sentinels above, which describe a result rather than a
-// format: an epoch timestamp has no format to reuse, and "3 days ago" resolves
-// against the time it was parsed at, so re-running it later against a different
-// base would answer a different day from a value the caller believes is a
-// compiled layout. Both refuse rather than answering, and this is how to ask
-// before finding out.
-//
-// A nil Layout is not reusable rather than a panic, because the point of this
-// method is to be the check a caller makes before using what they were handed.
+// Reusable reports whether keeping this Layout for the rest of a column is
+// sound. It is the check to make before holding on to what Parse handed back.
 //
 //	result, err := dateparsa.Parse(s)
 //	if err == nil && result.Layout.Reusable() {
 //	    // keep it for the rest of the column
 //	}
+//
+// It is false for two reasons, and they are different failures.
+//
+// The sentinels above describe a result rather than a format. An epoch
+// timestamp has no format to reuse, and "3 days ago" resolves against the time
+// it was parsed at, so re-running it later against a different base would
+// answer a different day from a value the caller believes is a compiled layout.
+// Both refuse to parse anything at all.
+//
+// An ambiguity-prone layout is the second, and it does not refuse: it parses
+// the next row and may answer with the wrong day. Detection resolved this
+// format by looking at the values rather than at the shape, and the readings it
+// chose between compile to the same program, so the layout accepts a row that
+// wanted the other reading and returns an instant with no error and no flag. A
+// layout from "70MAY1" reads "01MAY10" as 2001-05-10 where Parse answers
+// 2010-05-01; a layout from "25/12/2024" is day-first because 25 cannot be a
+// month, and it reads "01/02/2024" as the first of February where the format's
+// own preference rule reads the second of January.
+//
+// This method used to answer only the first, which is the narrower question its
+// name does not ask, so a caller following the example above was told yes about
+// a layout Parser declines to reuse for itself. Use Parser for a column and it
+// re-detects those rows; hold the layout yourself and this is how to know you
+// should not.
+//
+// Layout.Parse is unchanged and still parses through a prone layout, because a
+// caller who knows their column is uniform is entitled to the fast path. What
+// changed is the answer to the question of whether that is safe unexamined.
+//
+// A nil Layout is not reusable rather than a panic, because the point of this
+// method is to be the check a caller makes before using what they were handed.
 //
 // It exists because the alternative was writing one. The comparison benchmark
 // in this repository, which is a separate module and therefore an ordinary
@@ -73,6 +95,22 @@ var (
 // Layout.String() against "UNIX_TIMESTAMP" and "NATURAL_LANGUAGE" to work this
 // out.
 func (l *Layout) Reusable() bool {
+	return l.hasProgram() && !l.ambiguityProne
+}
+
+// hasProgram is the narrower question Reusable used to answer: this value
+// carries instructions, so Parse on it does something rather than returning a
+// *ParseError. It is not a sentinel, in other words, and it says so without
+// comparing against the sentinels by identity, which a third one would break
+// silently.
+//
+// It is unexported because a caller asking "will this re-parse" is almost
+// always asking "should I keep this", and those are the same question for every
+// format but the ones Reusable now excludes. The fuzz target needs the wider
+// one: a prone layout accepting a row it does not describe is exactly what it
+// is looking for, and it cannot look if the gate in front of it filters those
+// out.
+func (l *Layout) hasProgram() bool {
 	return l != nil && l.program.N != 0
 }
 

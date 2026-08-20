@@ -481,14 +481,21 @@ of May. Both answers are wrong days returned with no error and no flag, so any
 layout detection marks ambiguity-prone is re-detected per value rather than
 reused. It costs the cache on those formats and on no others.
 
-**A caller holding the layout is not covered by that.** `Layout.Reusable()`
-answers whether the value is one of the two sentinels, not whether reusing it is
-sound, and `README.md` shows it as the check to make before keeping a layout
-across rows. Keep the layout from `70MAY1` and it parses `01MAY10` as
-2001-05-10, which is the wrong day with a nil error, where `Parser` on the same
-two values re-detects and answers correctly. Use `Parser` for a column. If you
-hold a layout yourself, check `ParseResult.Ambiguous` on every row you parse
-with it, or use strict mode, which refuses rather than guessing.
+**A caller holding the layout is told the same thing, and was not until
+2026-08-20.** `Layout.Reusable()` answered whether the value is one of the two
+sentinels, not whether reusing it is sound, while `README.md` showed it as the
+check to make before keeping a layout across rows. So the layout from `70MAY1`
+came with a yes and then parsed `01MAY10` as 2001-05-10, the wrong day with a
+nil error, where `Parser` on the same two values re-detects and answers
+correctly. It is false for an ambiguity-prone layout now, for the same formats
+`Parser` declines its own cache on and no others.
+
+The two reasons it is false are different failures and the distinction is the
+security-relevant part. A sentinel refuses to parse anything. A prone layout
+parses, which is why nothing downstream can notice: `Layout.Parse` is unchanged
+and still runs on one, because a caller who knows their column is uniform is
+entitled to the fast path. **If you did not check `Reusable()` before keeping
+the layout, nothing else will tell you.**
 
 **Correctness is fuzzed semantically, not only for panics.** `FuzzParse` and
 `FuzzDetect` prove the library does not crash. They cannot prove it returns the

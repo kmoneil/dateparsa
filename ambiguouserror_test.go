@@ -142,6 +142,127 @@ func TestStrictModeTextualCarriesTheYearReading(t *testing.T) {
 	}
 }
 
+// TestStrictModeTwoNumbersCarriesBothReadings is C27.
+//
+// "MAY10" is one number beside a month name and has always reported the
+// day-or-year question. "01MAY10" is the same question asked of two numbers,
+// where the answer decides which of them is the day and which is the year, and
+// it reported no guess at all: strict mode accepted it and handed back
+// 2010-05-01 as a certainty. A caller who kept the layout got 2001-05-10 out of
+// the next row.
+//
+// The early return in textualDayIsAGuess is where it went. The loop walked the
+// fields in input order and the two-digit-year arm returned before it reached
+// the day, so the answer depended on which number the input wrote first, and
+// the two halves of one question disagreed:
+//
+//	"01/02/10"  two interpretations, because the numbers are the question
+//	"MAY10"     two interpretations, because the number could be either
+//	"01MAY10"   accepted, and it is the same question with more evidence
+//
+// The instants below are the point. Both readings have to be real dates, nine
+// years and nine days apart, or the caller has nothing to choose between: the
+// alternative used to re-kind the day and leave the year alone, which describes
+// an input holding two years and no day.
+func TestStrictModeTwoNumbersCarriesBothReadings(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in        string
+		dayLabel  string
+		dayTime   string
+		yearLabel string
+		yearTime  string
+	}{
+		// The separator is not the point: the fuzzer found the run-together
+		// form and the dashed and spaced forms read the same way.
+		{"01MAY10", "DAY_MONTH_YEAR", "2010-05-01", "YEAR_MONTH_DAY", "2001-05-10"},
+		{"01-MAY-10", "DAY_MONTH_YEAR", "2010-05-01", "YEAR_MONTH_DAY", "2001-05-10"},
+		{"01 MAY 10", "DAY_MONTH_YEAR", "2010-05-01", "YEAR_MONTH_DAY", "2001-05-10"},
+		{"15 MAY 20", "DAY_MONTH_YEAR", "2020-05-15", "YEAR_MONTH_DAY", "2015-05-20"},
+		{"MAY15 20", "MONTH_DAY_YEAR", "2020-05-15", "MONTH_YEAR_DAY", "2015-05-20"},
+
+		// The label is not the format name. classifyTextualPattern counts the
+		// numbers and calls this MONTH_DAY_YEAR, and buildTextualFields then
+		// reads the 10 as the year because it sits clear of the month name, so
+		// the reading Detect chose is month, year, day. Naming it MONTH_DAY_YEAR
+		// in the error would tell the caller the opposite of what they got.
+		{"May 10, 24", "MONTH_YEAR_DAY", "2010-05-24", "MONTH_DAY_YEAR", "2024-05-10"},
+
+		// RFC 822 and RFC 850, which is the loud half of this change. A
+		// two-digit year is what both of them write, and nothing in the bytes
+		// says the input is not "YY Mon DD": the weekday name in the RFC 850
+		// form would settle it, and this library skips weekday names without
+		// reading them. Strict mode refuses these now, and the reading it
+		// chooses without strict mode has not moved.
+		{"15 Mar 24 10:30 UTC", "DAY_MONTH_YEAR", "2024-03-15", "YEAR_MONTH_DAY", "2015-03-24"},
+		{"Friday, 15-Mar-24 10:30:00 UTC", "DAY_MONTH_YEAR", "2024-03-15", "YEAR_MONTH_DAY", "2015-03-24"},
+	}
+
+	for _, c := range cases {
+		opts := []Option{WithBaseTime(base), WithStrictMode(true)}
+		_, err := ParseWith(c.in, opts...)
+		var ade *AmbiguousDateError
+		if !errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, strict) = %T %v, want *AmbiguousDateError", c.in, err, err)
+			continue
+		}
+		got := map[string]string{}
+		for _, i := range ade.Interpretations {
+			got[i.Label] = i.Time.Format("2006-01-02")
+		}
+		if got[c.dayLabel] != c.dayTime || got[c.yearLabel] != c.yearTime || len(got) != 2 {
+			t.Errorf("ParseWith(%q, strict) interpretations = %v\n"+
+				"  want %s %s and %s %s: with a two-digit year already written, the two\n"+
+				"  numbers swap, and both readings are dates the caller may have meant",
+				c.in, got, c.dayLabel, c.dayTime, c.yearLabel, c.yearTime)
+		}
+	}
+}
+
+// TestTwoNumbersStayCertainWhenOneCannotBeADay is the other side of C27, and it
+// is what stops the fix reporting a guess for every textual date.
+//
+// A number over 31 is not a day. It is the year under every reading, which
+// leaves the number beside it the day under every reading, and there is nothing
+// to choose between. A four-digit year says the same thing and says it of any
+// value. Report a guess for these and the flag stops meaning anything: every
+// RFC 2822 date in the world would carry it.
+func TestTwoNumbersStayCertainWhenOneCannotBeADay(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"70MAY1", "1970-05-01"},
+		{"70MAY10", "1970-05-10"},
+		{"70-MAY-01", "1970-05-01"},
+		{"01MAY2010", "2010-05-01"},
+		{"May 10, 2024", "2024-05-10"},
+		{"Fri, 15 Mar 2024 10:30:00 +0000", "2024-03-15"},
+		{"Mar 15 10:30:00 2024", "2024-03-15"},
+		{"March 15th", "2026-03-15"},
+	}
+
+	for _, c := range cases {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q) = %v, want %s with no guess reported", c.in, err, c.want)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("ParseWith(%q) = %s, want %s", c.in, got, c.want)
+		}
+		if r.Ambiguous {
+			t.Errorf("ParseWith(%q) reports a guess; nothing in it could have been read "+
+				"the other way", c.in)
+		}
+		if _, err := ParseWith(c.in, WithBaseTime(base), WithStrictMode(true)); err != nil {
+			t.Errorf("ParseWith(%q, strict) = %v, want the same answer strict mode has "+
+				"always given for an input that needed no guess", c.in, err)
+		}
+	}
+}
+
 // TestStrictModeInterpretationsAlwaysDiffer is the general property, asserted across
 // every class of ambiguity rather than per input.
 //

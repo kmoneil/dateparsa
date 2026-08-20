@@ -432,6 +432,26 @@ instant beside it. An input whose second reading does not parse, such as
 `March 00`, is refused rather than returned as a single interpretation: strict
 mode may refuse more than the lenient path and never accepts more.
 
+**Two numbers beside a month name ask the same question as one.** `MAY10` has
+always reported a guess: the number is the tenth of May or it is May 2010, and
+nothing in the input decides. `01MAY10` is that question asked twice over, since
+whichever number is the year the other is the day, and until 2026-08-20 it
+reported no guess at all. Strict mode accepted it and returned 2010-05-01 as a
+certainty; the other reading, 2001-05-10, is nine years and nine days away. The
+predicate walked the fields in the order the input wrote them and returned as
+soon as it saw a two-digit year, so which answer came out depended on which
+number came first, and the library disagreed with itself about one question.
+
+Both readings are carried now, and the fix draws the line at what could have
+been read the other way rather than at the shape. A number over 31 is not a day,
+so `70MAY10` is certain in both slots and still reports nothing; a four-digit
+year says the same of any value, which is why `01MAY2010` and every RFC 2822
+date are unaffected. **What this does change is RFC 822 and RFC 850**, whose
+two-digit year makes `15 Mar 24 10:30 UTC` indistinguishable from a `YY Mon DD`
+column. Those report `Ambiguous` now and strict mode refuses them. The weekday
+name in the RFC 850 form would settle it, and this library skips weekday names
+without reading them, so it does not have that evidence to use.
+
 **A word can be ambiguous as well as a number.** Hindi writes both yesterday and
 tomorrow as `कल` and tells them apart with the verb, which a date string does not
 have. That word now reports `Ambiguous` and refuses under strict mode with both
@@ -460,6 +480,15 @@ the 70 as a year, and it parses `MAY10` as 2010 where detection reads the tenth
 of May. Both answers are wrong days returned with no error and no flag, so any
 layout detection marks ambiguity-prone is re-detected per value rather than
 reused. It costs the cache on those formats and on no others.
+
+**A caller holding the layout is not covered by that.** `Layout.Reusable()`
+answers whether the value is one of the two sentinels, not whether reusing it is
+sound, and `README.md` shows it as the check to make before keeping a layout
+across rows. Keep the layout from `70MAY1` and it parses `01MAY10` as
+2001-05-10, which is the wrong day with a nil error, where `Parser` on the same
+two values re-detects and answers correctly. Use `Parser` for a column. If you
+hold a layout yourself, check `ParseResult.Ambiguous` on every row you parse
+with it, or use strict mode, which refuses rather than guessing.
 
 **Correctness is fuzzed semantically, not only for panics.** `FuzzParse` and
 `FuzzDetect` prove the library does not crash. They cannot prove it returns the

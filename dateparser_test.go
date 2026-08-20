@@ -420,41 +420,91 @@ func TestParse_NLLayout(t *testing.T) {
 }
 
 // TestLayoutReusableAgreesWithParse is N9.1's half that is a change to the API
-// rather than to a document.
+// rather than to a document, amended by C27's second half.
 //
 // Reusable answers the question every caller of this library has after a parse,
-// and until now there was no way to ask it. The comparison benchmark, which is
+// and until N9.1 there was no way to ask it. The comparison benchmark, which is
 // a separate module and therefore an ordinary caller, worked it out by calling
 // Parse("") and string-comparing Layout.String() against the two sentinel
 // labels. In this package the fuzz target compared against the two sentinels by
 // identity, which a third sentinel would have broken silently.
 //
-// The property is the one a caller needs: Reusable is true exactly when
-// re-parsing works.
+// The property was "Reusable is true exactly when re-parsing works", and that
+// is the narrower question the name does not ask. C27 is the input where the
+// two come apart: a layout from "70MAY1" re-parses "01MAY10" perfectly well and
+// answers 2001-05-10 where Parse answers 2010-05-01. Re-parsing working is
+// necessary and is not sufficient.
+//
+// So the property is now two-sided, and false has two meanings the test states
+// separately: a sentinel refuses to parse at all, and a prone layout parses and
+// may be wrong. Nothing else may be false.
 func TestLayoutReusableAgreesWithParse(t *testing.T) {
 	base := time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC)
-	for _, in := range []string{
-		"2024-03-15",
-		"2024-03-15T10:30:00Z",
-		"2024-03-15T10:30:00+05:53", // off the pre-built zone grid
-		"March 15, 2024",
-		"01/02/2024",
-		"10:30:00",
-		"1710504800",       // epoch, a sentinel
-		"1710504800000",    // epoch in milliseconds
-		"3 days ago",       // natural language, the other sentinel
-		"now",              //
-		"yesterday at 5pm", //
-	} {
-		result, err := ParseWith(in, WithBaseTime(base))
+	cases := []struct {
+		in       string
+		reusable bool
+		why      string
+	}{
+		{"2024-03-15", true, "shape decides every field"},
+		{"2024-03-15T10:30:00Z", true, ""},
+		{"2024-03-15T10:30:00+05:53", true, "off the pre-built zone grid"},
+		{"March 15, 2024", true, "a four-digit year cannot be a day"},
+		{"10:30:00", true, ""},
+		{"15 March 2024", true, ""},
+
+		// Prone: detection read the values, so the next row may want the other
+		// reading and the program cannot tell.
+		{"01/02/2024", false, "DD/MM against MM/DD"},
+		{"25/12/2024", false, "unambiguous itself, and its layout meets 01/02"},
+		{"70MAY1", false, "C27: reads 01MAY10 as 2001-05-10"},
+		{"MAY70", false, "reads MAY10 as 2010-05-01"},
+
+		// Sentinels: no program at all.
+		{"1710504800", false, "epoch"},
+		{"1710504800000", false, "epoch in milliseconds"},
+		{"3 days ago", false, "natural language"},
+		{"now", false, ""},
+		{"yesterday at 5pm", false, ""},
+	}
+
+	for _, c := range cases {
+		result, err := ParseWith(c.in, WithBaseTime(base))
 		if err != nil {
-			t.Errorf("ParseWith(%q): %v", in, err)
+			t.Errorf("ParseWith(%q): %v", c.in, err)
 			continue
 		}
-		_, perr := result.Layout.Parse(in)
-		if got, want := result.Layout.Reusable(), perr == nil; got != want {
-			t.Errorf("ParseWith(%q).Layout: Reusable()=%v but re-parsing %s",
-				in, got, map[bool]string{true: "succeeds", false: "fails"}[perr == nil])
+		l := result.Layout
+		if got := l.Reusable(); got != c.reusable {
+			t.Errorf("ParseWith(%q).Layout.Reusable() = %v, want %v (%s)",
+				c.in, got, c.reusable, c.why)
+			continue
+		}
+
+		_, perr := l.Parse(c.in)
+		if c.reusable && perr != nil {
+			t.Errorf("ParseWith(%q).Layout: Reusable() but re-parsing the same input "+
+				"fails: %v", c.in, perr)
+			continue
+		}
+		if c.reusable {
+			continue
+		}
+
+		// The two meanings of false, and which one this is has to be legible
+		// from the value rather than from the table: a sentinel carries no
+		// program and refuses, and a prone layout parses.
+		switch {
+		case !l.hasProgram():
+			if perr == nil {
+				t.Errorf("ParseWith(%q).Layout has no program but re-parses", c.in)
+			}
+		case !l.ambiguityProne:
+			t.Errorf("ParseWith(%q).Layout.Reusable() = false and the layout is neither "+
+				"a sentinel nor ambiguity-prone; those are the only two reasons", c.in)
+		case perr != nil:
+			t.Errorf("ParseWith(%q).Layout is prone and refuses its own input: %v\n"+
+				"  a prone layout parses and may answer the wrong day, which is what "+
+				"makes it different from a sentinel", c.in, perr)
 		}
 	}
 
@@ -464,79 +514,150 @@ func TestLayoutReusableAgreesWithParse(t *testing.T) {
 	if nilLayout.Reusable() {
 		t.Error("(*Layout)(nil).Reusable() = true")
 	}
+	if nilLayout.hasProgram() {
+		t.Error("(*Layout)(nil).hasProgram() = true")
+	}
 }
 
-// TestReusableSaysYesToALayoutParserWillNotReuse pins the half of C27 that is
-// still open, and it is written to fail when that half lands.
+// TestReusableSaysNoToALayoutParserWillNotReuse is C27's second half, and it
+// replaces TestReusableSaysYesToALayoutParserWillNotReuse, which pinned the
+// hazard and was written to fail when this landed.
 //
-// Reusable is l != nil && l.program.N != 0, so it answers "this is not a
-// sentinel" while its doc comment offers it as the check a caller makes before
-// using what they were handed, and README.md shows exactly that. Parser answers
-// a second question the caller cannot: an ambiguity-prone layout is one whose
+// Reusable was l != nil && l.program.N != 0, so it answered "this is not a
+// sentinel" while its doc comment offered it as the check a caller makes before
+// keeping a layout, and README.md showed exactly that. Parser answered a second
+// question the caller could not ask: an ambiguity-prone layout is one whose
 // fields were decided by looking at the values, so it accepts the next row
 // whichever way that row wanted to be read, and Parser declines its own cache
-// on one. A caller holding the same layout is told nothing.
+// on one. A caller holding the same layout was told yes.
 //
-// So this is the reuse hazard C27 was filed for, and the flag fix did not close
-// it. Parse reports the guess now, which is what strict mode and the fuzz
-// target act on, and the layout it hands back still parses the next row the
-// first row's way.
+// Both halves of the hazard are here. C27 is the textual one, found by the
+// fuzzer; the numeric one is older and is the same shape, which is the argument
+// for answering it in Reusable rather than in a second method: one question,
+// one answer, every format.
 //
-// Whichever way the API question is answered, this test changes: Reusable goes
-// false for a prone layout, or a second predicate arrives, or Layout.Parse
-// refuses. Until then the answer is written down here rather than found again.
-func TestReusableSaysYesToALayoutParserWillNotReuse(t *testing.T) {
+// What did not change is the fast path. A prone layout still parses, and it
+// still answers the first row's way, because a caller who knows their column is
+// uniform is entitled to that. The method says the column has to be known.
+func TestReusableSaysNoToALayoutParserWillNotReuse(t *testing.T) {
 	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
-
-	seed, err := ParseWith("70MAY1", WithBaseTime(base))
-	if err != nil {
-		t.Fatalf(`ParseWith("70MAY1"): %v`, err)
-	}
-	if !seed.Layout.Reusable() {
-		t.Fatal(`ParseWith("70MAY1").Layout.Reusable() = false: C27's second half has ` +
-			"landed and this test is the thing it was written to break. Replace it with " +
-			"the property that half asserts.")
-	}
-
-	// The value the caller gets from the layout they were told they could reuse.
-	got, err := seed.Layout.Parse("01MAY10")
-	if err != nil {
-		t.Fatalf(`layout from "70MAY1" on "01MAY10": %v`, err)
-	}
-	if want := "2001-05-10"; got.Format("2006-01-02") != want {
-		t.Fatalf(`layout from "70MAY1" on "01MAY10" = %s, want %s`,
-			got.Format("2006-01-02"), want)
+	cases := []struct {
+		seed, next     string
+		reused, detect string
+	}{
+		{"70MAY1", "01MAY10", "2001-05-10", "2010-05-01"},
+		{"70MAY10", "01MAY10", "2001-05-10", "2010-05-01"},
+		{"70-MAY-01", "01-MAY-10", "2001-05-10", "2010-05-01"},
+		{"MAY70", "MAY10", "2010-05-01", "2026-05-10"},
+		{"25/12/2024", "01/02/2024", "2024-02-01", "2024-01-02"},
 	}
 
-	// And the value detection gives for the same bytes, nine years and nine
-	// days away from it.
-	fresh, err := ParseWith("01MAY10", WithBaseTime(base))
-	if err != nil {
-		t.Fatalf(`ParseWith("01MAY10"): %v`, err)
-	}
-	if want := "2010-05-01"; fresh.Time.Format("2006-01-02") != want {
-		t.Fatalf(`ParseWith("01MAY10") = %s, want %s`, fresh.Time.Format("2006-01-02"), want)
-	}
-
-	// What the flag fix did buy. Detection says it guessed, so a caller who
-	// checks Ambiguous has been told, and Parser re-detects rather than reusing.
-	if !fresh.Ambiguous {
-		t.Error(`ParseWith("01MAY10").Ambiguous = false: C27's first half has regressed`)
-	}
-	p := NewParser(WithBaseTime(base))
-	for _, c := range []struct{ in, want string }{
-		{"70MAY1", "1970-05-01"},
-		{"01MAY10", "2010-05-01"},
-		{"70MAY1", "1970-05-01"},
-	} {
-		r, err := p.Parse(c.in)
+	for _, c := range cases {
+		seed, err := ParseWith(c.seed, WithBaseTime(base))
 		if err != nil {
-			t.Errorf("Parser.Parse(%q): %v", c.in, err)
+			t.Errorf("ParseWith(%q): %v", c.seed, err)
 			continue
 		}
-		if got := r.Time.Format("2006-01-02"); got != c.want {
-			t.Errorf("Parser.Parse(%q) = %s, want %s: Parser declines the cache for a "+
-				"prone layout and that gate is what keeps the column right", c.in, got, c.want)
+
+		if seed.Layout.Reusable() {
+			t.Errorf("ParseWith(%q).Layout.Reusable() = true: the layout answers %s for "+
+				"%q where detection answers %s, so a caller who keeps it on this "+
+				"gets the wrong day with a nil error",
+				c.seed, c.reused, c.next, c.detect)
+			continue
+		}
+
+		// It is not a sentinel, which is the other reason Reusable says no, and
+		// the difference is the whole point: this one parses.
+		if !seed.Layout.hasProgram() {
+			t.Errorf("ParseWith(%q).Layout has no program; this layout is prone, not "+
+				"a sentinel", c.seed)
+			continue
+		}
+		got, err := seed.Layout.Parse(c.next)
+		if err != nil {
+			t.Errorf("layout from %q on %q: %v; a prone layout still parses, and that "+
+				"is why Reusable had to be the thing that says no", c.seed, c.next, err)
+			continue
+		}
+		if got.Format("2006-01-02") != c.reused {
+			t.Errorf("layout from %q on %q = %s, want %s: the hazard this method "+
+				"reports has moved and the test no longer describes it",
+				c.seed, c.next, got.Format("2006-01-02"), c.reused)
+		}
+
+		// And detection, which is what the caller gets by not reusing.
+		fresh, err := ParseWith(c.next, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q): %v", c.next, err)
+			continue
+		}
+		if fresh.Time.Format("2006-01-02") != c.detect {
+			t.Errorf("ParseWith(%q) = %s, want %s", c.next,
+				fresh.Time.Format("2006-01-02"), c.detect)
+		}
+
+		// Parser is the answer a caller should be given, and it was always
+		// right: it re-detects rather than reusing, so the column comes back
+		// row by row.
+		p := NewParser(WithBaseTime(base))
+		for _, in := range []struct{ s, want string }{
+			{c.seed, seed.Time.Format("2006-01-02")},
+			{c.next, c.detect},
+			{c.seed, seed.Time.Format("2006-01-02")},
+		} {
+			r, err := p.Parse(in.s)
+			if err != nil {
+				t.Errorf("Parser.Parse(%q): %v", in.s, err)
+				continue
+			}
+			if got := r.Time.Format("2006-01-02"); got != in.want {
+				t.Errorf("Parser.Parse(%q) after %q = %s, want %s",
+					in.s, c.seed, got, in.want)
+			}
+		}
+	}
+}
+
+// TestReusableStillSaysYesToAShapeDecidedFormat is the other side of it, and it
+// is what stops the fix reading as "reuse is off".
+//
+// The whole reason this library exists is that detection is reusable, so a
+// method that says no to a format whose fields are fixed by its shape would
+// have taken that away to close a hole in the formats where they are not. Every
+// input here is one whose layout carries the answer for any row that parses
+// against it.
+//
+// "13/01/2024" is deliberately not here, and it is the input that shows what
+// prone means. It needed no guess, because 13 cannot be a month, and the layout
+// it yields is the same program as the one from "01/02/2024": ambiguityProne is
+// a property of the format and not of the row it was detected from, which is
+// the whole reason a cached answer cannot be trusted for the next row. So
+// Reusable says no to the numeric slash family whatever value detected it. That
+// is the visible cost of C27's second half and it is the same hazard, found
+// earlier and never closed on this path.
+func TestReusableStillSaysYesToAShapeDecidedFormat(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	for _, in := range []string{
+		"2024-03-15",
+		"2024-03-15T10:30:00Z",
+		"2024-03-15 10:30:00",
+		"20240315",
+		"March 15, 2024",
+		"15 March 2024",
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+		"Fri Mar 15 10:30:00 2024",
+		"10:30:45",
+		"2024-03-15T10:30:00+05:53",
+	} {
+		result, err := ParseWith(in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q): %v", in, err)
+			continue
+		}
+		if !result.Layout.Reusable() {
+			t.Errorf("ParseWith(%q).Layout.Reusable() = false: this format's fields are "+
+				"decided by its shape, and reuse on those is what the library is for", in)
 		}
 	}
 }

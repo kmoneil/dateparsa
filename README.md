@@ -98,29 +98,33 @@ for _, row := range rows {
 }
 ```
 
-Not every result carries a layout you can reuse. A Unix timestamp has no format
-to reuse, and `3 days ago` resolves against the time it was parsed at, so both
-come back as sentinels that refuse to re-parse rather than answering a different
-day later. Ask before keeping one:
+Not every result carries a layout you can reuse. Ask before keeping one:
 
 ```go
 if result.Layout.Reusable() {
-    // not a sentinel, so it will re-parse
+    // safe for the rest of the column
 }
 ```
 
-`Reusable()` answers whether the layout will re-parse at all. It does not answer
-whether the answer will be right, and for one family of formats those are
-different questions. Where detection chose between readings by looking at the
-values, both readings compile to the same program, so the layout accepts the
-next row and reads it the first row's way: keep the layout from `70MAY1` and
-`01MAY10` comes back as 2001-05-10, where detection reads 2010-05-01. The same
-holds for `25/12/2024` against `01/02/2024`.
+It is false for two different reasons, and both mean do not keep this.
 
-Use `Parser` for a column and this is handled for you: it declines its own cache
-on exactly those formats and re-detects per row. If you hold the layout
-yourself, check `result.Ambiguous` on every row, or parse in strict mode, which
-refuses instead of guessing.
+A Unix timestamp has no format to reuse, and `3 days ago` resolves against the
+time it was parsed at, so both come back as sentinels that refuse to re-parse
+rather than answering a different day later.
+
+The second reason does not refuse, which is why asking matters. Where detection
+chose between readings by looking at the values, both readings compile to the
+same program, so the layout accepts the next row and reads it the first row's
+way: the layout from `70MAY1` reads `01MAY10` as 2001-05-10 where detection
+reads 2010-05-01, and the layout from `25/12/2024` reads `01/02/2024` as the
+first of February where detection reads the second of January. `Reusable()` is
+false for those formats whatever value detected them, `13/01/2024` included:
+which part is the month is decided per row, so no layout can carry the answer.
+
+Use `Parser` for such a column and it is handled for you: it declines its own
+cache on exactly those formats and re-detects per row. `Layout.Parse` still
+works on one, because a caller who knows their column is uniform is entitled to
+the fast path, and `Reusable()` is how you find out that you need to know.
 
 ### Batch parsing
 
@@ -326,13 +330,17 @@ being refused for having no month 13.
 
 ### Structured Dates
 
+The two-digit-year forms of RFC 822 and RFC 850 parse, and they report
+`Ambiguous`: nothing in `15 Mar 24 10:30 UTC` says it is not a `YY Mon DD`
+column, so strict mode refuses it. See *Ambiguity Handling* below.
+
 | Category          | Examples                                                                                  |
 | ----------------- | ----------------------------------------------------------------------------------------- |
 | ISO 8601          | `2024-03-15`, `2024-03-15T10:30:00`, `2024-03-15T10:30:00Z`, `2024-03-15T10:30:00+05:30`  |
 | RFC 3339          | `2024-03-15T10:30:00Z`, `2024-03-15T10:30:00.123456789Z`, `2024-03-15T10:30:00.123+05:30` |
 | RFC 2822          | `Fri, 15 Mar 2024 10:30:00 +0000`                                                         |
-| RFC 850           | `Friday, 15-Mar-24 10:30:00 UTC`                                                          |
-| RFC 822 / 1123    | `15 Mar 24 10:30 UTC`, `Fri, 15 Mar 2024 10:30:00 UTC`                                    |
+| RFC 850           | `Friday, 15-Mar-24 10:30:00 UTC` (two-digit year, see below)                              |
+| RFC 822 / 1123    | `15 Mar 24 10:30 UTC` (two-digit year, see below), `Fri, 15 Mar 2024 10:30:00 UTC`        |
 | ANSIC / Unix      | `Fri Mar 15 10:30:00 2024`, `Fri Mar 15 10:30:00 UTC 2024`                                |
 | SQL / Database    | `2024-03-15 10:30:00`, `2024-03-15 10:30:00.000`, `2024-03-15 10:30:00.000000`            |
 | SQL + timezone    | `2024-03-15 10:30:00+00`, `2024-03-15 10:30:00+05:30`                                     |
@@ -390,6 +398,10 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
 6. **No reuse of a guess** — `Parser` re-detects every row of an ambiguous
    format instead of applying the previous row's reading to it. Steps 1 and 2
    answer per value, so a layout cannot carry the answer forward.
+   `Layout.Reusable()` says the same thing to a caller holding the layout
+   themselves, and says it for the format rather than for the row that produced
+   it: `13/01/2024` needed no guess and its layout is still the one that meets
+   `01/02/2024` two rows later.
 
 Each interpretation is labelled with the reading it carries, and the labels name
 the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, and

@@ -168,6 +168,14 @@ func FuzzLayoutReuse(f *testing.F) {
 		// with no guess reported on either call. C24.
 		{"MAr A1AAA", "MArAA1MAY"},
 
+		// F9. Padding is trimmed on both the detection and the reuse path, so
+		// a layout from an unpadded row has to answer a padded one the same
+		// way and the other way round. The third pair is the one that must
+		// still refuse: trailing content that is not padding is not padding.
+		{"2024-03-15", "2024-03-16 "},
+		{" 2024-03-15", "2024-03-16"},
+		{"2024-03-15", "2024-03-16T10:30:00Z "},
+
 		// C27, and it is silent here now rather than green: this pair reports
 		// a guess on the second input since the fix, so the check below returns
 		// before it compares anything. It stays because the corpus entry it
@@ -296,11 +304,21 @@ func FuzzParserAgreesWithParse(f *testing.F) {
 		{"2024-03-15", "3 days ago"},
 		{"", ""},
 
-		// The reuse over-acceptance, found by the flextime target that asserts
-		// the same property one package up: GO_TIME_STRING detected from the
-		// first accepts the second, which detection refuses for its trailing
-		// space, and returns the instant detection would have returned if it
-		// had. Here so that a future tightening of the assertion runs into it.
+		// A reuse over-acceptance, found by the flextime target that asserts
+		// the same property one package up, and closed by F9 rather than by the
+		// tightening this comment used to predict.
+		//
+		// GO_TIME_STRING detected from the first accepted the second, which
+		// detection refused for its trailing space, and returned the instant
+		// detection would have returned if it had. F9 trims, so detection
+		// answers the second as a SQL_DATETIME and the cached layout refuses
+		// it: the trailing space it was reading as a separator is not there any
+		// more. Refusing is always allowed, and Parser falls back to detection,
+		// so both rows come back right.
+		//
+		// It stays as a seed because the pair still exercises the path, and
+		// because a residual closed sideways is one that can reopen the same
+		// way.
 		{"0000-01-01 00:00:00  0000", "0000-01-01 00:00:00 "},
 	}
 	for _, s := range seeds {

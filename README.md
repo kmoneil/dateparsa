@@ -126,6 +126,10 @@ cache on exactly those formats and re-detects per row. `Layout.Parse` still
 works on one, because a caller who knows their column is uniform is entitled to
 the fast path, and `Reusable()` is how you find out that you need to know.
 
+Padding does not break reuse. A column that pads inconsistently, `2024-03-15` on
+one row and `2024-03-15 ` on the next, reuses one layout for both: a layout that
+came from detection trims its input the same way detection did.
+
 ### Batch parsing
 
 ```go
@@ -329,6 +333,14 @@ being refused for having no month 13.
 ## Supported Formats
 
 ### Structured Dates
+
+**Surrounding whitespace is ignored on every format below.** ` `, `\t`, `\n`,
+`\r`, `\v` and `\f` at either end of the input are padding, which is what a CSV
+column and a log line put on every row, and a padded row parses to the same
+instant as the value inside it and reuses the same `Layout`. Nothing else is
+padding: an interior double space, trailing text that is not whitespace, and
+U+00A0 are all still refused, and a layout you compile yourself with `Compile`
+keeps whatever spaces you wrote in it.
 
 The two-digit-year forms of RFC 822 and RFC 850 parse, and they report
 `Ambiguous`: nothing in `15 Mar 24 10:30 UTC` says it is not a `YY Mon DD`

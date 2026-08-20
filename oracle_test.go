@@ -238,10 +238,28 @@ func assertAgrees(t *testing.T, input, layout string, got time.Time) {
 		// means, and there is nothing deliberate about it unless somebody wrote
 		// down that there was.
 		//
-		// Before failing, canonicalise the input's literal bytes to the ones the
-		// layout names, which is what retryWithLayoutLiterals explains.
-		var ok bool
-		if want, ok = retryWithLayoutLiterals(input, layout); !ok {
+		// Before failing, canonicalise the input rather than loosening the
+		// layout. Two things get canonicalised and they compose in this order.
+		//
+		// Padding, which F9 made a rule on every format: " 2024-03-15" is a
+		// date here and "extra text" there. That is a difference about bytes
+		// carrying no value, which is what this oracle is willing to look
+		// past, and enumerating the inputs it can happen to would be every
+		// format times every whitespace byte times both ends. The fuzzer found
+		// "0000.01.01 " within one sweep of F9 landing, which is what a list
+		// would have looked like on day one.
+		//
+		// Then the input's literal bytes to the ones the layout names, which is
+		// what retryWithLayoutLiterals explains. It runs on the trimmed value
+		// and not on input, because " 2024/03/15 " needs both and the padding
+		// has to go first for the separator retry to see a layout-shaped input.
+		value := trimPadding(input)
+		trimmedWant, trimErr := time.Parse(layout, value)
+		if trimErr == nil {
+			want = trimmedWant
+		} else if retried, ok := retryWithLayoutLiterals(value, layout); ok {
+			want = retried
+		} else {
 			// The message quotes the stdlib's complaint about the layout it was
 			// given, which for a class-matched literal is about the byte rather
 			// than about the input. That is why the retry runs first: if it had
@@ -303,11 +321,74 @@ func assertAgrees(t *testing.T, input, layout string, got time.Time) {
 // them one defect in Layout.GoLayout rather than lenience, and the separator
 // retry above turns those into comparisons instead of exemptions.
 //
-// So: this library is not deliberately more permissive than the stdlib anywhere
-// a corpus can reach. If an entry ever belongs here, it needs a sentence saying
-// why the input means what this library says it means, and CLAUDE.md's
-// equivalence invariant should gain it too.
+// F9 is the reason it is still empty rather than eight entries long, and the
+// distinction is worth keeping. Surrounding whitespace *is* a deliberate
+// divergence: this library reads " 2024-03-15" as a date and time.Parse calls
+// it extra text. But it is a rule and not a list, so it belongs in the
+// canonicalisation above beside the separator class and the case of AM/PM, and
+// putting it here instead was the first version of that change. The fuzzer
+// refuted it inside one sweep with "0000.01.01 ", an input no list written by
+// hand would have held, and every format times every whitespace byte times both
+// ends is what the list would have had to grow to.
+//
+// So this list is for a divergence that is genuinely about one input. A rule
+// goes above; anything that needs an entry here needs a sentence saying why
+// that input means what this library says it means, and CLAUDE.md's equivalence
+// invariant should gain it too.
 var oracleLenient = map[string]string{}
+
+// TestPaddedInputAgreesWithTheTrimmedValue is F9 at the oracle.
+//
+// The claim being checked is narrow and is the whole of what F9 asks for: this
+// library accepts padding the stdlib refuses, and answers with the instant the
+// stdlib gives for the value inside it. More inputs, not more meanings.
+//
+// It is a test rather than a list because C27 is two cards ago: a documented
+// format changed what it reports with 31 round-trip formats, 23 fuzz targets
+// and the oracle all green, because the gates were pointed somewhere else. The
+// premise check is the other half of that. If a Go release starts accepting
+// padded input, this says so instead of the canonicalisation quietly covering
+// nothing.
+func TestPaddedInputAgreesWithTheTrimmedValue(t *testing.T) {
+	cases := []struct{ input, layout string }{
+		{" 2024-03-15", "2006-01-02"},
+		{"2024-03-15 ", "2006-01-02"},
+		{"  2024-03-15  ", "2006-01-02"},
+		{"2024-03-15\r\n", "2006-01-02"},
+		{"\t2024-03-15T10:30:00Z", "2006-01-02T15:04:05Z"},
+		{"2024-03-15T10:30:00Z ", "2006-01-02T15:04:05Z"},
+		{" 03/15/2024 ", "01/02/2006"},
+		{"\n15 Mar 2024\n", "2 Jan 2006"},
+
+		// Padding and a separator class at once, which is why the padding is
+		// canonicalised before the literal retry rather than after it.
+		{" 2024/03/15 ", "2006-01-02"},
+		{"\t2024.03.15\n", "2006-01-02"},
+
+		// The crasher. Found by FuzzParseAgreesWithTimeParse on the first sweep
+		// after F9 landed, against the version that kept a hand-written list.
+		{"0000.01.01 ", "2006-01-02"},
+	}
+
+	for _, c := range cases {
+		r, err := Parse(c.input)
+		if err != nil {
+			t.Errorf("Parse(%q): %v, want the trimmed value's answer", c.input, err)
+			continue
+		}
+
+		// The premise: the stdlib really does refuse this, so the
+		// canonicalisation is doing something.
+		if _, stdErr := time.Parse(c.layout, c.input); stdErr == nil {
+			t.Errorf("time.Parse(%q, %q) now succeeds; this input no longer shows the "+
+				"divergence it was chosen for", c.layout, c.input)
+		}
+
+		// And through the oracle, which is what would fail if the
+		// canonicalisation were removed without the behaviour changing.
+		assertAgrees(t, c.input, c.layout, r.Time)
+	}
+}
 
 // retryWithLayoutLiterals re-runs the stdlib with the input's literal bytes
 // replaced by the ones the layout names, and reports whether that parses.
@@ -481,6 +562,15 @@ func FuzzParseAgreesWithTimeParse(f *testing.F) {
 		"2024/03/15",
 		"2024.03.15",
 		"2024/03/15 10:30:00",
+
+		// F9, found by this target on the first sweep after it landed and
+		// against the version of it that kept a hand-written exemption list.
+		// Padding is canonicalised in assertAgrees now, for the same reason the
+		// separators above are, and TestPaddedInputAgreesWithTheTrimmedValue
+		// carries this input as a fixed case as well.
+		"0000.01.01 ",
+		" 2024-03-15",
+		"\t2024/03/15 10:30:00\n",
 	}
 	for _, s := range seeds {
 		f.Add(s)

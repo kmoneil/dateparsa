@@ -29,6 +29,28 @@ type Layout struct {
 	// "25/12/2024" resolves without a guess and yields a layout that meets
 	// "01/02/2024" two rows later. Strict mode declines the cache on this.
 	ambiguityProne bool
+
+	// trimsPadding records that this layout was detected from an input rather
+	// than compiled from a Go layout string, which is what decides whether
+	// surrounding whitespace belongs to the value or to the format.
+	//
+	// A detected layout describes a value. Detection trimmed the padding off
+	// before it located a single field, so no instruction in the program reads
+	// a byte outside the trimmed span and no instruction can start or end on
+	// one. Trimming the next row costs nothing and is what lets a column padded
+	// inconsistently reuse one layout.
+	//
+	// A compiled layout describes what the caller wrote, spaces included.
+	// Compile(" 2006-01-02") and Compile("2006-01-02 ") both work today and
+	// both agree with time.Parse, and "2024-03-  ", a space where the _2 day
+	// digit goes, is a seed in FuzzCompile_SpacePaddedDay_Equivalence. Trimming
+	// those would refuse input the stdlib accepts, and staying equivalent to
+	// the stdlib on a layout the caller handed us is what the four
+	// FuzzCompile_* targets exist for.
+	//
+	// Set at construction and never afterwards, like the two above: Layout is
+	// documented as immutable and safe for concurrent use.
+	trimsPadding bool
 }
 
 // Sentinel layouts for non-structured parse results.
@@ -135,7 +157,21 @@ func (l *Layout) Parse(s string) (time.Time, error) {
 			Message: "cannot re-parse with " + l.label + " layout",
 		}
 	}
-	t, err := l.program.Execute(s)
+	// The error carries the input as the caller gave it, padding included,
+	// because that is the value they hold and will log. Only the executor sees
+	// the trimmed span, and fieldError's offset is relative to that.
+	// The guard rather than the trim, because this is the hot path and an
+	// unpadded row is the common case: two byte loads and four comparisons
+	// behind a bool the branch predictor learns once, rather than the setup for
+	// two loops. Trimming every row cost +22.80% on Layout_Parse_ISODate,
+	// +16.96% on Parser_Cached and +15.20% on Layout_Parse, all at p=0.002
+	// against a 1.2% median noise floor, and trimPadding was inlined in that
+	// version too: what costs is entering the loops, not calling the function.
+	value := s
+	if l.trimsPadding && hasPadding(s) {
+		value = trimPadding(s)
+	}
+	t, err := l.program.Execute(value)
 	if err != nil {
 		return time.Time{}, &ParseError{Input: s, Message: err.Error()}
 	}
@@ -161,7 +197,11 @@ func (l *Layout) ParseBytes(b []byte) (time.Time, error) {
 			Message: "cannot re-parse with " + l.label + " layout",
 		}
 	}
-	t, err := l.program.ExecuteBytes(b)
+	value := b
+	if l.trimsPadding && hasPaddingBytes(b) {
+		value = trimPaddingBytes(b)
+	}
+	t, err := l.program.ExecuteBytes(value)
 	if err != nil {
 		return time.Time{}, &ParseError{Input: string(b), Message: err.Error()}
 	}

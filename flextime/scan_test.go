@@ -2,6 +2,7 @@ package flextime
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -443,4 +444,59 @@ func TestScanConcurrentFormats(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestScanAndUnmarshalIgnorePadding is F9 reaching this package, which it does
+// for free and which is worth a test anyway.
+//
+// Both entry points parse through dateparsa.Parser, so the trim is inherited
+// rather than repeated here, and that is the property being pinned: a change
+// that reimplemented parsing on either path would pass every other test in this
+// file and fail this one.
+//
+// It is also the case flextime exists for. A driver hands back whatever the
+// column holds, and a column loaded from a CSV holds the padding the CSV had.
+func TestScanAndUnmarshalIgnorePadding(t *testing.T) {
+	want := time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)
+
+	for _, v := range []any{
+		" 2024-03-15T10:30:00Z",
+		"2024-03-15T10:30:00Z ",
+		"\t2024-03-15T10:30:00Z\r\n",
+		[]byte("  2024-03-15T10:30:00Z  "),
+		[]byte("2024-03-15T10:30:00Z\n"),
+	} {
+		var ft FlexTime
+		if err := ft.Scan(v); err != nil {
+			t.Errorf("Scan(%q): %v", v, err)
+			continue
+		}
+		if !ft.Time().Equal(want) {
+			t.Errorf("Scan(%q) = %v, want %v", v, ft.Time(), want)
+		}
+	}
+
+	for _, doc := range []string{
+		`" 2024-03-15T10:30:00Z"`,
+		`"2024-03-15T10:30:00Z "`,
+		`"\t2024-03-15T10:30:00Z\r\n"`,
+	} {
+		var ft FlexTime
+		if err := json.Unmarshal([]byte(doc), &ft); err != nil {
+			t.Errorf("Unmarshal(%s): %v", doc, err)
+			continue
+		}
+		if !ft.Time().Equal(want) {
+			t.Errorf("Unmarshal(%s) = %v, want %v", doc, ft.Time(), want)
+		}
+	}
+
+	// Whitespace alone is not a time, on either path.
+	var ft FlexTime
+	if err := ft.Scan("   "); err == nil {
+		t.Error(`Scan("   ") = nil error, want one`)
+	}
+	if err := json.Unmarshal([]byte(`"   "`), &ft); err == nil {
+		t.Error(`Unmarshal("   ") = nil error, want one`)
+	}
 }

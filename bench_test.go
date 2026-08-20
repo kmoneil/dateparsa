@@ -339,6 +339,25 @@ var zeroAllocExtras = []struct{ name, input string }{
 	// coverage of the far side of it.
 	{"LONG/frac9+offset", "2024-03-15T10:30:00.123456789+05:30"}, // 35
 	{"SHORT/at the limit", "2024-03-15T10:30:00.12345+05:30"},    // 32
+
+	// Padded rows, which F9 made parseable and which the generator cannot
+	// produce: it renders a value, and padding is not part of one. A CSV
+	// column and a log line are where these come from, and both are named in
+	// README.md's first paragraph.
+	//
+	// The last two are the pair that matters for ParseBytes. Trimming happens
+	// before the copy, so a 34-byte input that holds a 30-byte value copies 30
+	// and allocates nothing, where the same 34 bytes of value would allocate
+	// once. If trimming ever moves to after the copy, that one flips to 1 and
+	// this says so.
+	{"PADDED/leading space", " 2024-03-15"},
+	{"PADDED/trailing space", "2024-03-15 "},
+	{"PADDED/both", "  2024-03-15  "},
+	{"PADDED/crlf", "2024-03-15\r\n"},
+	{"PADDED/tab both ends", "\t2024-03-15T10:30:00Z\t"},
+	{"PADDED/textual", "  March 15, 2024  "},
+	{"PADDED/over 32 padded, under 32 trimmed", "  2024-03-15T10:30:00Z  "},  // 24 bytes of value in 28
+	{"PADDED/over 32 either way", "  2024-03-15T10:30:00.123456789+05:30  "}, // 35 bytes of value in 39
 }
 
 // stringCopyStackMax is the largest []byte the runtime turns into a string
@@ -401,9 +420,15 @@ func TestLayoutParseZeroAlloc(t *testing.T) {
 		// otherwise miss. The existing extras list already carries a 33-byte
 		// input, TEXTUAL/weekday, so asserting a flat zero here fails on the
 		// spot.
+		// Against the trimmed length, not len(input). ExecuteBytes converts
+		// what it is given, and since F9 Layout.ParseBytes trims before it
+		// hands the slice over, so the copy is the value and not the padding
+		// around it. Counting the padding here would demand an allocation for
+		// an input that does not make one.
 		b := []byte(input)
+		valueLen := len(trimPadding(input))
 		want := 0.0
-		if len(input) > stringCopyStackMax {
+		if valueLen > stringCopyStackMax {
 			want = 1.0
 			longInputs++
 		} else {
@@ -413,8 +438,9 @@ func TestLayoutParseZeroAlloc(t *testing.T) {
 			_, _ = layout.ParseBytes(b)
 		})
 		if allocsB != want {
-			t.Errorf("%s [%v]: Layout.ParseBytes(%q) allocated %.0f times, want %.0f for a %d-byte input",
-				name, layout, input, allocsB, want, len(input))
+			t.Errorf("%s [%v]: Layout.ParseBytes(%q) allocated %.0f times, want %.0f for a "+
+				"%d-byte value in a %d-byte input",
+				name, layout, input, allocsB, want, valueLen, len(input))
 		}
 	}
 

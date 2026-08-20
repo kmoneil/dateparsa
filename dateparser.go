@@ -48,7 +48,19 @@ func ParseWith(s string, opts ...Option) (ParseResult, error) {
 }
 
 // parseWithConfig is the internal implementation shared by ParseWith and Parser.
-func parseWithConfig(s string, cfg config) (ParseResult, error) {
+func parseWithConfig(input string, cfg config) (ParseResult, error) {
+	// One trim, ahead of the whole cascade, so that the trie, the textual
+	// detector, epoch and natural language all see the same value. Two of
+	// those four tolerated padding already and two refused it, by accident in
+	// both directions; see whitespace.go for what is trimmed and what is not.
+	//
+	// Every error below carries input rather than s, because the caller logs
+	// the value they passed. Only the detectors and the executor see the
+	// trimmed span, and every field offset is relative to it, which is why
+	// Layout.Parse has to trim the same way for the layout to describe the
+	// next row.
+	s := trimPadding(input)
+
 	localeDatas := localeDataFromConfig(cfg)
 
 	dcfg := detect.Config{
@@ -96,7 +108,7 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 			// tomorrow with Ambiguous false and no error.
 			if nlr.Ambiguous && cfg.strictMode {
 				return ParseResult{}, &AmbiguousDateError{
-					Input: s,
+					Input: input,
 					Interpretations: []Interpretation{
 						{Time: nlr.Time, Layout: LayoutNaturalLanguage, Label: nlr.Time.Format(nlLabelFormat)},
 						{Time: nlr.AltTime, Layout: LayoutNaturalLanguage, Label: nlr.AltTime.Format(nlLabelFormat)},
@@ -111,11 +123,11 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 			}, nil
 		}
 
-		return ParseResult{}, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
+		return ParseResult{}, &ParseError{Input: input, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
 	if cfg.strictMode && result.Ambig {
-		return ParseResult{}, buildAmbiguousError(s, cfg, result)
+		return ParseResult{}, buildAmbiguousError(input, s, cfg, result)
 	}
 
 	// The base year is compiled into the program rather than patched onto the
@@ -126,18 +138,18 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 	// current year.
 	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
 	if err != nil {
-		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+		return ParseResult{}, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
 		by, ok := baseYear(cfg)
 		if !ok {
-			return ParseResult{}, baseYearError(s, cfg)
+			return ParseResult{}, baseYearError(input, cfg)
 		}
 		program.BaseYear = by
 	}
 	t, err := program.Execute(s)
 	if err != nil {
-		return ParseResult{}, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+		return ParseResult{}, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
 	}
 
 	layout := &Layout{
@@ -147,6 +159,7 @@ func parseWithConfig(s string, cfg config) (ParseResult, error) {
 
 		ambiguous:      result.Ambig,
 		ambiguityProne: result.AmbigProne,
+		trimsPadding:   true,
 	}
 
 	return ParseResult{
@@ -169,8 +182,13 @@ func ParseTime(s string, opts ...Option) (time.Time, error) {
 // Detect analyzes a date string and returns the detected Layout
 // without parsing. Useful when you want to inspect the format
 // before committing to parsing.
-func Detect(s string, opts ...Option) (*Layout, error) {
+func Detect(input string, opts ...Option) (*Layout, error) {
 	cfg := buildConfig(opts)
+
+	// Same trim as parseWithConfig, for the same reason: this returns a layout
+	// a caller reuses, and it has to be the layout Parse would have returned
+	// for the same value.
+	s := trimPadding(input)
 
 	dcfg := detect.Config{
 		PreferDayFirst:  cfg.preferDayFirst,
@@ -181,17 +199,17 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 
 	result, ok := detect.Detect(s, dcfg)
 	if !ok {
-		return nil, &ParseError{Input: s, Message: "no matching format found", Cause: ErrNoMatch}
+		return nil, &ParseError{Input: input, Message: "no matching format found", Cause: ErrNoMatch}
 	}
 
 	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
 	if err != nil {
-		return nil, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+		return nil, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
 		by, ok := baseYear(cfg)
 		if !ok {
-			return nil, baseYearError(s, cfg)
+			return nil, baseYearError(input, cfg)
 		}
 		program.BaseYear = by
 	}
@@ -202,6 +220,7 @@ func Detect(s string, opts ...Option) (*Layout, error) {
 
 		ambiguous:      result.Ambig,
 		ambiguityProne: result.AmbigProne,
+		trimsPadding:   true,
 	}, nil
 }
 
@@ -234,10 +253,13 @@ const nlLabelFormat = "2006-01-02"
 // The base year and the timezone come from cfg because the readings are the
 // caller's readings. "March 15" has no year field on either reading, and the
 // pair is only comparable if both take the same base.
-func buildAmbiguousError(s string, cfg config, result detect.Result) error {
+// input is the value as the caller passed it and s is that value trimmed. The
+// readings are compiled against s, because their field offsets are relative to
+// it, and the error names input, because that is what the caller holds.
+func buildAmbiguousError(input, s string, cfg config, result detect.Result) error {
 	var interps []Interpretation
 	for _, r := range result.Readings() {
-		in, parsed, err := interpretation(s, cfg, r.Def, r.Label)
+		in, parsed, err := interpretation(input, s, cfg, r.Def, r.Label)
 		if err != nil {
 			return err
 		}
@@ -252,13 +274,13 @@ func buildAmbiguousError(s string, cfg config, result detect.Result) error {
 	// refuses outright.
 	if len(interps) < 2 {
 		return &ParseError{
-			Input:   s,
+			Input:   input,
 			Message: "ambiguous date could not be interpreted",
 			Cause:   ErrAmbiguous,
 		}
 	}
 	return &AmbiguousDateError{
-		Input:           s,
+		Input:           input,
 		Interpretations: interps,
 	}
 }
@@ -270,15 +292,15 @@ func buildAmbiguousError(s string, cfg config, result detect.Result) error {
 // being asked to choose between, and the other reading may still be. The error
 // return is for the two failures that belong to the call rather than to the
 // reading, a program that will not compile and a base year that will not fit.
-func interpretation(s string, cfg config, def *compile.FormatDef, label string) (Interpretation, bool, error) {
+func interpretation(input, s string, cfg config, def *compile.FormatDef, label string) (Interpretation, bool, error) {
 	prog, needsBaseYear, err := compile.Compile(def, cfg.timezone)
 	if err != nil {
-		return Interpretation{}, false, &ParseError{Input: s, Message: err.Error(), Cause: ErrNoMatch}
+		return Interpretation{}, false, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
 	}
 	if needsBaseYear {
 		by, ok := baseYear(cfg)
 		if !ok {
-			return Interpretation{}, false, baseYearError(s, cfg)
+			return Interpretation{}, false, baseYearError(input, cfg)
 		}
 		prog.BaseYear = by
 	}
@@ -287,8 +309,12 @@ func interpretation(s string, cfg config, def *compile.FormatDef, label string) 
 		return Interpretation{}, false, nil
 	}
 	return Interpretation{
-		Time:   t,
-		Layout: &Layout{program: prog, label: label},
+		Time: t,
+		// Detected, not compiled, so it trims like the one Parse returns. A
+		// caller who takes the reading they wanted out of an
+		// *AmbiguousDateError and keeps it has the same layout Parse would
+		// have handed them.
+		Layout: &Layout{program: prog, label: label, trimsPadding: true},
 		Label:  label,
 	}, true, nil
 }

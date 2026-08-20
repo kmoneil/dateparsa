@@ -240,8 +240,33 @@ truncated for signature purposes. The signature scan and the trie lookup on it
 therefore do a fixed amount of work regardless of input size, and allocate
 nothing.
 
+**Surrounding whitespace is trimmed before any of the bounds below apply, so
+they bound the value rather than the padding around it.** F9 made that the
+rule: the six ASCII bytes ` `, `\t`, `\n`, `\r`, `\v` and `\f` at either end of
+the input are padding, not value, and a CSV column or a log line puts them on
+every row. The consequence for this section is that
+`strings.Repeat(" ", 600) + "March 15, 2024"` is 614 bytes and parses, where the
+510-byte bound refused it at the door before.
+
+The cost of that is linear in the input and allocates nothing proportional to
+it. Measured on linux/arm64, one `Parse` of 10 MiB of nothing but spaces is
+3.33 ms and 1 allocation; 10 MiB of padding on each side of a date is 9.51 ms
+and 1. The trim is two loops that stop at the first byte that is not padding, so
+an unpadded value costs two comparisons. What this does give up is that a huge
+input used to be refused by an O(1) length comparison and is now scanned first;
+that is a change from constant to linear on the refusal path, and the numbers
+above are what it buys and costs. `internal/natural`'s `MaxInputLen` is the
+bound that mattered there and it still applies to the trimmed value.
+
+Nothing else about padding is permitted. An interior double space is not
+padding, trailing text that is not whitespace is not padding, U+00A0 and the
+rest of Unicode `Zs` are not padding, and a `Layout` compiled from a Go layout
+string is not trimmed at all, so `Compile` stays exactly as strict as
+`time.Parse`.
+
 **Detection refuses an input longer than 510 bytes**, which is
-`compile.MaxDescribableLen`, before any of that runs. A field starts at byte 255
+`compile.MaxDescribableLen`, applied to the trimmed value and before any of the
+rest of this runs. A field starts at byte 255
 at the latest and runs 255 bytes at the most, so a program cannot cover a longer
 input, and the executor requires the whole input to be covered. The bound
 refuses nothing that could have parsed.
@@ -627,5 +652,9 @@ Update this document in the same change whenever you:
 - change `maxSigLen`, `MaxInstructions`, or any other bound named above
 - add a code path whose cost is not linear in input length
 - change how ambiguity is detected, reported, or resolved
+- accept an input `time.Parse` refuses. If it is a rule, it is canonicalised in
+  `assertAgrees` beside the separator class and the case of AM/PM, which is
+  where F9 put surrounding whitespace. If it is one input, it is an entry in
+  `oracleLenient`, which is still empty
 - change the timezone abbreviation table or the fallback in `lookupTZAbbr`
 - change what an exported type promises about concurrent use

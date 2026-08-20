@@ -167,6 +167,20 @@ func FuzzLayoutReuse(f *testing.F) {
 		// side of them. A MONTH_DAY layout read March where detection read May,
 		// with no guess reported on either call. C24.
 		{"MAr A1AAA", "MArAA1MAY"},
+
+		// C27, and it is silent here now rather than green: this pair reports
+		// a guess on the second input since the fix, so the check below returns
+		// before it compares anything. It stays because the corpus entry it
+		// came from is not committed and a seed is where a crasher lives.
+		//
+		// What it found: two two-digit numbers around a month name were read by
+		// value, 70 as a year and 01 as a day, and both readings emit the same
+		// two-byte fields at the same offsets. So a layout detected from
+		// "70MAY1" accepted "01MAY10" and answered 2001-05-10 where detection
+		// answers 2010-05-01, with a nil error and Ambiguous false on both
+		// calls. The flag is honest now. The layout still accepts it, which is
+		// the reuse half and is not a thing this target can see.
+		{"70MAY1", "01MAY10"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

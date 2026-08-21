@@ -245,10 +245,7 @@ func (p *Program) executeFast(s string) (time.Time, error) {
 	var hour, minute, second, nsec int
 	var ampm int8
 
-	loc := p.Tz
-	if loc == nil {
-		loc = time.UTC
-	}
+	loc, locOff := programZone(p.Tz)
 
 	if in := p.Insts[slotBase+SlotYear]; in.Op != OpNop {
 		off := int(in.Offset)
@@ -365,13 +362,13 @@ func (p *Program) executeFast(s string) (time.Time, error) {
 			if off+1 != slen {
 				return time.Time{}, fieldError("timezone", off, slen)
 			}
-			loc = time.UTC
+			loc, locOff = time.UTC, 0
 		} else {
-			l, err := fastZone(s, in)
+			l, o, err := fastZone(s, in)
 			if err != nil {
 				return time.Time{}, err
 			}
-			loc = l
+			loc, locOff = l, o
 		}
 	}
 
@@ -387,7 +384,7 @@ func (p *Program) executeFast(s string) (time.Time, error) {
 			"dateparsa: %d %s does not exist in %d",
 			day, month, year)
 	}
-	return makeTime(year, month, day, applyAMPM(hour, ampm), minute, second, nsec, loc), nil
+	return makeTime(year, month, day, applyAMPM(hour, ampm), minute, second, nsec, loc, locOff), nil
 }
 
 // fastDay reads the day slot, which holds either OpDay2 or Go's space-padded
@@ -412,20 +409,20 @@ func fastDay(s string, off int, op OpCode) (int, bool) {
 
 // fastZone reads the zone slot. Split out to keep executeFast's straight line
 // straight: four ops share this slot and only one of them is common.
-func fastZone(s string, in Inst) (*time.Location, error) {
+func fastZone(s string, in Inst) (*time.Location, int, error) {
 	off, length := int(in.Offset), int(in.Len)
 	slen := len(s)
 
 	switch in.Op {
 	case OpTZZ:
 		if off >= slen || s[off] != 'Z' {
-			return nil, fieldError("timezone", off, slen)
+			return nil, 0, fieldError("timezone", off, slen)
 		}
-		return time.UTC, nil
+		return time.UTC, 0, nil
 
 	case OpTZZOrOffset:
 		if off >= slen {
-			return nil, fieldError("timezone", off, slen)
+			return nil, 0, fieldError("timezone", off, slen)
 		}
 		if s[off] == 'Z' {
 			// planFast only accepts this op as the last field, and WidthAlt is
@@ -433,37 +430,37 @@ func fastZone(s string, in Inst) (*time.Location, error) {
 			// is what stops "…00Z+0530" being read as UTC with a tail nobody
 			// described.
 			if off+1 != slen {
-				return nil, fieldError("timezone", off, slen)
+				return nil, 0, fieldError("timezone", off, slen)
 			}
-			return time.UTC, nil
+			return time.UTC, 0, nil
 		}
 		if off+length > slen {
-			return nil, fieldError("timezone offset", off, slen)
+			return nil, 0, fieldError("timezone offset", off, slen)
 		}
-		loc, ok := parseTZOffset(s, off, length)
+		loc, tzOff, ok := parseTZOffset(s, off, length)
 		if !ok {
-			return nil, fieldError("timezone offset", off, slen)
+			return nil, 0, fieldError("timezone offset", off, slen)
 		}
-		return loc, nil
+		return loc, tzOff, nil
 
 	case OpTZOffset:
 		if off+length > slen {
-			return nil, fieldError("timezone offset", off, slen)
+			return nil, 0, fieldError("timezone offset", off, slen)
 		}
-		loc, ok := parseTZOffset(s, off, length)
+		loc, tzOff, ok := parseTZOffset(s, off, length)
 		if !ok {
-			return nil, fieldError("timezone offset", off, slen)
+			return nil, 0, fieldError("timezone offset", off, slen)
 		}
-		return loc, nil
+		return loc, tzOff, nil
 
 	default: // OpTZName
 		if off+length > slen {
-			return nil, fieldError("timezone name", off, slen)
+			return nil, 0, fieldError("timezone name", off, slen)
 		}
-		loc, ok := lookupTZAbbr(s[off : off+length])
+		loc, tzOff, ok := lookupTZAbbr(s[off : off+length])
 		if !ok {
-			return nil, fieldError("timezone name", off, slen)
+			return nil, 0, fieldError("timezone name", off, slen)
 		}
-		return loc, nil
+		return loc, tzOff, nil
 	}
 }

@@ -123,23 +123,19 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 		// yearSet distinguishes "the format has no year field" from "the year
 		// field read 0". Testing year == 0 conflates them, which is how
 		// Parse("0000-01-01") used to come back as the current year.
-		yearSet    = false
-		month      = time.January
-		day        = 1
-		hour       int
-		minute     int
-		second     int
-		nsec       int
-		loc        = p.Tz
-		ampm       int8 // 0=unset, 1=AM, -1=PM
-		isoWeek    int  // ISO week number (1-53), 0 = not set
-		isoWeekDay int  // ISO weekday (1=Mon, 7=Sun), 0 = not set
-		ordinalDay int  // Day of year (1-366), 0 = not set
+		yearSet     = false
+		month       = time.January
+		day         = 1
+		hour        int
+		minute      int
+		second      int
+		nsec        int
+		loc, locOff = programZone(p.Tz)
+		ampm        int8 // 0=unset, 1=AM, -1=PM
+		isoWeek     int  // ISO week number (1-53), 0 = not set
+		isoWeekDay  int  // ISO weekday (1=Mon, 7=Sun), 0 = not set
+		ordinalDay  int  // Day of year (1-366), 0 = not set
 	)
-
-	if loc == nil {
-		loc = time.UTC
-	}
 
 	// delta tracks the cumulative offset adjustment caused by variable-width
 	// fields (Op*1or2) that consumed more bytes than their minimum Len.
@@ -415,7 +411,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			if off >= slen || s[off] != 'Z' {
 				return time.Time{}, fieldError("timezone", off, slen)
 			}
-			loc = time.UTC
+			loc, locOff = time.UTC, 0
 			w = 1
 
 		case OpTZOffset:
@@ -423,11 +419,11 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			if off+length > slen {
 				return time.Time{}, fieldError("timezone offset", off, slen)
 			}
-			tzLoc, ok := parseTZOffset(s, off, length)
+			tzLoc, tzOff, ok := parseTZOffset(s, off, length)
 			if !ok {
 				return time.Time{}, fieldError("timezone offset", off, slen)
 			}
-			loc = tzLoc
+			loc, locOff = tzLoc, tzOff
 
 		case OpTZName:
 			length := int(inst.Len)
@@ -435,18 +431,18 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("timezone name", off, slen)
 			}
 			name := s[off : off+length]
-			tzLoc, ok := lookupTZAbbr(name)
+			tzLoc, tzOff, ok := lookupTZAbbr(name)
 			if !ok {
 				return time.Time{}, fieldError("timezone name", off, slen)
 			}
-			loc = tzLoc
+			loc, locOff = tzLoc, tzOff
 
 		case OpTZZOrOffset:
 			if off >= slen {
 				return time.Time{}, fieldError("timezone", off, slen)
 			}
 			if s[off] == 'Z' {
-				loc = time.UTC
+				loc, locOff = time.UTC, 0
 				w = 1
 				// This was the one variable-width op that did not report its
 				// width back, so a field after it read from wherever the
@@ -460,11 +456,11 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				if off+length > slen {
 					return time.Time{}, fieldError("timezone offset", off, slen)
 				}
-				tzLoc, ok := parseTZOffset(s, off, length)
+				tzLoc, tzOff, ok := parseTZOffset(s, off, length)
 				if !ok {
 					return time.Time{}, fieldError("timezone offset", off, slen)
 				}
-				loc = tzLoc
+				loc, locOff = tzLoc, tzOff
 			}
 
 		// ── ISO week/ordinal fields ──────────────────────────────────
@@ -646,7 +642,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			wd = time.Weekday(isoWeekDay % 7) // 1->1(Mon), 7->0(Sun)
 		}
 		t := isoWeekToDate(week1Monday, isoWeek, wd)
-		return makeTime(t.Year(), t.Month(), t.Day(), hour, minute, second, nsec, loc), nil
+		return makeTime(t.Year(), t.Month(), t.Day(), hour, minute, second, nsec, loc, locOff), nil
 	}
 
 	// Ordinal day: convert year + day-of-year to calendar date.
@@ -661,7 +657,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				"dateparsa: day-of-year %d does not exist in %d, which has %d days",
 				ordinalDay, year, daysInYear(year))
 		}
-		return makeTime(year, 1, ordinalDay, hour, minute, second, nsec, loc), nil
+		return makeTime(year, 1, ordinalDay, hour, minute, second, nsec, loc, locOff), nil
 	}
 
 	// The day, against its month, which is the same defect as the two above and
@@ -681,7 +677,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			day, month, year)
 	}
 
-	return makeTime(year, month, day, hour, minute, second, nsec, loc), nil
+	return makeTime(year, month, day, hour, minute, second, nsec, loc, locOff), nil
 }
 
 // parse2Digits parses two ASCII decimal digits at s[off:off+2].
@@ -986,9 +982,14 @@ func lookupTZByOffset(totalSeconds int) *time.Location {
 
 // parseTZOffset parses a timezone offset like +05:30, -0800, +00:00, +00.
 // Uses a pre-built lookup table for common offsets to avoid allocation.
-func parseTZOffset(s string, off, length int) (*time.Location, bool) {
+//
+// It returns the offset in seconds beside the Location, which is not an extra
+// computation: totalSeconds below is what the Location is looked up by, and
+// throwing it away is what left makeTime asking time.Date to work it out again
+// from the instant. See makeTime.
+func parseTZOffset(s string, off, length int) (*time.Location, int, bool) {
 	if length < 3 {
-		return nil, false
+		return nil, 0, false
 	}
 
 	var sign int
@@ -998,12 +999,12 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 	case '-':
 		sign = -1
 	default:
-		return nil, false
+		return nil, 0, false
 	}
 
 	h, ok := parse2Digits(s, off+1)
 	if !ok || h > 23 {
-		return nil, false
+		return nil, 0, false
 	}
 
 	var m int
@@ -1014,30 +1015,30 @@ func parseTZOffset(s string, off, length int) (*time.Location, bool) {
 		// +HHMM
 		m2, ok2 := parse2Digits(s, off+3)
 		if !ok2 || m2 > 59 {
-			return nil, false
+			return nil, 0, false
 		}
 		m = m2
 	} else if length == 6 && s[off+3] == ':' {
 		// +HH:MM
 		m2, ok2 := parse2Digits(s, off+4)
 		if !ok2 || m2 > 59 {
-			return nil, false
+			return nil, 0, false
 		}
 		m = m2
 	} else {
-		return nil, false
+		return nil, 0, false
 	}
 
 	totalSeconds := sign * (h*3600 + m*60)
 
 	// Fast path: look up pre-built Location from table.
 	if loc := lookupTZByOffset(totalSeconds); loc != nil {
-		return loc, true
+		return loc, totalSeconds, true
 	}
 
 	// Slow path: an offset off the grid or past 14 hours. Cached per minute,
 	// so a column of them allocates on its first row and not on the rest.
-	return fallbackZone(totalSeconds), true
+	return fallbackZone(totalSeconds), totalSeconds, true
 }
 
 // Pre-built timezone abbreviation Locations — allocated once at init.
@@ -1087,40 +1088,40 @@ var (
 // here now. The other three were PRC, ROC and ROK, which are tzdata aliases for
 // countries rather than timezone abbreviations, and nobody writes them in a
 // timestamp. They are refused.
-func lookupTZAbbr(name string) (*time.Location, bool) {
+func lookupTZAbbr(name string) (*time.Location, int, bool) {
 	switch name {
 	case "UTC", "UCT":
-		return time.UTC, true
+		return time.UTC, 0, true
 	case "GMT":
-		return tzGMT, true
+		return tzGMT, 0, true
 	case "EST":
-		return tzEST, true
+		return tzEST, -5 * 3600, true
 	case "EDT":
-		return tzEDT, true
+		return tzEDT, -4 * 3600, true
 	case "CST":
-		return tzCST, true
+		return tzCST, -6 * 3600, true
 	case "CDT":
-		return tzCDT, true
+		return tzCDT, -5 * 3600, true
 	case "MST":
-		return tzMST, true
+		return tzMST, -7 * 3600, true
 	case "MDT":
-		return tzMDT, true
+		return tzMDT, -6 * 3600, true
 	case "PST":
-		return tzPST, true
+		return tzPST, -8 * 3600, true
 	case "PDT":
-		return tzPDT, true
+		return tzPDT, -7 * 3600, true
 	case "HST":
-		return tzHST, true
+		return tzHST, -10 * 3600, true
 	case "CET":
-		return tzCET, true
+		return tzCET, 1 * 3600, true
 	case "EET":
-		return tzEET, true
+		return tzEET, 2 * 3600, true
 	case "MET":
-		return tzMET, true
+		return tzMET, 1 * 3600, true
 	case "WET":
-		return tzWET, true
+		return tzWET, 0, true
 	}
-	return nil, false
+	return nil, 0, false
 }
 
 // isLeap is the full Gregorian rule. Testing only for divisibility by 4 gets
@@ -1212,7 +1213,24 @@ func lengthError(slen, want int) error {
 	return fmt.Errorf("dateparsa: layout describes %d of %d bytes", want, slen)
 }
 
-// makeTime builds the result, and is time.Date with a shortcut for UTC.
+// zoneOffsetUnknown is offSec for a Location whose offset this package did not
+// compute, which is Program.Tz and nothing else: the caller supplied it and it
+// may be a real zone with transitions.
+//
+// A real offset is at most 24 hours, so no parse can produce this value.
+const zoneOffsetUnknown = 1 << 30
+
+// programZone is the zone a program falls back to when its format writes none,
+// and what this package knows about that zone's offset.
+func programZone(tz *time.Location) (*time.Location, int) {
+	if tz == nil || tz == time.UTC {
+		return time.UTC, 0
+	}
+	return tz, zoneOffsetUnknown
+}
+
+// makeTime builds the result, and is time.Date with a shortcut for a zone whose
+// offset is known.
 //
 // time.Date costs 8.3 ns of a parse that costs 22 to 29, which makes it the
 // largest single line in this package by some way. Most of that is work this
@@ -1220,11 +1238,21 @@ func lengthError(slen, want int) error {
 // what offset applies at the instant it just computed, and for a zone with no
 // transitions the answer never depended on the instant.
 //
-// For UTC the offset is zero by definition, so the whole of it reduces to a
-// day count and some arithmetic: 5.9 ns against 8.3, measured on linux/arm64.
-// Anything else keeps time.Date, which is the only thing that reads a zone's
-// transitions correctly, and getting that wrong would move an instant by an
-// hour rather than fail.
+// It is known for every zone this package produces. parseTZOffset computes the
+// offset in order to look the Location up and used to throw it away;
+// lookupTZAbbr's sixteen answers are FixedZone values written down in the
+// source. So the arithmetic covers UTC, every numeric offset and every
+// abbreviation, which is every zone an input can write:
+//
+//	time.Date with a FixedZone      9.246 ns/op
+//	the arithmetic below            5.285 ns/op    -43%
+//
+// measured on linux/arm64 at +05:30.
+//
+// zoneOffsetUnknown keeps time.Date, and has to. Program.Tz is the caller's and
+// may be America/New_York, where the offset depends on the instant; answering
+// that from a single number would move a summer date by an hour rather than
+// fail, which is the one failure mode worse than refusing.
 //
 // The out-of-range values this still has to handle are real. A day is checked
 // against 1..31 without reference to the month, so "2024-02-31" reaches here,
@@ -1232,19 +1260,72 @@ func lengthError(slen, want int) error {
 // exactly as time.Date normalises them, because both are a count added to a
 // running total rather than a field written into a slot.
 // TestMakeTimeMatchesTimeDate and FuzzMakeTimeMatchesTimeDate hold that.
-func makeTime(year int, month time.Month, day, hour, min, sec, nsec int, loc *time.Location) time.Time {
-	if loc != time.UTC {
+func makeTime(year int, month time.Month, day, hour, min, sec, nsec int, loc *time.Location, offSec int) time.Time {
+	if offSec == zoneOffsetUnknown {
 		return time.Date(year, month, day, hour, min, sec, nsec, loc)
 	}
 	unix := daysFromCivil(year, int(month), day)*secondsPerDay +
-		int64(hour)*3600 + int64(min)*60 + int64(sec)
-	return time.Unix(unix, int64(nsec)).UTC()
+		int64(hour)*3600 + int64(min)*60 + int64(sec) - int64(offSec)
+	return time.Unix(unix, int64(nsec)).In(loc)
 }
 
 const secondsPerDay = 24 * 60 * 60
 
+// dayTable[y-dayTableLoYear] is the day count from 1970-01-01 to 1 January of
+// year y, and daysBeforeMonth[m] is the days from 1 January to the first of
+// month m in a common year. Between them they replace the five divisions
+// daysFromCivilExact runs with two loads and three adds.
+//
+// The range is the one real timestamps carry. Outside it daysFromCivil falls
+// through to the exact function, which is not a compromise: the two agree for
+// every year, and TestDayTableMatchesExact checks that across the whole table
+// and past both ends of it.
+//
+// 600 entries at four bytes is 2.4 KB, and it is BSS rather than rodata because
+// it is computed at init instead of written out: `make size` measured the
+// linked binary growing by 1,334 bytes, which is this file's init code and not
+// the table. A column parses one year or a few, so the entries it touches are
+// one cache line and stay hot.
+const (
+	dayTableLoYear = 1800
+	dayTableHiYear = 2400
+	dayTableSize   = dayTableHiYear - dayTableLoYear
+)
+
+var dayTable = func() (t [dayTableSize]int32) {
+	for i := range t {
+		t[i] = int32(daysFromCivilExact(dayTableLoYear+i, 1, 1))
+	}
+	return
+}()
+
+var daysBeforeMonth = [13]int32{0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334}
+
 // daysFromCivil returns the number of days from 1970-01-01 to the proleptic
 // Gregorian date year-month-day, which may be out of range in any field.
+//
+// The year and the month decide whether the table answers. The day does not and
+// must not: it is added to a day count rather than indexed on, so the 31st of
+// February is two days after the 29th in a leap year and three in a common one,
+// which is what time.Date answers and what the caller above relies on. A day of
+// zero, or of a million, goes through this arm unchanged.
+//
+// The two conversions to uint are the range checks. A year below the table or a
+// month below 1 wraps to a very large unsigned value and fails the same compare
+// as one above, so each bound costs one comparison rather than two.
+func daysFromCivil(year, month, day int) int64 {
+	if uint(year-dayTableLoYear) >= dayTableSize || uint(month-1) >= 12 {
+		return daysFromCivilExact(year, month, day)
+	}
+	d := int64(dayTable[year-dayTableLoYear]) + int64(daysBeforeMonth[month]) + int64(day) - 1
+	if month > 2 && isLeap(year) {
+		d++
+	}
+	return d
+}
+
+// daysFromCivilExact is the same answer without the table, for a year the table
+// does not hold and for the test that holds the table to it.
 //
 // This is Howard Hinnant's days_from_civil, shifting the year to start in March
 // so that the leap day lands at the end of it and the month-length pattern
@@ -1253,10 +1334,8 @@ const secondsPerDay = 24 * 60 * 60
 //
 // The month is normalised first, so a month of 13 or 0 means the next or the
 // previous year, as time.Date reads them. The day is not normalised and does not
-// need to be: it is added to a day count, so the 31st of February is two days
-// after the 29th in a leap year and three in a common one, which is what
-// time.Date answers.
-func daysFromCivil(year, month, day int) int64 {
+// need to be, for the reason above.
+func daysFromCivilExact(year, month, day int) int64 {
 	// Fold a month outside 1..12 into the year, the way time.Date's norm does.
 	if month < 1 || month > 12 {
 		m := month - 1

@@ -315,11 +315,21 @@ build:
 
 ## check: what the pre-commit hook runs
 .PHONY: check
-check: fmt-check vet lint test alloc
+check: fmt-check vet lint test alloc codegen
 
 ## ci: everything CI enforces
 .PHONY: ci
-ci: fmt-check vet lint test alloc vuln size fuzz
+ci: fmt-check vet lint test alloc codegen vuln size fuzz
+
+## codegen: fail if the compiler's bounds checks, inlining or escapes got worse
+.PHONY: codegen
+codegen:
+	@./scripts/codegen-gates.sh check
+
+## codegen-update: record today's codegen numbers (a deliberate act, say why)
+.PHONY: codegen-update
+codegen-update:
+	@./scripts/codegen-gates.sh update
 
 ## hooks: point git at .githooks (once per clone)
 .PHONY: hooks

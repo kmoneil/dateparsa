@@ -90,6 +90,26 @@ jobs:
       - name: Layout.Parse allocates zero times
         run: make alloc
 
+  codegen:
+    name: codegen gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Bounds checks, inline decisions and escapes, against a committed golden.
+      # Three properties the source argues for in comments and nothing measured
+      # until W23, which is the same argument the zero-alloc job above makes:
+      # they regress from a change several packages away and are invisible at
+      # review time.
+      #
+      # This runner is amd64 and a developer may not be. Every number the gate
+      # reads is architecture-independent, and the script says how that was
+      # established, so one golden serves both.
+      - name: bounds checks, inlining and escapes did not get worse
+        run: make codegen
+
   vuln:
     name: vulnerability scan
     runs-on: ubuntu-latest

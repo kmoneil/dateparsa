@@ -61,12 +61,18 @@ gh repo view "$REPO" >/dev/null 2>&1 || {
 # it here would require a context that only ever reports "skipped". The
 # regression half of fuzzing is inside the test legs anyway, where `go test`
 # runs the seed corpus and every committed crasher deterministically.
+#
+# `codegen gates` is here from W23. **Adding a name to this list before the job
+# that reports it exists on `main` makes every pull request unmergeable**, which
+# is the failure the paragraph above describes, so run this script only after
+# the change that adds the job has merged.
 CHECKS=(
 	"format, vet, lint"
 	"test (ubuntu-latest)"
 	"test (macos-latest)"
 	"test (windows-latest)"
 	"zero-alloc"
+	"codegen gates"
 	"vulnerability scan"
 	"size budget"
 )

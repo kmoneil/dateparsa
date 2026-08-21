@@ -1,0 +1,14 @@
+# The golden files are compared byte for byte against what a test regenerates,
+# and a test writes "\n". Windows CI checks out with CRLF by default, which
+# would fail the comparison on that platform and nowhere else, so these are
+# pinned to LF. The corpus golden is the one that made this necessary: it is
+# read back and diffed line by line, and a stray "\r" is a difference on every
+# line of it.
+testdata/corpus/golden.txt text eol=lf
+testdata/codegen/gates.txt text eol=lf
+benchmarks/baseline.txt text eol=lf
+
+# Shell scripts are run by CI and by the hooks, and a CRLF shebang is not a
+# shebang.
+*.sh text eol=lf
+.githooks/* text eol=lf

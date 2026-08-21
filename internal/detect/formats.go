@@ -28,15 +28,18 @@ type formatEntry struct {
 	// is a layout time.Parse refuses for two of them. Comparing the input at
 	// these positions is how the layout that comes back describes the input that
 	// was read.
-	litOffsets [8]uint8
+	// litOffsets[0] is the fraction's "." when hasFrac says the layout has one,
+	// and the literals follow it. See literalOffsets for why that order is
+	// load-bearing rather than tidy.
+	litOffsets [maxRespellOffsets]uint8
 	nLits      uint8
 
-	// fracOffset is where the fraction's "." sits, or noFracOffset. It is the
-	// one literal that may not be respelled, because ".000" is a token and
-	// writing another byte over its dot turns it into two literals: the layout
-	// would then read "00:00:00/000" and refuse "00:00:00/010". An input that
-	// spells it differently gets no Go layout rather than a wrong one.
-	fracOffset uint8
+	// hasFrac says litOffsets[0] is the fraction's ".". It is the one position
+	// that may not be respelled, because ".000" is a token and writing another
+	// byte over its dot turns it into two literals: the layout would then read
+	// "00:00:00/000" and refuse "00:00:00/010". An input that spells it
+	// differently gets no Go layout rather than a wrong one.
+	hasFrac bool
 
 	name   string
 	sig    []CharClass // Expected signature pattern

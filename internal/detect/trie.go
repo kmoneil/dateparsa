@@ -43,6 +43,28 @@ func (t *trie) lookup(sig *Signature) *formatEntry {
 	return node.entry
 }
 
+// prebuiltDefs holds every FormatDef buildTrie prebuilt, which are the defs a
+// Result carries by pointer rather than building per call.
+var prebuiltDefs []*compile.FormatDef
+
+// PrebuiltDefs returns the FormatDefs the trie hands back by pointer.
+//
+// It exists so the caller that owns the compiled representation can build one
+// of those per def at init and find it again by the pointer a Result carries,
+// rather than compiling the same def on every parse. A def in this slice is
+// immutable and shared: it is the same pointer every Result naming that format
+// holds, and a detector that builds its own def is therefore never one of
+// these. That identity is the whole guarantee, so the caller needs no other
+// key and this package needs no field to carry one.
+//
+// The slice is freshly made per call so a caller cannot reach the package's own
+// backing array. The pointers in it are the real ones, deliberately.
+func PrebuiltDefs() []*compile.FormatDef {
+	out := make([]*compile.FormatDef, len(prebuiltDefs))
+	copy(out, prebuiltDefs)
+	return out
+}
+
 // build constructs the trie from all known format definitions.
 func buildTrie() *trie {
 	t := &trie{}
@@ -58,6 +80,7 @@ func buildTrie() *trie {
 						GoLayout: formats[i].goLayout,
 						Fields:   formats[i].fields,
 					}
+					prebuiltDefs = append(prebuiltDefs, formats[i].def)
 				}
 				t.insert(&formats[i])
 			}

@@ -189,7 +189,11 @@ three allocations per row for a column of historical records, against a promise
 of zero.
 
 **The `flextime` caches hold layouts built from callers' input, they are shared
-between callers, and they are the only state here a caller can tell is there.**
+between callers, and they are the only *mutable* state here a caller can tell is
+there.** There is one other piece a caller can observe, added on 2026-08-21 and
+described under *The interned layouts* below, and the distinction between the
+two is the whole reason that one is not a hazard: it is written once at init
+from the compiled-in tables and never again.
 `FlexTime.Scan`, `FlexTime.UnmarshalText` and `FlexTime.UnmarshalJSON` each keep
 the layout the last value they saw was detected with, in a package-level
 `dateparsa.Parser`, one per entry point. `database/sql`, `encoding/json` and the
@@ -229,6 +233,29 @@ goroutines. `Parser` holds one piece of mutable state, the cached layout, in an
 `atomic.Pointer[Layout]`; the layout it points at is immutable, so a reader is
 never handed a half-written value and sharing a `Parser` across goroutines is
 safe. It used to be a plain field and a documented constraint on the caller.
+
+**The interned layouts are one `*Layout` per prebuilt trie format, built at init
+and handed to every caller who parses that format.** So `Parse("2024-03-15")` in
+one goroutine and `Parse("1999-12-31")` in another return the same pointer, and
+a caller can see that they do.
+
+Three things make it a different class of thing from the `flextime` caches
+above. It is derived from the compiled-in format tables and never from a
+caller's input, so nothing a caller writes can change what any other caller
+gets. It is written once, during package initialisation, before any goroutine
+exists to read it. And what it holds is immutable: `Layout` has no exported
+fields and no method writes to one, which
+`TestInternedLayoutHasNoWritableSurface` asserts by calling every method a
+caller can reach on a shared instance and comparing the value before and after.
+
+So it cannot change what a value parses to, and unlike the `flextime` caches it
+cannot change whether a value parses at all: a layout is used only for the input
+it was just detected from, never carried to the next one. `Parse` compiles a
+fresh program for anything the table does not answer exactly, which is any
+non-UTC timezone, any format with no year field, any respelled separator, and
+every fallback detector. `FuzzInternedLayoutMatchesFresh` compares the two paths
+over the corpus, and `FuzzFormatIDNamesItsDef` holds the index the table is keyed
+on to name the format it came from.
 
 ## Bounds
 
@@ -658,3 +685,5 @@ Update this document in the same change whenever you:
   `oracleLenient`, which is still empty
 - change the timezone abbreviation table or the fallback in `lookupTZAbbr`
 - change what an exported type promises about concurrent use
+- share one instance of an exported type between callers who used to get their
+  own, or widen the gate on the interned layouts

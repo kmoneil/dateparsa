@@ -11,11 +11,11 @@ import (
 	"github.com/kmoneil/dateparsa/internal/locale"
 )
 
-// globalTrie is built once at init time.
-var globalTrie *trie
+// globalSigTable is built once at init time.
+var globalSigTable *sigTable
 
 func init() {
-	globalTrie = buildTrie()
+	globalSigTable = buildSigTable()
 }
 
 // Result holds the outcome of format detection.
@@ -557,7 +557,7 @@ func detectFormat(s string, cfg Config) (Result, bool) {
 	// detects whether the input contains letters (sig.HasLetter), eliminating
 	// the need for a separate hasLetter pass over the input.
 	sig := Scan(s)
-	entry := globalTrie.lookup(&sig)
+	entry := globalSigTable.lookup(&sig)
 
 	// Step 2b: If the trie missed and the string contains letters, try textual month.
 	// This is ordered after the trie so that formats with timezone names (e.g.

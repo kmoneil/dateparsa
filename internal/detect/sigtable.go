@@ -2,52 +2,99 @@ package detect
 
 import "github.com/kmoneil/dateparsa/internal/compile"
 
-// trieNode is a node in the format signature trie.
-// Children are indexed by CharClass (0..5), keeping the structure compact.
-type trieNode struct {
-	children [numClasses]*trieNode
-	entry    *formatEntry // Non-nil if this node is a terminal (matches a format)
+// sigTable maps a packed signature to the format that declares it.
+//
+// It replaced a trie, and the reason is what a trie costs on this shape of key.
+// A trie walks one node per input position, and each node is a pointer the
+// previous node held, so a twenty-byte timestamp was twenty dependent loads
+// through 139 nodes of 56 bytes: nothing to overlap them with and a cache miss
+// available at every step. The whole key fits in four words, so there is
+// nothing to walk.
+//
+// Open addressing with linear probing, sized to a power of two well above the
+// number of entries, so a hit is one probe and a miss is one or two. Built once
+// at init and never written afterwards, which is what makes it safe to read
+// from every goroutine with no exclusion.
+type sigTable struct {
+	slots []sigSlot
+	mask  uint64
 }
 
-// trie is the root of the format signature trie.
-type trie struct {
-	root trieNode
+type sigSlot struct {
+	key   [sigWords]uint64
+	n     int32
+	entry *formatEntry
 }
 
-// insert adds a format entry to the trie keyed by its signature.
-func (t *trie) insert(e *formatEntry) {
-	node := &t.root
-	for _, cc := range e.sig {
-		child := node.children[cc]
-		if child == nil {
-			child = &trieNode{}
-			node.children[cc] = child
-		}
-		node = child
+// sigHash mixes the packed key and the length into a bucket index.
+//
+// The length is part of the key and not just of the compare. Two signatures can
+// pack identically and differ in length, because a class is three bits and zero
+// is CDigit: "DD" and "DDDD" are 0 in every word that matters, so length is the
+// only thing separating them. The compare below checks it too; this only has to
+// spread them.
+func sigHash(key *[sigWords]uint64, n int) uint64 {
+	h := uint64(n) * 0x9E3779B97F4A7C15
+	for _, w := range key {
+		h ^= w
+		h *= 0xC2B2AE3D27D4EB4F
 	}
-	node.entry = e
+	return h ^ h>>29
 }
 
-// lookup walks the trie with the given signature and returns the matching
-// format entry, or nil if no match.
-func (t *trie) lookup(sig *Signature) *formatEntry {
-	node := &t.root
-	for i := 0; i < sig.len; i++ {
-		cc := sig.buf[i]
-		child := node.children[cc]
-		if child == nil {
+// lookup returns the entry whose signature is exactly this one, or nil.
+func (t *sigTable) lookup(sig *Signature) *formatEntry {
+	i := sigHash(&sig.key, sig.len) & t.mask
+	for {
+		sl := &t.slots[i]
+		if sl.entry == nil {
 			return nil
 		}
-		node = child
+		if sl.n == int32(sig.len) && sl.key == sig.key {
+			return sl.entry
+		}
+		i = (i + 1) & t.mask
 	}
-	return node.entry
 }
+
+// insert adds an entry under its own signature. It panics on a collision
+// because two formats declaring the same signature is a defect in formats.go
+// that has no correct resolution at run time, and this runs at init, so the
+// panic is a build-time failure in every practical sense.
+// TestNoTwoFormatsShareASignature says the same thing where a reader will see it.
+func (t *sigTable) insert(e *formatEntry) {
+	var key [sigWords]uint64
+	w, sh := 0, uint(0)
+	for _, cc := range e.sig {
+		key[w] |= uint64(cc) << sh
+		sh += sigBitsPerClass
+		if sh >= sigClassesPerWord*sigBitsPerClass {
+			w, sh = w+1, 0
+		}
+	}
+	n := int32(len(e.sig))
+
+	i := sigHash(&key, int(n)) & t.mask
+	for t.slots[i].entry != nil {
+		if t.slots[i].n == n && t.slots[i].key == key {
+			panic("detect: two formats declare the signature of " + e.name)
+		}
+		i = (i + 1) & t.mask
+	}
+	t.slots[i] = sigSlot{key: key, n: n, entry: e}
+}
+
+// sigTableSlots is the table's length, a power of two comfortably above the
+// number of formats so that probing stays short. 33 entries in 128 slots is a
+// load factor of a quarter.
+const sigTableSlots = 128
 
 // prebuiltDefs holds every FormatDef buildTrie prebuilt, which are the defs a
 // Result carries by pointer rather than building per call.
 var prebuiltDefs []*compile.FormatDef
 
-// PrebuiltDefs returns the FormatDefs the trie hands back by pointer.
+// PrebuiltDefs returns the FormatDefs a signature-table hit hands back by
+// pointer.
 //
 // It exists so the caller that owns the compiled representation can build one
 // of those per def at init and find it again by the pointer a Result carries,
@@ -65,9 +112,10 @@ func PrebuiltDefs() []*compile.FormatDef {
 	return out
 }
 
-// build constructs the trie from all known format definitions.
-func buildTrie() *trie {
-	t := &trie{}
+// buildSigTable constructs the signature table from all known format
+// definitions.
+func buildSigTable() *sigTable {
+	t := &sigTable{slots: make([]sigSlot, sigTableSlots), mask: sigTableSlots - 1}
 	for _, formats := range [][]formatEntry{phase1Formats(), phase2Formats()} {
 		for i := range formats {
 			if len(formats[i].sig) > 0 {
@@ -203,7 +251,7 @@ func respellLiterals(e *formatEntry, s string) string {
 	return string(b)
 }
 
-// stampLiteralClasses gives every one-byte literal in a trie entry the
+// stampLiteralClasses gives every one-byte literal in a format entry the
 // character class of the signature position it sits at.
 //
 // The entries in formats.go declare their literals with no Aux, which used to

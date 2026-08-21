@@ -41,22 +41,14 @@ func TestPrebuiltDefsHoldsEveryPrebuiltEntry(t *testing.T) {
 	}
 }
 
-// forEachEntry walks every terminal entry in the global trie.
+// forEachEntry walks every entry in the global signature table.
 func forEachEntry(t *testing.T, fn func(*formatEntry)) {
 	t.Helper()
-	var walk func(*trieNode)
-	walk = func(n *trieNode) {
-		if n == nil {
-			return
-		}
-		if n.entry != nil {
-			fn(n.entry)
-		}
-		for _, c := range n.children {
-			walk(c)
+	for i := range globalSigTable.slots {
+		if e := globalSigTable.slots[i].entry; e != nil {
+			fn(e)
 		}
 	}
-	walk(&globalTrie.root)
 }
 
 // TestPrebuiltDefsIsACopy checks that a caller cannot reach the package's own

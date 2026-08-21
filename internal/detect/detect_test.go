@@ -249,7 +249,7 @@ func sigToString(sig *Signature) string {
 	chars := []byte("DLSWCX")
 	out := make([]byte, sig.len)
 	for i := 0; i < sig.len; i++ {
-		out[i] = chars[sig.buf[i]]
+		out[i] = chars[sig.At(i)]
 	}
 	return string(out)
 }
@@ -746,44 +746,35 @@ func TestLocaleMonthsMatchesTheLocaleData(t *testing.T) {
 // nobody notices. A literal at a digit position would be stamped ClassAny,
 // which is the one class that excludes digits, and the format would refuse the
 // input it matched on.
-func TestTrieLiteralsCarryTheirClass(t *testing.T) {
-	var walk func(n *trieNode)
+func TestSignatureTableLiteralsCarryTheirClass(t *testing.T) {
 	seen := 0
-	walk = func(n *trieNode) {
-		if e := n.entry; e != nil {
-			for _, f := range e.fields {
-				if f.Kind != compile.FLiteral {
-					continue
-				}
-				seen++
-				if f.Len != 1 {
-					t.Errorf("%s: literal at offset %d is %d bytes wide, and a class covers one",
-						e.name, f.Offset, f.Len)
-					continue
-				}
-				if int(f.Offset) >= len(e.sig) {
-					t.Errorf("%s: literal at offset %d is past its %d-class signature",
-						e.name, f.Offset, len(e.sig))
-					continue
-				}
-				cc := e.sig[f.Offset]
-				if cc == CDigit {
-					t.Errorf("%s: literal at offset %d sits at a CDigit position", e.name, f.Offset)
-					continue
-				}
-				if want := compile.AuxFor(litClassOf[cc]); f.Aux != want {
-					t.Errorf("%s: literal at offset %d has Aux %d, want %d for class %d",
-						e.name, f.Offset, f.Aux, want, cc)
-				}
+	forEachEntry(t, func(e *formatEntry) {
+		for _, f := range e.fields {
+			if f.Kind != compile.FLiteral {
+				continue
+			}
+			seen++
+			if f.Len != 1 {
+				t.Errorf("%s: literal at offset %d is %d bytes wide, and a class covers one",
+					e.name, f.Offset, f.Len)
+				continue
+			}
+			if int(f.Offset) >= len(e.sig) {
+				t.Errorf("%s: literal at offset %d is past its %d-class signature",
+					e.name, f.Offset, len(e.sig))
+				continue
+			}
+			cc := e.sig[f.Offset]
+			if cc == CDigit {
+				t.Errorf("%s: literal at offset %d sits at a CDigit position", e.name, f.Offset)
+				continue
+			}
+			if want := compile.AuxFor(litClassOf[cc]); f.Aux != want {
+				t.Errorf("%s: literal at offset %d has Aux %d, want %d for class %d",
+					e.name, f.Offset, f.Aux, want, cc)
 			}
 		}
-		for _, c := range n.children {
-			if c != nil {
-				walk(c)
-			}
-		}
-	}
-	walk(&globalTrie.root)
+	})
 
 	// A stamping pass that silently stopped matching anything would pass every
 	// assertion above.

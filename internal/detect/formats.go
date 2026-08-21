@@ -4,7 +4,8 @@ import "github.com/kmoneil/dateparsa/internal/compile"
 
 // formatEntry pairs a signature pattern with the format definition it matches.
 // Signatures use the same CharClass values as the scanner.
-// The first four fields are the ones a trie hit reads, and they are first for
+// The first four fields are the ones a signature-table hit reads, and they are
+// first for
 // that reason: def is what a matched entry returns, and goLayout, litOffsets and
 // nLits are what decides whether it can be returned as it stands. Putting them
 // together keeps that decision inside one cache line, where spreading them
@@ -16,7 +17,7 @@ type formatEntry struct {
 	// litOffsets are the byte positions of goLayout that it writes verbatim,
 	// computed at init from goLayout itself. nLits is how many of them are
 	// used; the array is inline rather than a slice because this is read on
-	// every trie hit and a slice header costs a load before the first compare.
+	// every table hit and a slice header costs a load before the first compare.
 	// Zero when there is no goLayout, or when the layout has no literals in it,
 	// as COMPACT_DATE does not.
 	//
@@ -172,7 +173,7 @@ func phase1Formats() []formatEntry {
 		},
 
 		// === Numeric with separator (DD/DD/DDDD, DD.DD.DDDD, DD-DD-DDDD) ===
-		// These are all ambiguous in the trie — the detect layer resolves
+		// These are all ambiguous in the table, and the detect layer resolves
 		// them by checking separator character and value ranges.
 		{
 			name:  "NUMERIC_SEP",

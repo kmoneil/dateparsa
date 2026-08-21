@@ -130,36 +130,58 @@ func parseWithConfig(input string, cfg config) (ParseResult, error) {
 		return ParseResult{}, buildAmbiguousError(input, s, cfg, result)
 	}
 
-	// The base year is compiled into the program rather than patched onto the
-	// result, so that the Layout returned below reproduces this call. Patching
-	// here left Parse("10:30:00") and Layout.Parse("10:30:00") disagreeing by
-	// two thousand years, and it could not tell a format with no year field
-	// from a year field that read 0, so Parse("0000-01-01") returned the
-	// current year.
-	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
-	if err != nil {
-		return ParseResult{}, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
-	}
-	if needsBaseYear {
-		by, ok := baseYear(cfg)
-		if !ok {
-			return ParseResult{}, baseYearError(input, cfg)
+	// A trie format compiled with the default timezone has a Layout built for
+	// it at init, and this is where that is spent: no Compile, no allocation,
+	// and the same *Layout handed to every caller who parses that format. See
+	// interned.go for the gate and for why sharing one is sound.
+	var (
+		layout *Layout
+		t      time.Time
+		err    error
+	)
+	if l := internedLayout(result, cfg); l != nil {
+		layout = l
+		t, err = l.program.Execute(s)
+	} else {
+		// The base year is compiled into the program rather than patched onto
+		// the result, so that the Layout returned below reproduces this call.
+		// Patching here left Parse("10:30:00") and Layout.Parse("10:30:00")
+		// disagreeing by two thousand years, and it could not tell a format
+		// with no year field from a year field that read 0, so
+		// Parse("0000-01-01") returned the current year.
+		program, needsBaseYear, cerr := compile.Compile(result.Def, cfg.timezone)
+		if cerr != nil {
+			return ParseResult{}, &ParseError{Input: input, Message: cerr.Error(), Cause: ErrNoMatch}
 		}
-		program.BaseYear = by
+		if needsBaseYear {
+			by, ok := baseYear(cfg)
+			if !ok {
+				return ParseResult{}, baseYearError(input, cfg)
+			}
+			program.BaseYear = by
+		}
+
+		// Executed from the stack copy and before the Layout exists, which is
+		// the order this had before interning and has to keep. Building the
+		// Layout first and running layout.program instead reads the program
+		// back out of memory the allocator has just handed over, and it cost
+		// Parse_TextualMonth +17.9% and Parse_Miss_Short +11.1% at p=0.000 on
+		// linux/arm64. It also allocated a Layout for a parse that then failed.
+		t, err = program.Execute(s)
+		if err == nil {
+			layout = &Layout{
+				program:  program,
+				goLayout: result.Def.GoLayout,
+				label:    result.Def.Name,
+
+				ambiguous:      result.Ambig,
+				ambiguityProne: result.AmbigProne,
+				trimsPadding:   true,
+			}
+		}
 	}
-	t, err := program.Execute(s)
 	if err != nil {
 		return ParseResult{}, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
-	}
-
-	layout := &Layout{
-		program:  program,
-		goLayout: result.Def.GoLayout,
-		label:    result.Def.Name,
-
-		ambiguous:      result.Ambig,
-		ambiguityProne: result.AmbigProne,
-		trimsPadding:   true,
 	}
 
 	return ParseResult{
@@ -200,6 +222,13 @@ func Detect(input string, opts ...Option) (*Layout, error) {
 	result, ok := detect.Detect(s, dcfg)
 	if !ok {
 		return nil, &ParseError{Input: input, Message: "no matching format found", Cause: ErrNoMatch}
+	}
+
+	// The same shared layout parseWithConfig uses, and it has to be the same
+	// one: Detect is documented as returning the layout Parse would have
+	// returned for this value.
+	if l := internedLayout(result, cfg); l != nil {
+		return l, nil
 	}
 
 	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)

@@ -326,6 +326,16 @@ check: fmt-check vet lint test alloc codegen
 .PHONY: ci
 ci: fmt-check vet lint test alloc codegen vuln size fuzz
 
+## corpus: fail if any input in the corpus parses to something different
+.PHONY: corpus
+corpus:
+	@go test -run '^TestCorpusGolden$$' -count=1 .
+
+## corpus-update: record what the corpus parses to now (say why in the commit)
+.PHONY: corpus-update
+corpus-update:
+	@CORPUS_UPDATE=1 go test -run '^TestCorpusGolden$$' -count=1 -v . | grep 'wrote '
+
 ## codegen: fail if the compiler's bounds checks, inlining or escapes got worse
 .PHONY: codegen
 codegen:

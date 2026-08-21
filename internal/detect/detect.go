@@ -611,11 +611,13 @@ func detectFormat(s string, cfg Config) (Result, bool) {
 	// for the canonical spelling, which is the one nearly every input uses, and
 	// builds a corrected def for the others.
 	if entry.def != nil {
-		gl := goLayoutFor(entry, s)
-		if gl == entry.goLayout {
+		// The question is only whether s spelled the entry's literals the way
+		// the entry does, and spelledCanonically answers it without a call.
+		// goLayoutFor is reached for "2024/03/15" and not for "2024-03-15".
+		if spelledCanonically(entry, s) {
 			return Result{Def: entry.def}, true
 		}
-		return newResult(entry.name, gl, entry.fields, AmbigNone, false), true
+		return newResult(entry.name, goLayoutFor(entry, s), entry.fields, AmbigNone, false), true
 	}
 	// Fallback for entries without pre-built defs.
 	return newResult(entry.name, goLayoutFor(entry, s), entry.fields, AmbigNone, false), true

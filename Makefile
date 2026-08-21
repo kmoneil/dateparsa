@@ -253,6 +253,11 @@ bench-update: bench
 	@cp benchmarks/current.txt benchmarks/baseline.txt
 	@rm -f benchmarks/baseline.env
 
+## bench-ab: the working tree against a base commit, interleaved on a quiet box
+.PHONY: bench-ab
+bench-ab:
+	@./scripts/bench-ab.sh
+
 ## bench-cloud: benchmark on a fresh Compute Engine VM, then delete it
 #
 # The point is repeatability. A laptop throttles, has a browser open, and is not

@@ -152,6 +152,35 @@ func BenchmarkDetect_Only(b *testing.B) {
 	}
 }
 
+// BenchmarkDetect_TrieMiss_Fallback is a trie miss that a fallback detector
+// then answers, which is what a textual month is. It is not detection failing:
+// it succeeds, 10x more expensively than a hit, because the signature lookup
+// refuses and detectTextualMonth builds a def and compiles a program.
+//
+// It exists because P17 proposed replacing the trie with a hash of the whole
+// packed signature, measured only hits, and nothing committed could contradict
+// it. A trie stops at the first class no format begins with, so a miss costs
+// what the input matched; a hash costs the whole key whatever the input. This
+// library misses on every textual format, every variable-width numeric, the ISO
+// week family and every respelled separator, so the miss is not the exception.
+//
+// Detect_Only above is the hit. Neither number means much without the other,
+// which is the point of having both.
+func BenchmarkDetect_TrieMiss_Fallback(b *testing.B) {
+	for b.Loop() {
+		Detect("March 15, 2024")
+	}
+}
+
+// BenchmarkDetect_NoMatch is detection actually refusing: every detector runs
+// and none of them answers. It is the cost a caller pays per line of a log that
+// holds no date, which is most lines of most logs.
+func BenchmarkDetect_NoMatch(b *testing.B) {
+	for b.Loop() {
+		Detect("not a date at all")
+	}
+}
+
 // BenchmarkVsStdlib benchmarks stdlib time.Parse with a known layout for comparison.
 func BenchmarkVsStdlib(b *testing.B) {
 	for b.Loop() {

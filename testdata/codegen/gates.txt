@@ -12,10 +12,10 @@ bce:internal/compile/fast.go 15
 bce:internal/compile/instructions.go 1
 bce:internal/compile/layout_parser.go 2
 bce:internal/compile/monthname.go 3
-bce:internal/detect/detect.go 96
+bce:internal/detect/detect.go 98
 bce:internal/detect/signature.go 5
 bce:internal/detect/skipwords.go 3
-bce:internal/detect/trie.go 17
+bce:internal/detect/trie.go 19
 
 [inline] watched functions: inlined, or the cost that stopped them
 inline:NormalizeTwoDigitYear inlined
@@ -26,7 +26,7 @@ inline:dayExists inlined
 inline:daysFromCivil cost=127
 inline:fastSlot inlined
 inline:fusesSeparator inlined
-inline:goLayoutFor cost=89
+inline:goLayoutFor cost=95
 inline:internedLayout inlined
 inline:isLeap inlined
 inline:litAccepts inlined
@@ -40,6 +40,7 @@ inline:parse4Digits inlined
 inline:parseFracSec inlined
 inline:respellLiterals inlined
 inline:sepOK inlined
+inline:spelledCanonically inlined
 
 [escape] values that reached the heap, per file
 escape:./compile.go 3

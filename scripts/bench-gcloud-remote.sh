@@ -187,6 +187,43 @@ run_bench() {
 		}
 	say "warm-up done, $(grep -c '^Benchmark' /tmp/warmup.txt || true) results discarded"
 
+	# Two trees measured against each other, alternating, on this one machine.
+	#
+	# The alternation is the whole point and is not a detail. Two runs taken
+	# separately, even on the same machine type in the same zone, differ by more
+	# than the change being measured often enough to be useless: a hot path
+	# measured 9 to 11 percent apart between two baselines three days apart, and
+	# neither number said whether that was the code or the host. Alternating
+	# gives both trees the same boot, the same thermal state and the same
+	# neighbours, because they get them in turn.
+	#
+	# One count per pass rather than BENCH_COUNT in one go, so the samples
+	# interleave rather than forming two blocks.
+	if [ -n "${BENCH_AGAINST:-}" ]; then
+		local basedir="$WORK-base"
+		mkdir -p "$basedir"
+		tar -xzf /tmp/dateparsa-src-base.tar.gz -C "$basedir"
+		say "A/B: $BENCH_COUNT alternating passes"
+		: > "$OUT/a.txt"; : > "$OUT/b.txt"
+		local pass=1
+		while [ "$pass" -le "$BENCH_COUNT" ]; do
+			(cd "$basedir" && taskset -c "$BENCH_CPUS" env GOMAXPROCS="$BENCH_GOMAXPROCS" \
+				make bench BENCH_COUNT=1 BENCH_TIMEOUT="$BENCH_TIMEOUT" >/dev/null 2>&1) || true
+			cat "$basedir/benchmarks/current.txt" >> "$OUT/a.txt" 2>/dev/null || true
+			(cd "$WORK" && taskset -c "$BENCH_CPUS" env GOMAXPROCS="$BENCH_GOMAXPROCS" \
+				make bench BENCH_COUNT=1 BENCH_TIMEOUT="$BENCH_TIMEOUT" >/dev/null 2>&1) || true
+			cat "$WORK/benchmarks/current.txt" >> "$OUT/b.txt" 2>/dev/null || true
+			say "pass $pass of $BENCH_COUNT done"
+			pass=$((pass + 1))
+		done
+		if [ ! -s "$OUT/a.txt" ] || [ ! -s "$OUT/b.txt" ]; then
+			say "one side produced nothing"
+			return 1
+		fi
+		say "$(grep -c '^Benchmark' "$OUT/a.txt" || true) base lines, $(grep -c '^Benchmark' "$OUT/b.txt" || true) head lines"
+		return 0
+	fi
+
 	# The measured run goes through `make bench` so that the flags are the ones
 	# the Makefile defines and not a second copy of them that drifts.
 	say "measured run: -count=$BENCH_COUNT on cores $BENCH_CPUS, GOMAXPROCS=$BENCH_GOMAXPROCS"

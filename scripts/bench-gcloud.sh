@@ -564,6 +564,7 @@ start_remote() {
 		BENCH_SOURCE_DESC='$SOURCE_DESC' \
 		BENCH_TURBO='${BENCH_TURBO:-unset}' \
 		BENCH_THREADS_PER_CORE='$BENCH_THREADS_PER_CORE' \
+		BENCH_AGAINST='${BENCH_AGAINST:-}' \
 		/tmp/bench-remote.sh --detach"
 }
 
@@ -616,17 +617,22 @@ poll_remote() {
 # ── Subcommands ──────────────────────────────────────────────────────────────
 
 cmd_run() {
-	local update="" dirty=""
+	local update="" dirty="" against=""
 
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		--update) update=1 ;;
-		--dirty)  dirty=1 ;;
-		--keep)   KEEP_INSTANCE=1 ;;
+		--update)  update=1 ;;
+		--dirty)   dirty=1 ;;
+		--keep)    KEEP_INSTANCE=1 ;;
+		--against) shift; against="${1:-}"; [ -n "$against" ] || die "--against needs a ref" ;;
 		*) die "unknown flag: $1" ;;
 		esac
 		shift
 	done
+
+	if [ -n "$against" ] && [ -n "$update" ]; then
+		die "--against measures two trees against each other and produces no baseline; drop --update"
+	fi
 
 	preflight
 
@@ -635,6 +641,26 @@ cmd_run() {
 	trap cleanup EXIT INT TERM HUP
 
 	pack_source "$SCRATCH/src.tar.gz" "$dirty"
+	local headdesc="$SOURCE_DESC"
+
+	# --against packs a second tree and the VM alternates between the two. One
+	# machine, one boot, one thermal state, samples taken in turn.
+	#
+	# Two separate runs cannot answer the same question and it took a shipped
+	# regression to learn why. The hot path measured 9 to 11 percent slower
+	# between two baselines taken three days apart on two rented machines, and
+	# nothing in either number said whether that was the code or the host. A
+	# local A/B could not settle it either: this repository is developed on
+	# arm64 and the baseline machine is amd64, so "the hot path did not move"
+	# was true where it was measured and untested where it counts.
+	local basedesc=""
+	if [ -n "$against" ]; then
+		local baseref
+		baseref="$(git -C "$REPO_ROOT" rev-parse --short=12 "$against")" 			|| die "--against: no such ref: $against"
+		step "packing $baseref to measure against"
+		git -C "$REPO_ROOT" archive --format=tar "$against" | gzip > "$SCRATCH/src-base.tar.gz"
+		basedesc="commit $baseref"
+	fi
 
 	create_instance
 	wait_for_ssh
@@ -642,9 +668,33 @@ cmd_run() {
 	step "uploading source and runner"
 	push "$SCRATCH/src.tar.gz" "/tmp/dateparsa-src.tar.gz"
 	push "$REPO_ROOT/scripts/bench-gcloud-remote.sh" "/tmp/bench-remote.sh"
+	if [ -n "$against" ]; then
+		push "$SCRATCH/src-base.tar.gz" "/tmp/dateparsa-src-base.tar.gz"
+	fi
 
+	BENCH_AGAINST="$against"
 	start_remote
 	poll_remote
+
+	if [ -n "$against" ]; then
+		step "fetching both sides"
+		pull "/tmp/bench-out/a.txt" "$OUT_DIR/ab-base.txt" || true
+		pull "/tmp/bench-out/b.txt" "$OUT_DIR/ab-head.txt" || true
+		if [ "$POLL_STATE" != "done" ]; then
+			pull "/tmp/bench-out/run.log" "$OUT_DIR/current.log" 2>/dev/null || true
+			die "the benchmark did not complete (state '$POLL_STATE')"
+		fi
+		log ""
+		log "base: $basedesc"
+		log "head: $headdesc"
+		log ""
+		if command -v benchstat >/dev/null 2>&1; then
+			benchstat "$OUT_DIR/ab-base.txt" "$OUT_DIR/ab-head.txt" || true
+		else
+			log "benchstat is not installed; the two files are in benchmarks/ab-*.txt"
+		fi
+		return 0
+	fi
 
 	step "fetching results"
 	pull "/tmp/bench-out/bench.txt" "$OUT_DIR/current.txt" || true

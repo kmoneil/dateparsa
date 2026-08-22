@@ -277,6 +277,11 @@ bench-cloud:
 bench-cloud-update:
 	@scripts/bench-gcloud.sh run --update
 
+## bench-cloud-ab: two commits against each other, alternating on one rented VM
+.PHONY: bench-cloud-ab
+bench-cloud-ab:
+	@scripts/bench-gcloud.sh run --against $(or $(BASE),origin/main)
+
 ## bench-cloud-dirty: same as bench-cloud, but measure the working tree
 .PHONY: bench-cloud-dirty
 bench-cloud-dirty:

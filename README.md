@@ -24,7 +24,7 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 
 Detection and parsing are separate problems, and the detection result is
 reusable. `Parse` hands back the time **and** a compiled `Layout`, and that
-layout re-parses the same format with zero allocations, at 24.6 ns for an ISO
+layout re-parses the same format with zero allocations, at 26.9 ns for an ISO
 date. The cost of not knowing the format is paid once per column, not once per
 row.
 
@@ -48,7 +48,7 @@ row.
 
 ## Why dateparsa
 
-**When you already know the format**, use `time.Parse`. It's 44 ns on the machine the Performance section names, zero allocs, stdlib. Nothing should replace it.
+**When you already know the format**, use `time.Parse`. It's 42 ns on the machine the Performance section names, zero allocs, stdlib. Nothing should replace it.
 
 **When you don't know the format** — CSV imports, log ingestion, API responses from third parties, user-submitted data, multi-source pipelines — that's where dateparsa comes in.
 
@@ -91,7 +91,7 @@ fmt.Println(result.Ambiguous) // false
 result, _ := dateparsa.Parse("2024-03-15T10:30:00Z")
 layout := result.Layout
 
-// Parse millions, zero alloc, 33 ns/op for this format
+// Parse millions, zero alloc, 36 ns/op for this format
 for _, row := range rows {
     t, err := layout.Parse(row)
     // ...
@@ -495,9 +495,17 @@ instance that produced them, down to the zone, the image and the kernel.
 **Regression tracking** below says what it costs and how it is torn down.
 
 Spread across the ten runs has a median of 1.2%. Six of the 66 benchmarks exceed
-4% and the worst is 6.5%, so a difference smaller than a few percent is the
-machine and not the code. Those are the numbers to hold a claimed improvement
-against, and `make bench-cloud` prints benchstat's own confidence intervals.
+4% and the worst is 6.5%, so a difference smaller than a few percent **within
+one run** is the machine and not the code.
+
+Those figures do not carry between runs, and that is the trap they invite.
+`make bench-cloud` rents a machine of a type, not the machine: the control
+benchmark, which contains none of this library's code, has moved 20% between
+two runs of identical source on the same type in the same zone a day apart. So
+a baseline is a snapshot of one host on one day, and a delta between two of them
+says nothing on its own about a change. `make bench-cloud-ab` is what answers
+that question: two commits on one rented machine, alternating, with benchstat
+over the pair.
 
 It was an Apple M2 Max until 2026-08-19. The reason for moving is the history of
 this section: the tables were once split across two machines and labelled as
@@ -541,16 +549,36 @@ wider than 32 bytes, and none for the rest, which is most of them.
 ### Hot path (compiled Layout reuse)
 
 Median of the ten runs in `benchmarks/baseline.txt`, on the machine named above.
-These five spread at most 4.2% across those ten runs, which is the figure a
-claimed improvement has to clear before it is an improvement.
+These spread at most 4.3% across those ten runs, which is the figure a claimed
+improvement has to clear **within one run of one machine**.
 
-| Operation                       | ns/op | Allocs | vs `time.Parse` |
-| ------------------------------- | ----- | ------ | --------------- |
-| `Layout.Parse` (compact date)   | 23.1  | 0      | 0.5x            |
-| `Layout.Parse` (ISO date)       | 24.6  | 0      | 0.6x            |
-| `Layout.Parse` (ISO datetime+Z) | 33.3  | 0      | 0.8x            |
-| `Parser` (cached layout)        | 35.6  | 0      | 0.8x            |
-| `time.Parse` (stdlib baseline)  | 43.9  | 0      | 1.0x            |
+Between two machines it is a different and larger figure, and treating the
+first as though it were the second is the easiest way to report a regression
+that is not there. `BenchmarkVsStdlib` calls `time.Parse` and contains none of
+this library's code, so it is the control: it has moved 20% between two runs of
+identical code on the same machine type in the same zone a day apart. A delta
+against a baseline taken on another rented machine is therefore not evidence
+about the code, whatever its p-value. `make bench-cloud-ab` exists for that
+reason: it puts both trees on one machine and alternates between them, which is
+the only comparison here that measures a change rather than a host.
+
+| Operation                          | ns/op | Allocs | vs `time.Parse` |
+| ---------------------------------- | ----- | ------ | --------------- |
+| `Layout.Parse` (compact date)      | 25.7  | 0      | 0.6x            |
+| `Layout.Parse` (ISO date)          | 26.9  | 0      | 0.6x            |
+| `Layout.Parse` (ISO datetime+Z)    | 36.0  | 0      | 0.9x            |
+| `Parser` (cached layout)           | 36.5  | 0      | 0.9x            |
+| `Layout.Parse` (zone abbreviation) | 42.7  | 0      | 1.0x            |
+| `Layout.Parse` (numeric offset)    | 45.9  | 0      | 1.1x            |
+| `time.Parse` (stdlib baseline)     | 42.2  | 0      | 1.0x            |
+
+The two zone rows are new to this table and are the point of the change that
+moved it. A timestamp carrying a zone used to hand the whole instant to
+`time.Date`, which asks the location what offset applies at an instant this
+package has just derived; the offset was already known, because parsing the
+zone is what computed it. Those rows fell 17 to 19 percent. The rows above them
+rose 1.6 to 3.4 percent, which is the same change paying for itself, and the
+trade is deliberate: a zone is what most real timestamps carry.
 
 <details>
 <summary><b>Against time.Parse on the same format, and what the fast path costs Detect</b></summary>
@@ -561,10 +589,10 @@ is the source, same machine and method as above.
 
 | Format       | dateparsa | `time.Parse` |          |
 | ------------ | --------- | ------------ | -------- |
-| SQL datetime | 31.6 ns   | 125 ns       | **4.0x** |
-| ISO date     | 24.4 ns   | 75.7 ns      | **3.1x** |
-| US slash     | 24.9 ns   | 72.2 ns      | **2.9x** |
-| RFC 3339     | 32.2 ns   | 42.3 ns      | **1.3x** |
+| SQL datetime | 34.6 ns   | 125 ns       | **3.6x** |
+| ISO date     | 25.6 ns   | 76.6 ns      | **3.0x** |
+| US slash     | 25.3 ns   | 72.5 ns      | **2.9x** |
+| RFC 3339     | 35.2 ns   | 41.9 ns      | **1.2x** |
 
 Zero allocations on every row, both sides. RFC 3339 is close because it is the
 one layout the standard library hand-writes a dedicated parser for; the other
@@ -578,15 +606,21 @@ of the thirty-one supported formats qualify, including every one above;
 a weekday, a variable-width number, or an ISO week, and they run the instruction
 interpreter as before.
 
-The trade is that `Detect` on its own got **16% slower**: it does the planning
-and never runs the program, so it pays and does not collect. That percentage is
-an A/B across two commits, measured on `linux/arm64` when the change landed
-(137 ns to 160 ns), and it is not re-measurable here because only one of the two
-commits is checked out. `Detect` measures 221 ns on the machine this section
-names. `Parse`, which does run the program, is flat to slightly faster, and
-anything that reuses the layout is a third to a half faster. For a library whose
-reason to exist is parsing the second row through the ten-millionth with the
-format found on the first, that is the right side of the trade.
+The trade when that landed was that `Detect` on its own got **16% slower**: it
+does the planning and never runs the program, so it pays and does not collect.
+That percentage is an A/B across two commits, measured on `linux/arm64` at the
+time (137 ns to 160 ns), and it is not re-measurable here because only one of
+the two commits is checked out. `Parse`, which does run the program, was flat to
+slightly faster, and anything reusing the layout a third to a half faster. For a
+library whose reason to exist is parsing the second row through the
+ten-millionth with the format found on the first, that was the right side of the
+trade.
+
+**That planning is no longer done per call and `Detect` is 104 ns**, against the
+221 ns this paragraph described. The program a trie format compiles to is
+decided by the format, the timezone and the base year, so it is built once at
+init and the same `Layout` is handed to every caller. The planning cost is still
+paid; it is paid once for the process rather than once for the call.
 
 </details>
 
@@ -595,23 +629,34 @@ format found on the first, that is the right side of the trade.
 
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| Unix timestamp       | 110   | 1      |
-| Compact date         | 174   | 1      |
-| ISO ordinal          | 185   | 2      |
-| ISO 8601 date        | 187   | 1      |
-| SQL datetime         | 248   | 1      |
-| ISO 8601 datetime    | 260   | 1      |
-| ISO week date        | 302   | 2      |
-| SQL datetime + frac6 | 307   | 1      |
-| Ambiguous slash      | 318   | 2      |
-| Textual month        | 494   | 2      |
+| Compact date         | 97.7  | 0      |
+| ISO 8601 date        | 103   | 0      |
+| Unix timestamp       | 115   | 1      |
+| Compact datetime     | 123   | 0      |
+| SQL datetime         | 132   | 0      |
+| ISO 8601 datetime    | 136   | 0      |
+| RFC 3339             | 160   | 0      |
+| SQL datetime + frac6 | 161   | 0      |
+| ISO ordinal          | 191   | 2      |
+| Time with AM/PM      | 277   | 1      |
+| ISO week date        | 307   | 2      |
+| Ambiguous slash      | 312   | 2      |
+| Textual month        | 530   | 2      |
 
-One allocation is the `Layout` the call returns. A format the trie matches needs
-nothing else, because its fields were built at init. A format that falls through
-to a detector needs one more, holding the fields it worked out and the
-definition that describes them, and that is the whole of the second column
-above: it was four for a textual month and ten for `03/15/2024 10:30:00`, in
-scratch slices that were dead before `Parse` returned.
+**Most of these allocate nothing at all**, which is the second column and is
+newer than the first. A format the trie matches compiles to a program decided
+by the format, the timezone and the base year, and none of those depends on the
+input, so the `Layout` for it is built once at init and the same pointer is
+handed to every caller. That took a cold `Parse` of those formats from one
+allocation to none and about 45 percent off the time, and it is why the fastest
+rows here now cost less than a single `time.Parse`.
+
+The rows that still allocate are the ones the shared layout cannot answer. A
+time with no year field reads its base year from the clock, so its program
+differs per call. A format that falls through to a detector builds the fields it
+worked out and the definition describing them, which is the second allocation:
+it was four for a textual month and ten for `03/15/2024 10:30:00`, in scratch
+slices that were dead before `Parse` returned.
 
 These rows are the expensive path and are meant to be. Detection describes every
 byte of its input and refuses a numeric part wider than the field that reads it,
@@ -623,8 +668,8 @@ hot path table is what every row after the first costs.
 
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
-| `Layout.Parse` 10M rows       | 327ms | 32.7 ns |
-| `Parser.ParseColumn` 10M rows | 459ms | 45.9 ns |
+| `Layout.Parse` 10M rows       | 363ms | 36.3 ns |
+| `Parser.ParseColumn` 10M rows | 435ms | 43.5 ns |
 
 A column costs one detection and then a compiled parse per row. The difference
 between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
@@ -765,8 +810,21 @@ is as likely to be the machine as the change.
 ```bash
 make bench-cloud          # measure, print the delta, delete the VM
 make bench-cloud-update   # the same, and promote the result to the baseline
+make bench-cloud-ab       # two commits against each other on ONE VM
 make bench-cloud-reap     # delete anything a crashed run left behind
 ```
+
+`make bench-cloud-ab BASE=<ref>` is the one to reach for when the question is
+"did my change do this". It packs the working tree and `<ref>`, uploads both,
+and alternates between them on a single machine, so both trees see the same
+boot, the same thermal state and the same neighbours. The other targets produce
+a snapshot; only this one produces a comparison.
+
+There is also `make bench-ab BASE=<ref>`, which does the same thing locally and
+for free. It waits for the machine to go quiet before it starts and refuses to
+report a row whose spread is too wide to mean anything. **It measures whatever
+architecture you are sitting at**, which is not necessarily the one the baseline
+names, so a hot-path claim wants the cloud form before it is believed.
 
 `scripts/bench-gcloud.sh` rents one Compute Engine VM, measures on it, and gives
 it back. The point is that the machine is the same one every time:

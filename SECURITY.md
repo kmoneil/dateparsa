@@ -504,6 +504,17 @@ column. Those report `Ambiguous` now and strict mode refuses them. The weekday
 name in the RFC 850 form would settle it, and this library skips weekday names
 without reading them, so it does not have that evidence to use.
 
+**A leading year settles the order of the parts after it.** `resolveYearMonthDay`
+identified which part held the year and then ran the month-versus-day step over
+the two that were left, from whichever end the year came. For a leading year
+that step has nothing to decide, and guessing produced an ambiguity that was not
+in the input and a reading that was not a format: `70/01/02` reported
+`Ambiguous`, and strict mode offered the first of February 1970 labelled
+`YY/DD/MM`. A caller reading the labels to decide which column their data used
+was being offered an ordering nothing writes. `70/01/02` is certain now, at the
+instant it always returned, and `70/15/02` is refused rather than accepted as
+the fifteenth: reading the parts in that order is the only way it ever parsed.
+
 **A word can be ambiguous as well as a number.** Hindi writes both yesterday and
 tomorrow as `कल` and tells them apart with the verb, which a date string does not
 have. That word now reports `Ambiguous` and refuses under strict mode with both

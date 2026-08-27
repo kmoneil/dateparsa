@@ -415,6 +415,12 @@ When a date like `01/02/2024` could be MM/DD or DD/MM:
    it: `13/01/2024` needed no guess and its layout is still the one that meets
    `01/02/2024` two rows later.
 
+A leading year settles the two parts after it, so there is no month-versus-day
+question left to report: `70/01/02` is the second of January 1970 and reports
+nothing. Every format that writes the year first writes ISO order after it, and
+`YY/DD/MM` is not a format anybody writes, which is why `70/15/02` is refused
+rather than read as the fifteenth.
+
 Each interpretation is labelled with the reading it carries, and the labels name
 the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, and
 `MM/DD/YY` where the year is written with two digits.

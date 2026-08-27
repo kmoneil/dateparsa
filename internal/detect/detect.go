@@ -1159,10 +1159,16 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		v1Offset = 0
 		v2Offset = len(parts[0]) + 1
 	} else if first > 31 || len(parts[0]) == 4 {
-		// Year is first: YYYY/??/??
-		v1, v2 = second, third
-		v1Offset = len(parts[0]) + 1
-		v2Offset = len(parts[0]) + 1 + len(parts[1]) + 1
+		// Year is first, and that settles the other two rather than leaving
+		// them to step 2: a format that writes the year first writes ISO order
+		// after it, and YY/DD/MM is not a format anybody writes. Step 2 used to
+		// run here and guess, so "70/01/02" came back ambiguous and strict mode
+		// offered 1970-02-01 under the label YY/DD/MM.
+		m, d, ok := isoOrderParts(parts, second, third)
+		if !ok {
+			return datePart{}, datePart{}, AmbigNone, false
+		}
+		return m, d, AmbigNone, true
 	} else if m, d, ok := yearFirstParts(parts, second, third, cfg); ok {
 		// All three parts are small, and the caller said their data can be
 		// year-first, so "01/02/03" is 2001-02-03 rather than 2003-01-02.
@@ -1249,6 +1255,12 @@ func yearFirstParts(parts []string, second, third int, cfg Config) (month, day d
 	if len(parts[0]) != 2 {
 		return datePart{}, datePart{}, false
 	}
+	return isoOrderParts(parts, second, third)
+}
+
+// isoOrderParts reads the two parts that follow a leading year as the month and
+// then the day, and reports whether they can be read that way at all.
+func isoOrderParts(parts []string, second, third int) (month, day datePart, ok bool) {
 	if second < 1 || second > 12 || third < 1 || third > 31 {
 		return datePart{}, datePart{}, false
 	}

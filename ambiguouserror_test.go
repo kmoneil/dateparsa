@@ -573,3 +573,57 @@ func TestStrictModeYearFirstCarriesEveryReading(t *testing.T) {
 		}
 	}
 }
+
+// TestLeadingYearSettlesTheOrder pins that a date whose first part can only be
+// the year leaves no month-versus-day question behind it.
+//
+// resolveYearMonthDay identified the year and then ran the month-versus-day
+// step over the two parts that were left, whichever end the year came from. For
+// a leading year that step has nothing to decide: every format that writes the
+// year first writes ISO order after it, and YY/DD/MM is not a format anybody
+// writes. It guessed anyway, so "70/01/02" came back with Ambiguous true and
+// strict mode offered 1970-02-01 under the label YY/DD/MM, a reading of bytes
+// no writer produced.
+//
+// The instants below are what the lenient path already answered. What moves is
+// the flag and the second interpretation, and the two refusals at the end,
+// which used to parse only by reading the parts in that order.
+func TestLeadingYearSettlesTheOrder(t *testing.T) {
+	certain := []struct {
+		in   string
+		want string
+	}{
+		{"70/01/02", "1970-01-02"},
+		{"70-1-2", "1970-01-02"},
+		{"70/1/2", "1970-01-02"},
+		{"70-1-17", "1970-01-17"},
+		{"32-1-17", "2032-01-17"},
+	}
+	for _, c := range certain {
+		r, err := Parse(c.in)
+		if err != nil {
+			t.Errorf("Parse(%q) = %v, want %s with no guess reported", c.in, err, c.want)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("Parse(%q) = %s, want %s", c.in, got, c.want)
+		}
+		if r.Ambiguous {
+			t.Errorf("Parse(%q) reports a guess; the leading part can only be the "+
+				"year and ISO order follows a leading year", c.in)
+		}
+		if _, err := ParseWith(c.in, WithStrictMode(true)); err != nil {
+			t.Errorf("ParseWith(%q, strict) = %v, want the answer an input that "+
+				"needed no guess has always given", c.in, err)
+		}
+	}
+
+	// The month is out of range in ISO order, and reading it as YY/DD/MM is
+	// what used to accept it. There is no other reading left.
+	for _, in := range []string{"70/15/02", "70/13/01"} {
+		if r, err := Parse(in); err == nil {
+			t.Errorf("Parse(%q) = %s, want a refusal: %q reads as a month only in "+
+				"YY/DD/MM, which nothing writes", in, r.Time.Format("2006-01-02"), in)
+		}
+	}
+}

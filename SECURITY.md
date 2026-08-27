@@ -515,6 +515,18 @@ was being offered an ordering nothing writes. `70/01/02` is certain now, at the
 instant it always returned, and `70/15/02` is refused rather than accepted as
 the fifteenth: reading the parts in that order is the only way it ever parsed.
 
+**Every reading a numeric date has is offered, not every reading the chosen one
+suggests.** `fieldOrderReadings` built the alternatives by swapping the month
+and the day of the def Detect chose, with a second branch bolted on beside it
+for the year-first case. Each half was right for the def it was written for and
+wrong for the other, and which half ran was decided by the ambiguity kind rather
+than by where the year actually sat. The set is built from the three positions
+now, against the three orderings that are formats, so a def with the year at
+either end gets the same treatment. The visible change is that `01/02/03`
+carries `YY/MM/DD` 2001-02-03 as well as the two year-last readings whether or
+not `WithPreferYearFirst` is set: the option decides which reading is chosen,
+and it never decided which ones exist.
+
 **A word can be ambiguous as well as a number.** Hindi writes both yesterday and
 tomorrow as `कल` and tells them apart with the verb, which a date string does not
 have. That word now reports `Ambiguous` and refuses under strict mode with both

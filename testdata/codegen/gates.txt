@@ -55,7 +55,7 @@ escape:internal/compile/compiler.go 9
 escape:internal/compile/execute.go 27
 escape:internal/compile/fast.go 4
 escape:internal/compile/layout_parser.go 17
-escape:internal/detect/detect.go 101
+escape:internal/detect/detect.go 100
 escape:internal/detect/formats.go 66
 escape:internal/detect/skipwords.go 1
 escape:internal/detect/trie.go 8

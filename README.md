@@ -425,11 +425,13 @@ Each interpretation is labelled with the reading it carries, and the labels name
 the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, and
 `MM/DD/YY` where the year is written with two digits.
 
-Most ambiguous inputs have two readings. One has three: with
-`WithPreferYearFirst`, a date whose three parts are all small leaves the year's
-position open as well as the month's, so `01/02/03` is `YY/MM/DD` 2001-02-03,
-`MM/DD/YY` 2003-01-02, or `DD/MM/YY` 2003-02-01. Strict mode returns all three,
-with the one the preferences chose first.
+Most ambiguous inputs have two readings. One shape has three: a date whose three
+parts are all small leaves the year's position open as well as the month's, so
+`01/02/03` is `YY/MM/DD` 2001-02-03, `MM/DD/YY` 2003-01-02, or `DD/MM/YY`
+2003-02-01. Strict mode returns all three, with the one the preferences chose
+first. `WithPreferYearFirst` decides which one that is; it does not decide
+whether the year-first reading is offered, because whether the bytes can be read
+that way is a property of the input.
 
 A month name and a bare number is the other ambiguous shape, and it is reported
 the same way. `March 15` is the fifteenth of March or March 2015, because

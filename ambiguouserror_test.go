@@ -2,6 +2,8 @@ package dateparsa
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -411,8 +413,13 @@ func TestStrictModeLabelsTheReadingItCarries(t *testing.T) {
 		{"1/2/2024", map[string]string{"MM/DD/YYYY": "2024-01-02", "DD/MM/YYYY": "2024-02-01"}},
 		// A two-digit year is named YY, because the label names the reading and
 		// "01/02/03" is not a four-digit year.
-		{"01/02/03", map[string]string{"MM/DD/YY": "2003-01-02", "DD/MM/YY": "2003-02-01"}},
-		{"01-02-03", map[string]string{"MM/DD/YY": "2003-01-02", "DD/MM/YY": "2003-02-01"}},
+		//
+		// Three parts that are all small leave the year's position open as well
+		// as the month's, so these carry the year-first reading too. The
+		// four-digit cases above do not: a year already sits at the end of them
+		// and the leading part would have to be four bytes wide to hold another.
+		{"01/02/03", map[string]string{"MM/DD/YY": "2003-01-02", "DD/MM/YY": "2003-02-01", "YY/MM/DD": "2001-02-03"}},
+		{"01-02-03", map[string]string{"MM/DD/YY": "2003-01-02", "DD/MM/YY": "2003-02-01", "YY/MM/DD": "2001-02-03"}},
 		{"01/02/2024 10:30:00", map[string]string{"MM/DD/YYYY": "2024-01-02", "DD/MM/YYYY": "2024-02-01"}},
 	}
 
@@ -626,4 +633,140 @@ func TestLeadingYearSettlesTheOrder(t *testing.T) {
 				"YY/DD/MM, which nothing writes", in, r.Time.Format("2006-01-02"), in)
 		}
 	}
+}
+
+// labelledDate reads back what an interpretation's label claims about the
+// input, so a test can check the label against the instant beside it rather
+// than against a table somebody typed.
+//
+// It returns the month and day the label names and the digits it names as the
+// year. The century is deliberately not computed: the two-digit pivot is the
+// parser's business and asserting the last two digits catches a reading that
+// took the wrong part without pinning a rule this test does not own.
+func labelledDate(t *testing.T, label string, parts [3]int) (month, day, yearDigits int, ok bool) {
+	t.Helper()
+	names := strings.Split(label, "/")
+	if len(names) != 3 {
+		t.Errorf("label %q is not three parts", label)
+		return 0, 0, 0, false
+	}
+	for i, n := range names {
+		switch n {
+		case "MM":
+			month = parts[i]
+		case "DD":
+			day = parts[i]
+		case "YY", "YYYY":
+			yearDigits = parts[i]
+		default:
+			t.Errorf("label %q names a part this test does not know: %q", label, n)
+			return 0, 0, 0, false
+		}
+	}
+	return month, day, yearDigits % 100, true
+}
+
+// TestReadingsAreBuiltFromPositions is the general property behind the
+// month-day swap and the year-first branch that used to sit beside it.
+//
+// Every interpretation names the reading it carries, so the label and the
+// instant have to agree for every ambiguous numeric input and not only for the
+// ones in a table. Two readings of the same bytes differ by which part went
+// into which slot, and a set built by swapping the chosen def's fields was
+// right only for a def with the year where that code expected it.
+//
+// It also pins the exclusion: three roles over three positions is six
+// orderings, three of them are formats, and YY/DD/MM is not one. A label
+// nothing writes in an error a caller reads to decide which column their data
+// used is worse than no alternative at all.
+func TestReadingsAreBuiltFromPositions(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	checked, withReadings := 0, 0
+
+	// Every width the three parts are written in, because the width is what
+	// decides which roles a part can take: a year is two digits or four, a
+	// month and a day are one or two, and rekinded drops a reading whose role
+	// does not fit. A sweep of one width would agree with itself.
+	type shape struct {
+		name  string
+		build func(sep string, a, b, c int) string
+		parts func(a, b, c int) [3]int
+	}
+	shapes := []shape{
+		{"DD?DD?DD", func(sep string, a, b, c int) string {
+			return fmt.Sprintf("%02d%s%02d%s%02d", a, sep, b, sep, c)
+		}, func(a, b, c int) [3]int { return [3]int{a, b, c} }},
+		{"D?D?DD", func(sep string, a, b, c int) string {
+			return fmt.Sprintf("%d%s%d%s%02d", a, sep, b, sep, c)
+		}, func(a, b, c int) [3]int { return [3]int{a, b, c} }},
+		{"DD?DD?DDDD", func(sep string, a, b, c int) string {
+			return fmt.Sprintf("%02d%s%02d%s%04d", a, sep, b, sep, 1900+c)
+		}, func(a, b, c int) [3]int { return [3]int{a, b, 1900 + c} }},
+		{"DDDD?DD?DD", func(sep string, a, b, c int) string {
+			return fmt.Sprintf("%04d%s%02d%s%02d", 1900+a, sep, b, sep, c)
+		}, func(a, b, c int) [3]int { return [3]int{1900 + a, b, c} }},
+	}
+
+	for _, sh := range shapes {
+		for a := 1; a <= 31; a++ {
+			for b := 1; b <= 31; b++ {
+				for c := 1; c <= 31; c++ {
+					for _, sep := range []string{"/", "-", "."} {
+						in := sh.build(sep, a, b, c)
+						checked++
+
+						lenient, lerr := ParseWith(in, WithBaseTime(base))
+						_, err := ParseWith(in, WithBaseTime(base), WithStrictMode(true))
+						var ade *AmbiguousDateError
+						if !errors.As(err, &ade) {
+							// Not ambiguous, or refused outright. Either is a
+							// fine answer here; what this test checks is the
+							// readings of the inputs that have more than one.
+							continue
+						}
+						withReadings++
+
+						if lerr != nil {
+							t.Errorf("ParseWith(%q) = %v, but strict mode offers %d readings",
+								in, lerr, len(ade.Interpretations))
+							continue
+						}
+						if !ade.Interpretations[0].Time.Equal(lenient.Time) {
+							t.Errorf("ParseWith(%q, strict): first interpretation is %v, but "+
+								"the lenient path returns %v; the chosen reading comes first so "+
+								"a caller taking Interpretations[0] takes what Parse would have "+
+								"given", in, ade.Interpretations[0].Time, lenient.Time)
+						}
+
+						parts := sh.parts(a, b, c)
+						for _, iv := range ade.Interpretations {
+							if iv.Label == "YY/DD/MM" || iv.Label == "YYYY/DD/MM" {
+								t.Errorf("ParseWith(%q, strict) offers %s, an ordering nothing "+
+									"writes: a leading year is followed by ISO order", in, iv.Label)
+								continue
+							}
+							month, day, yearDigits, ok := labelledDate(t, iv.Label, parts)
+							if !ok {
+								continue
+							}
+							if int(iv.Time.Month()) != month || iv.Time.Day() != day ||
+								iv.Time.Year()%100 != yearDigits {
+								t.Errorf("ParseWith(%q, strict): reading labelled %s carries %s, "+
+									"which is not what that label says about %q",
+									in, iv.Label, iv.Time.Format("2006-01-02"), in)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// A sweep that stopped finding ambiguous inputs would pass while checking
+	// nothing, which is the shape of the bug this file keeps finding.
+	if withReadings == 0 {
+		t.Fatalf("swept %d inputs and none was ambiguous; the sweep is not reaching "+
+			"the readings it exists to check", checked)
+	}
+	t.Logf("swept %d numeric inputs, %d carried more than one reading", checked, withReadings)
 }

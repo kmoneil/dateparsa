@@ -215,63 +215,84 @@ func textualLabel(fields []compile.Field, monthAt, dayAt, yearAt int) string {
 // fieldOrderReadings reads the three numeric parts in the order Detect chose,
 // and in the other orders that describe the same bytes: "01/02/2024" is the
 // second of January or the first of February, and "01/02/03" is either of those
-// in 2003 or, for a caller who says their data can be year-first, the third of
-// February 2001.
+// in 2003 or the third of February 2001.
 //
-// The parts that swap are 12 or under, because that is what made the input
-// ambiguous, so each is a valid month and a valid day and no swap can produce a
-// date that does not exist. The year-first reading is only offered when Detect
-// took it, which is when the caller asked for it and the values allowed it;
-// yearFirstParts is where that is decided, and the arithmetic is there.
+// The readings are built from the positions the parts sit in rather than from
+// the roles the chosen def gave them, because which alternatives exist is a
+// property of the input and not of the reading Detect happened to take. Writing
+// it as a swap of the chosen def's month and day meant the set was only right
+// for a year-last def, and the year-first branch that was bolted on beside it
+// was only right for a year-first one.
+//
+// Three roles over three positions is a permutation, and three of the six are
+// formats:
+//
+//	MM/DD/YY   the year trails
+//	DD/MM/YY   the year trails, the other way round
+//	YY/MM/DD   the year leads, and ISO order follows a leading year
+//
+// The other three put the year in the middle or write YY/DD/MM, and nobody
+// writes those. Listing what exists is what keeps a reading nothing produced
+// out of an error a caller reads to decide which column their data used.
+//
+// A permutation that cannot describe these bytes is dropped rather than
+// excluded: rekinded refuses a role the part is the wrong width for, and
+// interpretation drops one whose values are not a date, so "31/12/24" offers
+// DD/MM/YY and YY/MM/DD and never a thirty-first month.
 func (r Result) fieldOrderReadings() []Reading {
 	monthAt, dayAt, yearAt := -1, -1, -1
-	for i := range r.Def.Fields {
-		switch r.Def.Fields[i].Kind {
+	var monthOff, dayOff, yearOff int32
+	// The offset is taken here rather than read back through r.Def.Fields
+	// below, because an index the compiler got from range is one it can prove
+	// in bounds and an index it got from this loop's result is not.
+	for i, f := range r.Def.Fields {
+		switch f.Kind {
 		case compile.FMonth2, compile.FMonth1or2:
-			monthAt = i
+			monthAt, monthOff = i, f.Offset
 		case compile.FDay2, compile.FDay1or2:
-			dayAt = i
+			dayAt, dayOff = i, f.Offset
 		case compile.FYear4, compile.FYear2:
-			yearAt = i
+			yearAt, yearOff = i, f.Offset
 		}
 	}
 	if monthAt < 0 || dayAt < 0 || yearAt < 0 {
 		return nil
 	}
 
-	out := []Reading{{Def: r.Def, Label: numericLabel(r.Def.Fields, monthAt, dayAt, yearAt)}}
-
-	if r.AmbigKind != AmbigYearPosition {
-		// The other order of the two parts Detect chose between, with the year
-		// where it is.
-		if alt, ok := r.rekinded(numericLabel(r.Def.Fields, dayAt, monthAt, yearAt),
-			roleAt{yearAt, 'Y'}, roleAt{dayAt, 'M'}, roleAt{monthAt, 'D'}); ok {
-			out = append(out, alt)
+	// The three field indices in the order the input writes them, and the roles
+	// the chosen reading gave those positions.
+	slots := [3]struct {
+		offset int32
+		at     int
+		role   byte
+	}{
+		{monthOff, monthAt, 'M'},
+		{dayOff, dayAt, 'D'},
+		{yearOff, yearAt, 'Y'},
+	}
+	for i := 1; i < len(slots); i++ {
+		for j := i; j > 0 && slots[j].offset < slots[j-1].offset; j-- {
+			slots[j], slots[j-1] = slots[j-1], slots[j]
 		}
-		return out
+	}
+	var at [3]int
+	var chosen [3]byte
+	for i, sl := range slots {
+		at[i], chosen[i] = sl.at, sl.role
 	}
 
-	// Year-first leaves no month-versus-day question to offer: a format that
-	// writes the year first writes ISO order after it, and YY/DD/MM is not a
-	// format anybody writes. So the alternatives are the two year-last
-	// readings, and both are new: the year moves out of the leading part and
-	// the other two move up.
+	out := []Reading{{Def: r.Def, Label: numericLabel(r.Def.Fields, monthAt, dayAt, yearAt)}}
 
-	// Written as the position each role takes rather than as a pair of swaps,
-	// because three roles over three positions is a permutation and naming it
-	// that way is what stops the second one being the first one with a typo in
-	// it. The chosen def is year, month, day at the three positions in input
-	// order, which yearFirstParts guarantees, so position 0 is yearAt,
-	// position 1 is monthAt and position 2 is dayAt.
-	for _, perm := range [2]struct {
-		roles [3]byte
-	}{
-		{[3]byte{'M', 'D', 'Y'}},
-		{[3]byte{'D', 'M', 'Y'}},
+	for _, roles := range [3][3]byte{
+		{'M', 'D', 'Y'},
+		{'D', 'M', 'Y'},
+		{'Y', 'M', 'D'},
 	} {
-		at := [3]int{yearAt, monthAt, dayAt}
+		if roles == chosen {
+			continue
+		}
 		var m, d, y int
-		for i, role := range perm.roles {
+		for i, role := range roles {
 			switch role {
 			case 'M':
 				m = at[i]

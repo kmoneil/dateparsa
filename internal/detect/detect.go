@@ -1170,9 +1170,19 @@ func resolveAmbiguousFields(dst []compile.Field, s string, cfg Config) (name str
 // identified, because that is what leaves two parts to choose between, but it
 // is identified rather than computed.
 func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (month, day datePart, ambig AmbigKind, ok bool) {
+	// Three parts, and the compiler is told so. resolveAmbiguousFields has
+	// already refused anything shorter, and saying it here is what lets every
+	// parts[0..2] below, in this function and in what inlines into it, skip a
+	// bounds check the caller has proved cannot fire.
+	if len(parts) < 3 {
+		return datePart{}, datePart{}, AmbigNone, false
+	}
+	parts = parts[:3]
+
 	// Step 1: Identify year position.
 	var v1, v2 int
 	var v1Offset, v2Offset int
+	var yearFirstAlt bool
 
 	if third > 31 || len(parts[2]) == 4 {
 		// Year is last: ??/??/YYYY
@@ -1205,10 +1215,14 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		// choose between under strict mode.
 		return m, d, AmbigYearPosition, true
 	} else {
-		// All small numbers, truly ambiguous with 2-digit year last.
+		// All small numbers, truly ambiguous with 2-digit year last. The
+		// year-first reading is not taken here, because the caller did not ask
+		// for it, but whether it exists is asked anyway: it is a property of
+		// the input and it is what step 2 cannot see.
 		v1, v2 = first, second
 		v1Offset = 0
 		v2Offset = len(parts[0]) + 1
+		yearFirstAlt = yearFirstReadingExists(parts, second, third)
 	}
 
 	// Step 2: Resolve month vs day from the two non-year parts.
@@ -1229,6 +1243,19 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		} else {
 			month, day = p1, p2
 		}
+	}
+
+	// Step 3: a year-last reading that step 2 settled by value is still one of
+	// two when the same bytes read year-first, and only this function can see
+	// both. "17-1-01" is the seventeenth of January 2001 because 17 is not a
+	// month, and it is equally the first of January 2017; step 2 answered the
+	// question it was asked and reported no guess.
+	//
+	// Where step 2 did have to guess the flag is already set, and the kind
+	// stays the one it chose: both kinds offer the same set of readings, and
+	// AmbigFieldOrder names the question the preference actually answered.
+	if ambig == AmbigNone && yearFirstAlt {
+		ambig = AmbigYearPosition
 	}
 
 	if month.value < 1 || month.value > 12 || day.value < 1 || day.value > 31 {
@@ -1271,12 +1298,27 @@ func yearFirstParts(parts []string, second, third int, cfg Config) (month, day d
 	if !cfg.PreferYearFirst {
 		return datePart{}, datePart{}, false
 	}
-	// A year field reads exactly two bytes or exactly four, and four would have
-	// been taken by the arm above, so a one-digit leading part cannot be one.
-	if len(parts[0]) != 2 {
+	if !yearFirstReadingExists(parts, second, third) {
 		return datePart{}, datePart{}, false
 	}
 	return isoOrderParts(parts, second, third)
+}
+
+// yearFirstReadingExists reports whether an all-small three-part date can be
+// read as a two-digit year followed by ISO order, which is a question about the
+// input and not about what the caller prefers.
+//
+// resolveYearMonthDay asks it twice for opposite reasons: through
+// yearFirstParts, to take the reading when the caller asked for it, and
+// directly, to report that the reading exists when the caller did not.
+func yearFirstReadingExists(parts []string, second, third int) bool {
+	// A year field reads exactly two bytes or exactly four, and four would have
+	// been taken by the arm above, so a one-digit leading part cannot be one.
+	if len(parts[0]) != 2 {
+		return false
+	}
+	_, _, ok := isoOrderParts(parts, second, third)
+	return ok
 }
 
 // isoOrderParts reads the two parts that follow a leading year as the month and

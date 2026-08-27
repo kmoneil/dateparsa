@@ -189,6 +189,26 @@ func FuzzLayoutReuse(f *testing.F) {
 		// calls. The flag is honest now. The layout still accepts it, which is
 		// the reuse half and is not a thing this target can see.
 		{"70MAY1", "01MAY10"},
+
+		// C29 is that defect with a separator instead of a month name, and it
+		// is the crasher the nightly sweep found on c8bed43, committed here as
+		// testdata/fuzz/FuzzLayoutReuse/5717d78a1a31c93a.
+		//
+		// 70 cannot be a month or a day, so "70-1-17" is read year-first and
+		// nothing was guessed. 17 cannot be a month, so "17-1-01" was read
+		// day-first and nothing was guessed there either, and both readings
+		// emit two-byte fields at the same three offsets. The layout from the
+		// first accepted the second and answered 2017-01-01 where detection
+		// answers 2001-01-17, with a nil error and Ambiguous false on both
+		// calls. Sixteen years and sixteen days apart.
+		//
+		// Silent rather than green since the flag fix: "17-1-01" reports a
+		// guess now, so the check below returns before it compares anything.
+		// The reuse half is pinned by an ordinary test, and by the sweep in
+		// TestReusedLayoutDisagreesOnlyWhereItSaidItGuessed, which pairs every
+		// unambiguous numeric input in a bounded space rather than waiting for
+		// a fuzzer to reach the pair again.
+		{"70-1-17", "17-1-01"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

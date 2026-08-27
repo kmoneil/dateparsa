@@ -2,6 +2,7 @@ package dateparsa
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -2093,4 +2094,222 @@ func TestGoTimeStringTailIsBounded(t *testing.T) {
 	if _, err := lay.Parse(stem + " m=+0.000000001"); err != nil {
 		t.Errorf("Layout.Parse(monotonic): %v", err)
 	}
+}
+
+// numericSweepInputs is the bounded space the sweeps below share: three numeric
+// parts over the values where the readings change, in every width the parts are
+// written in, with every separator that reaches the ambiguous path.
+//
+// It runs 0 to 32 without gaps rather than picking boundaries, because the
+// boundaries are what a previous version of this sweep would have had to guess
+// at: 0 and 13 and 32 are where a month and a day stop existing, 12 and 31 are
+// the last values that do, and which of those a reading turns on is the thing
+// under test. 45, 70 and 99 are added on top as two-digit years too large to be
+// anything else, on both sides of the century pivot.
+func numericSweepInputs() []string {
+	values := make([]int, 0, 36)
+	for v := 0; v <= 32; v++ {
+		values = append(values, v)
+	}
+	values = append(values, 45, 70, 99)
+	var out []string
+	for _, a := range values {
+		for _, b := range values {
+			for _, c := range values {
+				for _, sep := range []string{"/", "-", "."} {
+					out = append(out,
+						fmt.Sprintf("%02d%s%02d%s%02d", a, sep, b, sep, c),
+						fmt.Sprintf("%d%s%d%s%02d", a, sep, b, sep, c),
+						fmt.Sprintf("%02d%s%02d%s%04d", a, sep, b, sep, 1900+c),
+						fmt.Sprintf("%04d%s%02d%s%02d", 1900+a, sep, b, sep, c),
+					)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestReusedLayoutDisagreesOnlyWhereItSaidItGuessed is the reuse half of C29,
+// swept rather than sampled.
+//
+// FuzzLayoutReuse hunts this property with random pairs and found C27 and C29
+// that way, both of them a layout detected from one row answering a different
+// row with an instant detection does not agree with and no guess reported on
+// either call. The fuzzer reaches the pairs it happens to reach. This asserts
+// the same property over every pair in a bounded space, so a regression in the
+// family lands on a named test in the ordinary suite instead of waiting for a
+// nightly to rediscover it.
+//
+// The exclusions are the fuzz target's, for the fuzz target's reasons: a
+// refusal is always allowed, because a layout that will not read a row has not
+// answered wrongly, and a reported guess is allowed to differ, because the
+// caller was told on both calls that the reading was a choice.
+//
+// Every pair is covered while only the distinct layouts are iterated. Two rows
+// that compile to the same instructions answer every input the same way, so
+// pairing one of them against the whole sweep covers both, and the sweep can be
+// wide enough to matter without the pair count squaring with it.
+func TestReusedLayoutDisagreesOnlyWhereItSaidItGuessed(t *testing.T) {
+	type row struct {
+		in     string
+		layout *Layout
+		want   time.Time
+	}
+	var rows []row
+	seen := map[string]int{}
+	var distinct []int
+	for _, in := range numericSweepInputs() {
+		r, err := Parse(in)
+		if err != nil || r.Ambiguous || !reusable(r.Layout) {
+			continue
+		}
+		rows = append(rows, row{in, r.Layout, r.Time})
+		key := fmt.Sprintf("%v|%d|%s", r.Layout.program.Insts[:r.Layout.program.N],
+			r.Layout.program.BaseYear, r.Layout.label)
+		if _, ok := seen[key]; !ok {
+			seen[key] = len(rows) - 1
+			distinct = append(distinct, len(rows)-1)
+		}
+	}
+	if len(rows) == 0 {
+		t.Fatal("no unambiguous numeric input in the sweep; it is checking nothing")
+	}
+
+	accepted := 0
+	for _, i := range distinct {
+		from := rows[i]
+		for _, to := range rows {
+			got, err := from.layout.Parse(to.in)
+			if err != nil {
+				continue // refusing is always allowed
+			}
+			accepted++
+			if !got.Equal(to.want) {
+				t.Fatalf("layout %s detected from %q accepted %q and disagreed with detection:\n"+
+					"  reused %-18s = %v\n"+
+					"  fresh  %-18s = %v\n"+
+					"neither call reported a guess, so one of these is a wrong day returned "+
+					"confidently", from.layout, from.in, to.in,
+					from.layout.String(), got, from.layout.String(), to.want)
+			}
+		}
+	}
+	t.Logf("%d unambiguous inputs over %d distinct programs, %d pairs, %d accepted",
+		len(rows), len(distinct), len(distinct)*len(rows), accepted)
+}
+
+// dateExists reports whether year, month and day name a real date, and for a
+// two-digit year it demands that they do in both centuries the digits could
+// mean.
+//
+// The century is the parser's rule and not this oracle's. Requiring both is
+// what keeps the oracle conservative: the only date whose existence turns on
+// the century is the twenty-ninth of February, and counting it as real in one
+// century and not the other would have the oracle claim a reading the parser
+// correctly refused.
+func dateExists(year, month, day, yearWidth int) bool {
+	real := func(y int) bool {
+		t := time.Date(y, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+		return t.Year() == y && int(t.Month()) == month && t.Day() == day
+	}
+	if yearWidth == 2 {
+		return real(1900+year) && real(2000+year)
+	}
+	return real(year)
+}
+
+// readingsOf counts the orderings that describe three numeric parts, from the
+// parts alone, with no help from the library under test.
+//
+// This is the oracle the ambiguity flag is checked against. It knows the three
+// orderings that are formats and the widths each role can be written in, and
+// nothing else: not the preferences, not the separator conventions, not which
+// reading the library would choose. What it can say is how many readings exist,
+// and an input with two has an answer that came from a rule rather than from
+// the input.
+func readingsOf(parts, widths [3]int) int {
+	n := 0
+	// Year trailing, either way round for the two that lead.
+	if widths[2] == 2 || widths[2] == 4 {
+		if widths[0] <= 2 && widths[1] <= 2 {
+			if dateExists(parts[2], parts[0], parts[1], widths[2]) {
+				n++ // MM/DD/YY
+			}
+			if dateExists(parts[2], parts[1], parts[0], widths[2]) {
+				n++ // DD/MM/YY
+			}
+		}
+	}
+	// Year leading, and ISO order follows a leading year.
+	if (widths[0] == 2 || widths[0] == 4) && widths[1] <= 2 && widths[2] <= 2 {
+		if dateExists(parts[0], parts[1], parts[2], widths[0]) {
+			n++ // YY/MM/DD
+		}
+	}
+	return n
+}
+
+// TestAmbiguityIsReportedWhereverTwoReadingsExist is the invariant C27 and C29
+// each broke, asserted against an oracle rather than against a table.
+//
+// "Ambiguity is reported, never hidden" is the promise, and both defects were
+// the same failure of it: an input with two readings that came back with
+// Ambiguous false, because the code that resolved one question could not see
+// the other. A table of known cases cannot catch the next one, since a table is
+// written by somebody who already knows which inputs are ambiguous. readingsOf
+// counts the readings from the parts, so this fails on a shape nobody thought
+// of.
+//
+// It asserts one direction only. Two readings and no flag is a wrong day
+// returned confidently, which is the failure this library exists to avoid. One
+// reading and a flag is a caller told to check something that was certain, and
+// that is a cost rather than a defect, so it is not asserted here.
+func TestAmbiguityIsReportedWhereverTwoReadingsExist(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	values := make([]int, 0, 36)
+	for v := 0; v <= 32; v++ {
+		values = append(values, v)
+	}
+	values = append(values, 45, 70, 99)
+
+	checked, withTwo := 0, 0
+	for _, a := range values {
+		for _, b := range values {
+			for _, c := range values {
+				for _, sep := range []string{"/", "-", "."} {
+					for _, sh := range []struct {
+						in     string
+						parts  [3]int
+						widths [3]int
+					}{
+						{fmt.Sprintf("%02d%s%02d%s%02d", a, sep, b, sep, c), [3]int{a, b, c}, [3]int{2, 2, 2}},
+						{fmt.Sprintf("%02d%s%02d%s%04d", a, sep, b, sep, 1900+c), [3]int{a, b, 1900 + c}, [3]int{2, 2, 4}},
+						{fmt.Sprintf("%04d%s%02d%s%02d", 1900+a, sep, b, sep, c), [3]int{1900 + a, b, c}, [3]int{4, 2, 2}},
+					} {
+						checked++
+						if readingsOf(sh.parts, sh.widths) < 2 {
+							continue
+						}
+						withTwo++
+						r, err := ParseWith(sh.in, WithBaseTime(base))
+						if err != nil {
+							continue // refusing is never hiding a guess
+						}
+						if !r.Ambiguous {
+							t.Fatalf("Parse(%q) = %s with Ambiguous false, but the bytes have "+
+								"%d readings: an answer that came from a rule and was reported "+
+								"as one that came from the input",
+								sh.in, r.Time.Format("2006-01-02"), readingsOf(sh.parts, sh.widths))
+						}
+					}
+				}
+			}
+		}
+	}
+	if withTwo == 0 {
+		t.Fatalf("swept %d inputs and the oracle found none with two readings; it is "+
+			"checking nothing", checked)
+	}
+	t.Logf("swept %d inputs, %d had two readings or more", checked, withTwo)
 }

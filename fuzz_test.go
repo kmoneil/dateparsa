@@ -209,6 +209,21 @@ func FuzzLayoutReuse(f *testing.F) {
 		// unambiguous numeric input in a bounded space rather than waiting for
 		// a fuzzer to reach the pair again.
 		{"70-1-17", "17-1-01"},
+
+		// C28, and it is the skip rather than the flag: "MAY1 00:00 1000" ends
+		// in a skipped space and a four-digit year, "MAY1 00:00+0000" ends in a
+		// five-byte zone offset, both are 15 bytes and both detect as
+		// MONTH_DAY_YEAR. The skip took the '+' and the year read "0000", 2026
+		// years from what detection answers, with nil errors and no guess
+		// reported on either call.
+		//
+		// This target could always have found it and did not. Neither side
+		// reports a guess and both layouts pass the gate below, so no exclusion
+		// here was hiding it; it was cumulative CPU against the corpus, and
+		// make ci's flextime sweep reached the pair first through
+		// FuzzUnmarshalJSONAcrossFormats. Inert since the fix, because the
+		// cached layout refuses the second value rather than answering it.
+		{"MAY1 00:00 1000", "MAY1 00:00+0000"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

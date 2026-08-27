@@ -723,7 +723,7 @@ func coverGaps(fields []compile.Field, s string) []compile.Field {
 		for i < len(s) && covered[i>>6]&(1<<uint(i&63)) == 0 {
 			i++
 		}
-		fields = append(fields, skip(start, i-start))
+		fields = append(fields, skip(s, start, i-start))
 	}
 	return fields
 }
@@ -732,11 +732,22 @@ func coverGaps(fields []compile.Field, s string) []compile.Field {
 // is every byte a compiled program can address.
 const coverWords = 4
 
-// skip covers a run the format does not read and does not constrain, such as
-// the weekday name of an RFC 2822 date. It fixes the run's width without
-// looking at it, which is what stops a wider one shifting every field after it.
-func skip(off, length int) compile.Field {
-	return compile.Field{Kind: compile.FSkip, Offset: int32(off), Len: int32(length)}
+// skip covers a run the format does not read, such as the weekday name of an
+// RFC 2822 date. It fixes the run's width, which is what stops a wider one
+// shifting every field after it, and records the character classes the run
+// matched, which is what stops a different byte taking its place on reuse.
+//
+// It used to fix the width "without looking at it", and that was the whole of
+// C28: a skip that matched a space accepted the '+' of a zone offset, and the
+// year field behind it read the offset's digits. compile.SkipAux has the
+// reasoning and the case.
+func skip(s string, off, length int) compile.Field {
+	return compile.Field{
+		Kind:   compile.FSkip,
+		Offset: int32(off),
+		Len:    int32(length),
+		Aux:    compile.SkipAux(s, off, length),
+	}
 }
 
 // detectISO8601Frac handles ISO 8601/RFC 3339 with variable-length fractional seconds:
@@ -989,11 +1000,11 @@ func detectCJKDate(s string) (Result, bool) {
 	// Build fields using byte offsets.
 	fields := []compile.Field{
 		{Kind: compile.FYear4, Offset: 0, Len: int32(len(yearStr))},
-		skip(yearIdx, len("年")),
+		skip(s, yearIdx, len("年")),
 		{Kind: compile.FMonth1or2, Offset: int32(yearIdx + len("年")), Len: int32(len(monStr))},
-		skip(monthIdx, len("月")),
+		skip(s, monthIdx, len("月")),
 		{Kind: compile.FDay1or2, Offset: int32(monthIdx + len("月")), Len: int32(len(dayStr))},
-		skip(dayIdx, len("日")),
+		skip(s, dayIdx, len("日")),
 	}
 	return newResult("CJK_DATE", "", fields, AmbigNone, false), true
 }
@@ -1935,7 +1946,7 @@ func boundaryAfter(s string, at int) int {
 func appendDay(fields []compile.Field, s string, n numToken) []compile.Field {
 	fields = append(fields, dayField(n))
 	if w := ordinalSuffixLen(s, n.end); w > 0 {
-		fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: int32(n.end), Len: int32(w)})
+		fields = append(fields, skip(s, n.end, w))
 	}
 	return fields
 }
@@ -2071,7 +2082,7 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 			if rem >= 6 && s[tzEnd+3] == ':' {
 				tzLen = 6
 			}
-			fields = append(fields, compile.Field{Kind: compile.FSkip, Offset: int32(j), Len: int32(tzEnd - j)})
+			fields = append(fields, skip(s, j, tzEnd-j))
 			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(tzEnd), Len: int32(tzLen)})
 		}
 		return append(fields, compile.Field{Kind: compile.FTZName, Offset: int32(j), Len: int32(tzEnd - j)})

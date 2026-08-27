@@ -580,6 +580,33 @@ of May. Both answers are wrong days returned with no error and no flag, so any
 layout detection marks ambiguity-prone is re-detected per value rather than
 reused. It costs the cache on those formats and on no others.
 
+**The ambiguity gate is not the whole of reuse safety, and a reader of the
+paragraph above would think it was.** It covers the formats where detection had
+to choose between readings that compile to the same program. A second family
+has nothing to do with ambiguity: a compiled field reading bytes that belong to
+a different token in the next row. `MONTH_DAY_YEAR` from `MAY1 00:00 1000` is a
+skipped space at offset 10 and a four-digit year at 11; `MAY1 00:00+0000` is a
+five-byte zone offset at 10 and no year at all. Both are fifteen bytes, both
+detect as the same format, and the cached layout's skip took the `+` and read
+the offset's digits as the year 0000, against the 2026 detection takes from the
+base year. `Parser` gave the same answer, because the format is not
+ambiguity-prone and the gate never fired.
+
+That is the third rule about what a skipped run may hold, after "not a digit"
+and "not a word that decides the day": **a run carries the byte or the classes
+it matched, and refuses anything else.** A one-byte run carries the byte,
+because the character classes are not narrow enough to separate a comma from a
+plus and a run that matched a comma went on taking a plus. The cost is that a
+skipped space no longer stands in for a tab on the reuse path, which is a
+refusal rather than a wrong answer, and detection reads both rows either way.
+
+The residual is written down rather than left implicit: a cached layout still
+accepts a four-digit year under 1000, where detection requires 1000 to 9999 and
+refuses the row outright. `MAY1 00:00 0500` reuses to 0500-05-01 and does not
+parse on its own. No instant disagrees, so it is over-acceptance rather than a
+wrong day, and closing it means `OpYear4` enforcing a range that would also
+change what `17/11/0000` parses to.
+
 **A caller holding the layout is told the same thing, and was not until
 2026-08-20.** `Layout.Reusable()` answered whether the value is one of the two
 sentinels, not whether reusing it is sound, while `README.md` showed it as the

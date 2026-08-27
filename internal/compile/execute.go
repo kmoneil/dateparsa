@@ -558,6 +558,21 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			// and 3 + 2 + 2 still equals 7, so the coverage check in this
 			// function cannot see it. Both now fail here instead.
 			//
+			// C28 is the second rule and it is the same one C24 gave a
+			// literal: the run carries the character classes it matched, and a
+			// byte outside them is a byte this program does not describe.
+			// "MAY1 00:00 1000" skips the space at offset 10 and reads a year
+			// at 11; against "MAY1 00:00+0000" the skip swallowed the '+' and
+			// the year read "0000", 2026 years from what detection answers for
+			// those bytes, which reads them as a zone offset. A space carries
+			// ClassSpace and ClassSpace does not hold '+'.
+			//
+			// litAccepts reads an Aux of 0 as "any byte that is not a digit",
+			// which is exactly the rule this arm enforced on its own, so a skip
+			// from a caller-written Compile and a run whose bytes share no
+			// class narrower than ClassAny both behave as they always did.
+			// detect.skip is what stamps the class; compile.SkipAux computes it.
+			//
 			// The bound is needed because this reads the bytes. It refuses
 			// nothing the coverage check below would have allowed: a skip
 			// running past the end leaves end > slen.
@@ -565,7 +580,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 				return time.Time{}, fieldError("skipped run", off, slen)
 			}
 			for j := off; j < off+w; j++ {
-				if s[j] >= '0' && s[j] <= '9' {
+				if !litAccepts(inst.Aux, s[j]) {
 					return time.Time{}, fieldError("skipped run", j, slen)
 				}
 			}

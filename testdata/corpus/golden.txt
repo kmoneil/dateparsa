@@ -1,4 +1,4 @@
-# 1366 inputs. Regenerate with: go test -run TestCorpusGolden -corpus-update
+# 1368 inputs. Regenerate with: go test -run TestCorpusGolden -corpus-update
 # input	result	instant (UTC)	offset	format	ambiguous	kind
 "0000-001"	ok	0000-01-01T00:00:00.000000000Z	+00:00	ISO_ORDINAL	ambiguous=false	kind=absolute
 "0000-01-01T00:00:00+24:00"	nomatch
@@ -229,6 +229,7 @@
 "16:11:34"	ok	2024-01-01T16:11:34.000000000Z	+00:00	TIME_HMS	ambiguous=false	kind=absolute
 "16:48:57"	ok	2024-01-01T16:48:57.000000000Z	+00:00	TIME_HMS	ambiguous=false	kind=absolute
 "17 November 1950"	ok	1950-11-17T00:00:00.000000000Z	+00:00	DAY_MONTH_YEAR	ambiguous=false	kind=absolute
+"17-1-01"	ok	2001-01-17T00:00:00.000000000Z	+00:00	NUMERIC_AMBIG	ambiguous=true	kind=absolute
 "17.09.2056"	ok	2056-09-17T00:00:00.000000000Z	+00:00	NUMERIC_DMY	ambiguous=false	kind=absolute
 "17.11.2087"	ok	2087-11-17T00:00:00.000000000Z	+00:00	NUMERIC_DMY	ambiguous=false	kind=absolute
 "17/11/0000"	ok	0000-11-17T00:00:00.000000000Z	+00:00	NUMERIC_MDY	ambiguous=false	kind=absolute
@@ -1140,6 +1141,7 @@
 "69-12-31"	ok	1969-12-31T00:00:00.000000000Z	+00:00	NUMERIC_MDY	ambiguous=false	kind=absolute
 "7 June 1951"	ok	1951-06-07T00:00:00.000000000Z	+00:00	DAY_MONTH_YEAR	ambiguous=false	kind=absolute
 "7 September 2059"	ok	2059-09-07T00:00:00.000000000Z	+00:00	DAY_MONTH_YEAR	ambiguous=false	kind=absolute
+"70-1-17"	ok	1970-01-17T00:00:00.000000000Z	+00:00	NUMERIC_MDY	ambiguous=false	kind=absolute
 "70-12-31"	ok	1970-12-31T00:00:00.000000000Z	+00:00	NUMERIC_MDY	ambiguous=false	kind=absolute
 "70/01/1 00"	nomatch
 "8 May 2076"	ok	2076-05-08T00:00:00.000000000Z	+00:00	DAY_MONTH_YEAR	ambiguous=false	kind=absolute

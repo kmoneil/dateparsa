@@ -527,6 +527,30 @@ carries `YY/MM/DD` 2001-02-03 as well as the two year-last readings whether or
 not `WithPreferYearFirst` is set: the option decides which reading is chosen,
 and it never decided which ones exist.
 
+**A two-digit year is ambiguous at either end of a numeric date.**
+`resolveYearMonthDay` answers two questions in sequence, which part holds the
+year and which of the other two is the month, and only the second reported a
+guess. The first fell through to a default rather than reaching a decision, so
+an input whose bytes read year-first as well as year-last came back with
+`Ambiguous` false and the second question's certainty standing for both.
+`17-1-01` is the seventeenth of January 2001 because 17 is not a month, and it
+is equally the first of January 2017.
+
+What made that a wrong day rather than a missing flag is reuse. A layout
+detected from `70-1-17`, where 70 forces the year first and nothing is guessed,
+emits two-byte fields at the same three offsets, so it accepts `17-1-01` and
+answers 2017-01-01: sixteen years and sixteen days from what `Parse` returns for
+the same bytes, with a nil error and `Ambiguous` false on both calls. This is
+C27 with a separator instead of a month name, and the nightly fuzz sweep found
+it the same way, as a `FuzzLayoutReuse` pair.
+
+The flag is honest now, and **what this changes is the short European form**:
+`31/12/24`, `15/06/09` and every `DD/MM/YY` whose parts are all small report
+`Ambiguous` and are refused under strict mode. A part over 31 settles the year's
+position by itself and a four-digit year settles it for any value, so `70-1-17`
+and `31/12/2024` report exactly what they reported before. No instant returned
+by the lenient path has moved.
+
 **A word can be ambiguous as well as a number.** Hindi writes both yesterday and
 tomorrow as `कल` and tells them apart with the verb, which a date string does not
 have. That word now reports `Ambiguous` and refuses under strict mode with both

@@ -328,7 +328,9 @@ dateparsa.ParseWith(s,
 which is a date whose three parts are all small: `01/02/03` is 2001-02-03 with
 it and 2003-01-02 without. A written four-digit year wins over it, and so does a
 value the reading cannot use, so `01/13/03` keeps its year last rather than
-being refused for having no month 13.
+being refused for having no month 13. The option decides which reading is
+chosen. Whether the year's position was open at all is a property of the input,
+and `Ambiguous` reports it either way.
 
 ## Supported Formats
 
@@ -421,9 +423,19 @@ nothing. Every format that writes the year first writes ISO order after it, and
 `YY/DD/MM` is not a format anybody writes, which is why `70/15/02` is refused
 rather than read as the fifteenth.
 
+**A two-digit year at the end can be a two-digit year at the front.** `31/12/24`
+is the thirty-first of December 2024 and equally the twenty-fourth of December
+2031, so it reports `Ambiguous` and strict mode refuses it. This is the short
+European form, and it is the same question `01/02/03` asks with the month and
+the day settled: value-range checking answers which of two parts is the day, and
+it cannot answer which end the year is written at. A part over 31 settles that
+by itself, so `70-1-17` is the seventeenth of January 1970 and reports nothing,
+and a four-digit year settles it for any value, so `31/12/2024` is unaffected.
+
 Each interpretation is labelled with the reading it carries, and the labels name
-the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, and
-`MM/DD/YY` where the year is written with two digits.
+the ordering rather than the separator: `MM/DD/YYYY`, `DD/MM/YYYY`, `MM/DD/YY`
+and `DD/MM/YY` where the year is written with two digits, and `YY/MM/DD` where
+it leads.
 
 Most ambiguous inputs have two readings. One shape has three: a date whose three
 parts are all small leaves the year's position open as well as the month's, so

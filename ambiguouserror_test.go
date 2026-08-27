@@ -770,3 +770,106 @@ func TestReadingsAreBuiltFromPositions(t *testing.T) {
 	}
 	t.Logf("swept %d numeric inputs, %d carried more than one reading", checked, withReadings)
 }
+
+// TestTwoDigitYearDateReportsTheYearFirstReading is C29, the nightly sweep's
+// FuzzLayoutReuse find on c8bed43, at the level a caller sees it.
+//
+// resolveYearMonthDay answers two questions in sequence: which part is the
+// year, then which of the other two is the month. Step 2 reported a guess when
+// it had to make one. Step 1 did not, because the arm it fell through to was
+// the default rather than a decision, so an input whose bytes read year-first
+// as well as year-last came back with Ambiguous false and step 2's certainty
+// standing for both questions.
+//
+// "17-1-01" is the case: 17 cannot be a month, so step 2 was certain the
+// seventeenth was the day, and it is equally the first of January 2017. What
+// made it a wrong day rather than a missing flag is that a layout detected from
+// "70-1-17", where 70 forces the year first and nothing is guessed, emits
+// two-byte fields at the same three offsets, accepts "17-1-01" and answers
+// 2017-01-01. Sixteen years and sixteen days from what Parse returns for the
+// same bytes, with a nil error on both calls.
+//
+// The instants below are what the lenient path already returned. What moves is
+// the flag and what strict mode does with it.
+func TestTwoDigitYearDateReportsTheYearFirstReading(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+
+	guessed := []struct {
+		in       string
+		lenient  string
+		readings map[string]string
+	}{
+		{"17-1-01", "2001-01-17", map[string]string{"DD/MM/YY": "2001-01-17", "YY/MM/DD": "2017-01-01"}},
+		{"31/12/24", "2024-12-31", map[string]string{"DD/MM/YY": "2024-12-31", "YY/MM/DD": "2031-12-24"}},
+		{"15/06/09", "2009-06-15", map[string]string{"DD/MM/YY": "2009-06-15", "YY/MM/DD": "2015-06-09"}},
+		{"24-12-31", "2031-12-24", map[string]string{"DD/MM/YY": "2031-12-24", "YY/MM/DD": "2024-12-31"}},
+	}
+	for _, c := range guessed {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q) = %v, want %s", c.in, err, c.lenient)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.lenient {
+			t.Errorf("ParseWith(%q) = %s, want %s; the lenient answer must not move", c.in, got, c.lenient)
+		}
+		if !r.Ambiguous {
+			t.Errorf("ParseWith(%q) reports no guess, but the same bytes read year-first "+
+				"are %s", c.in, c.readings["YY/MM/DD"])
+		}
+		_, err = ParseWith(c.in, WithBaseTime(base), WithStrictMode(true))
+		var ade *AmbiguousDateError
+		if !errors.As(err, &ade) {
+			t.Errorf("ParseWith(%q, strict) = %T %v, want *AmbiguousDateError", c.in, err, err)
+			continue
+		}
+		got := map[string]string{}
+		for _, iv := range ade.Interpretations {
+			got[iv.Label] = iv.Time.Format("2006-01-02")
+		}
+		if len(got) != len(c.readings) {
+			t.Errorf("ParseWith(%q, strict) = %v, want %v", c.in, got, c.readings)
+			continue
+		}
+		for label, want := range c.readings {
+			if got[label] != want {
+				t.Errorf("ParseWith(%q, strict): %s = %q, want %q", c.in, label, got[label], want)
+			}
+		}
+	}
+
+	// The other side of the line, and it is where the change stops. A part over
+	// 31 settles the year's position by itself; a second part over 12 leaves no
+	// month for the year-first reading to use; a four-digit year is already at
+	// one end and the leading part cannot hold another.
+	certain := []struct {
+		in   string
+		want string
+	}{
+		{"70-1-17", "1970-01-17"},
+		{"32-1-17", "2032-01-17"},
+		{"17-1-32", "2032-01-17"},
+		{"12/25/24", "2024-12-25"},
+		{"03/15/2024", "2024-03-15"},
+		{"25/12/2024", "2024-12-25"},
+		{"31/12/2024", "2024-12-31"},
+		{"1970/01/02", "1970-01-02"},
+	}
+	for _, c := range certain {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("ParseWith(%q) = %v, want %s with no guess reported", c.in, err, c.want)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02"); got != c.want {
+			t.Errorf("ParseWith(%q) = %s, want %s", c.in, got, c.want)
+		}
+		if r.Ambiguous {
+			t.Errorf("ParseWith(%q) reports a guess; nothing in it could have been read "+
+				"the other way", c.in)
+		}
+		if _, err := ParseWith(c.in, WithBaseTime(base), WithStrictMode(true)); err != nil {
+			t.Errorf("ParseWith(%q, strict) = %v, want the time", c.in, err)
+		}
+	}
+}

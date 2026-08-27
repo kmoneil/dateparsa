@@ -136,6 +136,57 @@ func AuxFor(k LitClass) uint16 {
 // accept every byte in c, whether or not c holds only one.
 func AuxClass(c LitClass) uint16 { return auxClassBase | 1<<uint16(c) }
 
+// SkipAux is the Aux a skipped run carries: the classes every byte in it
+// belongs to, so the executor can refuse a byte the run did not match.
+//
+// A skip covers bytes the detector scanned past, and until now the only thing
+// it checked was that they were not digits. That is C24's rule and it is the
+// right rule for a digit, but it is not the whole of what a skip has to hold
+// on to. "MAY1 00:00 1000" skips the space at offset 10 and reads a year at 11.
+// Applied to "MAY1 00:00+0000" the skip swallowed the '+' and the year read
+// "0000", for a wrong instant 2026 years out, where detection reads those five
+// bytes as a zone offset and takes the base year.
+//
+// The class is what tells the two apart, and it is the same answer C24 gave a
+// literal. A run of spaces carries ClassSpace, which does not hold '+'. A run
+// of '-' carries ClassSep and ClassSpecial, which do, so "70-MAY-01" keeps
+// working: its skips matched '-' and a '-' is what they meet.
+//
+// ClassAny is cleared before the mask is returned, because it holds every byte
+// that is not a digit and an intersection including it can never be empty. A
+// run whose bytes share nothing narrower comes back as 0, which litAccepts
+// already reads as "any non-digit": exactly the behaviour every skip had
+// before, and what a caller-written Compile still gets.
+func SkipAux(s string, off, length int) uint16 {
+	if off < 0 || length <= 0 || off+length > len(s) {
+		return 0
+	}
+	// A one-byte run carries the byte itself, through the same sole-byte
+	// encoding a literal uses. The class is not narrow enough here: ClassSpecial
+	// holds 'T', 'Z', '-', '+' and ',' together, so a run that matched a comma
+	// would go on accepting a '+' and the year behind it would go on reading a
+	// zone offset. That is the defect with one character changed, and the sweep
+	// in TestReusedTextualLayoutAgreesWithDetection found it from
+	// "MAY1 00:00,1000" within a minute of the class version being written.
+	//
+	// The cost is that a run of one space no longer stands in for a tab. That
+	// is a refusal rather than a wrong answer, it only reaches a caller reusing
+	// a layout across rows that are punctuated differently, and detection still
+	// reads both rows correctly on its own.
+	if length == 1 && s[off] != 0 {
+		return uint16(s[off])
+	}
+	mask := uint8(0xFF)
+	for j := off; j < off+length; j++ {
+		mask &= litClassSet[s[j]]
+	}
+	mask &^= 1 << uint8(ClassAny)
+	if mask == 0 {
+		return 0
+	}
+	return auxClassBase | uint16(mask)
+}
+
 // AuxAccepts reports whether c satisfies an Aux code.
 //
 // It exists for the test in detect that holds each class to be a superset of

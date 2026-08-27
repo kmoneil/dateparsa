@@ -2313,3 +2313,196 @@ func TestAmbiguityIsReportedWhereverTwoReadingsExist(t *testing.T) {
 	}
 	t.Logf("swept %d inputs, %d had two readings or more", checked, withTwo)
 }
+
+// TestSkippedRunKeepsTheClassItMatched is C28, the third rule about what a
+// skipped run may hold.
+//
+// C24 gave the run a digit check and TestSkippedRunWithADigitIsRefused covers
+// it. C26 added that it may not hold a word that decides the day. Neither
+// reaches a '+', which is not a digit and not a word, and a skip that matched a
+// space took it:
+//
+//	"MAY1 00:00 1000"  FMonthName@0:3 FDay1or2@3:1 FHour2@5:2 FMinute2@8:2
+//	                   FYear4@11:4    FSkip@4:1 FSkip@7:1 FSkip@10:1
+//	"MAY1 00:00+0000"  FMonthName@0:3 FDay1or2@3:1 FHour2@5:2 FMinute2@8:2
+//	                   FTZOffset@10:5 FSkip@4:1 FSkip@7:1
+//
+// Both are 15 bytes and both detect as MONTH_DAY_YEAR, so the executor's
+// coverage check passes. The cached layout's skip swallowed the '+' and its
+// year read "0000", against the 2026 detection takes from the base year for a
+// format that carries no year at all. `Parser` gave the same wrong answer,
+// because the format is not ambiguity-prone and C27's gate never fired.
+//
+// The fix is the class, which is what C24 gave a literal: a run of spaces
+// carries ClassSpace and ClassSpace does not hold '+'.
+func TestSkippedRunKeepsTheClassItMatched(t *testing.T) {
+	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	cached, err := ParseWith("MAY1 00:00 1000", WithBaseTime(base))
+	if err != nil {
+		t.Fatalf("Parse of the seed: %v", err)
+	}
+	if got := cached.Time.Format("2006-01-02"); got != "1000-05-01" {
+		t.Fatalf("seed parsed to %s, want 1000-05-01; the rest of this test is about that layout", got)
+	}
+
+	// A sign where the seed had a space. Detection reads these five bytes as a
+	// zone offset, or refuses them; the layout may not read them as a year.
+	for _, in := range []string{
+		"MAY1 00:00+0000", // a valid zone, and the crasher the sweep found
+		"MAY1 00:00-0500", // a valid zone that moves the instant as well
+		"MAY1 00:00+0130", // a valid zone with minutes
+		"MAY1 00:00+1000", // not a zone at all, and a plausible year
+		"MAY1 00:00+2024", // the same, and a year somebody might mean
+		"MAY1 00:00-9999", // the same, at the top of the year range
+	} {
+		if got, err := cached.Layout.Parse(in); err == nil {
+			t.Errorf("Layout(%v).Parse(%q) = %v, want an error: the skip matched a "+
+				"space and %q holds a sign there, which detection reads as a zone",
+				cached.Layout, in, got.Format("2006-01-02 -0700"), in)
+		}
+	}
+
+	// The run the skip exists to serve still works.
+	got, err := cached.Layout.Parse("MAY1 00:00 2024")
+	if err != nil {
+		t.Fatalf("Layout(%v).Parse(%q): %v", cached.Layout, "MAY1 00:00 2024", err)
+	}
+	if s := got.Format("2006-01-02"); s != "2024-05-01" {
+		t.Errorf("Layout(%v).Parse(%q) = %s, want 2024-05-01", cached.Layout, "MAY1 00:00 2024", s)
+	}
+
+	// A one-byte run carries the byte and not its class, so the space does not
+	// stand in for a tab. That is the cost of the fix and it is deliberate:
+	// ClassSpecial holds 'T', 'Z', '-', '+' and ',' together, so a class narrow
+	// enough to separate a comma from a plus does not exist, and a run that
+	// matched a comma kept taking a '+'. The sweep found that within a minute.
+	//
+	// What is given up is a refusal, not an answer. Detection reads the tabbed
+	// row correctly on its own, and only a caller reusing one layout across
+	// rows punctuated differently sees the difference.
+	if _, err := cached.Layout.Parse("MAY1 00:00\t2024"); err == nil {
+		t.Errorf("Layout(%v).Parse(%q) succeeded; a one-byte skip carries the byte "+
+			"it matched, and a tab is not a space", cached.Layout, "MAY1 00:00\t2024")
+	}
+	if r, err := ParseWith("MAY1 00:00\t2024", WithBaseTime(base)); err != nil {
+		t.Errorf("Parse(%q): %v, and detection has to keep reading the row the "+
+			"cached layout now declines", "MAY1 00:00\t2024", err)
+	} else if s := r.Time.Format("2006-01-02"); s != "2024-05-01" {
+		t.Errorf("Parse(%q) = %s, want 2024-05-01", "MAY1 00:00\t2024", s)
+	}
+
+	// A skip that matched a sign keeps accepting one, which is what stops the
+	// class rule refusing the formats that put a '-' in a skip. "70-MAY-01" has
+	// one at offset 2 and another at offset 6, and the second sits immediately
+	// before a numeric field, which is the shape a rule keyed on the byte
+	// rather than on the class would have refused.
+	for _, in := range []string{
+		"70-MAY-01", "01-MAY-10",
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+		"Fri, 15 Mar 2024 10:30:00 +0000",
+		"Mar 15 10:30:00 2024",
+		"2024年3月15日",
+		"March 15th",
+		"15 Mar 24 10:30 UTC",
+	} {
+		if _, err := ParseWith(in, WithBaseTime(base)); err != nil {
+			t.Errorf("Parse(%q): %v, and this format's skips hold a sign, a colon, "+
+				"an ordinal suffix or a multi-byte rune rather than a space", in, err)
+		}
+	}
+}
+
+// textualSweepInputs is the bounded space the sweep below uses: a textual-month
+// date whose trailing four bytes can be read as a year or as the digits of a
+// zone offset, with every byte that can sit between them.
+//
+// The separator is the point. A space, a tab, a sign and a colon are all
+// non-digits, so C24's rule let a layout built over one of them accept any of
+// the others, and the field behind the skip then read bytes that belong to a
+// different token.
+func textualSweepInputs() []string {
+	var out []string
+	digits := []int{
+		0, 1, 30, 59, 60, 99, 100, 130, 500, 999, 1000, 1200,
+		1400, 1500, 2024, 2400, 5959, 9999,
+	}
+	for _, prefix := range []string{"MAY1 00:00", "Mar 15 10:30:00", "MAY1 00:00:00"} {
+		for _, sep := range []string{" ", "\t", "+", "-", ":", ",", "/"} {
+			for _, d := range digits {
+				out = append(out, fmt.Sprintf("%s%s%04d", prefix, sep, d))
+			}
+		}
+	}
+	// The weekday-bearing forms, whose leading skip is a word rather than one
+	// byte, against every weekday and a few that are not one.
+	for _, wd := range []string{"Mon", "Tue", "Fri", "Sun", "Xyz", "Foo"} {
+		for _, zone := range []string{"-0700", "+0000", "+0530", " 2024", "-9999"} {
+			out = append(out, fmt.Sprintf("%s, 02 Jan 2006 15:04:05 %s", wd, zone))
+		}
+	}
+	return out
+}
+
+// TestReusedTextualLayoutAgreesWithDetection is C28's family, swept rather than
+// sampled, and it is the same property FuzzLayoutReuse hunts.
+//
+// C24, C26 and C28 are three rules about what a skipped run may hold, and each
+// was found by one input. What they have in common is a layout answering a row
+// whose bytes it does not describe, so the property worth asserting is the
+// general one: where a cached layout accepts a row, it agrees with detection.
+//
+// A refusal is always allowed. A layout that will not read a row has not
+// answered wrongly, and detection refusing a row a layout accepts is a weaker
+// fault than the two disagreeing, so this checks the disagreement.
+//
+// Only the distinct programs are iterated, for the reason
+// TestReusedLayoutDisagreesOnlyWhereItSaidItGuessed gives: two rows compiling
+// to identical instructions answer every input identically.
+func TestReusedTextualLayoutAgreesWithDetection(t *testing.T) {
+	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	type row struct {
+		in     string
+		layout *Layout
+		want   time.Time
+	}
+	var rows []row
+	seen := map[string]bool{}
+	var distinct []int
+	for _, in := range textualSweepInputs() {
+		r, err := ParseWith(in, WithBaseTime(base))
+		if err != nil || r.Ambiguous || !reusable(r.Layout) {
+			continue
+		}
+		rows = append(rows, row{in, r.Layout, r.Time})
+		key := fmt.Sprintf("%v|%d|%s", r.Layout.program.Insts[:r.Layout.program.N],
+			r.Layout.program.BaseYear, r.Layout.label)
+		if !seen[key] {
+			seen[key] = true
+			distinct = append(distinct, len(rows)-1)
+		}
+	}
+	if len(rows) == 0 {
+		t.Fatal("no textual input in the sweep parsed unambiguously; it is checking nothing")
+	}
+
+	accepted := 0
+	for _, i := range distinct {
+		from := rows[i]
+		for _, to := range rows {
+			got, err := from.layout.Parse(to.in)
+			if err != nil {
+				continue // refusing is always allowed
+			}
+			accepted++
+			if !got.Equal(to.want) {
+				t.Fatalf("layout %s detected from %q accepted %q and disagreed with detection:\n"+
+					"  reused = %v\n"+
+					"  fresh  = %v\n"+
+					"a skipped run took a byte it did not match, or a field behind one read "+
+					"bytes belonging to a different token", from.layout, from.in, to.in, got, to.want)
+			}
+		}
+	}
+	t.Logf("%d textual inputs over %d distinct programs, %d pairs, %d accepted",
+		len(rows), len(distinct), len(distinct)*len(rows), accepted)
+}

@@ -158,6 +158,14 @@ func FuzzUnmarshalJSONAcrossFormats(f *testing.F) {
 		// the instant detection would have returned. The assertion is
 		// one-directional because of this input.
 		{`"0000-01-01 00:00:00  0000"`, `"0000-01-01 00:00:00 "`},
+
+		// C28, and this target is where it surfaced: the cached layout from the
+		// first value read the second one's zone offset as a year, for
+		// 0000-05-01 against the 2026-05-01 detection answers. The skipped run
+		// at offset 10 matched a space and took the '+'; a one-byte run carries
+		// the byte it matched now. Found by make ci's sweep on 17bb3d9,
+		// crasher ff845c725c12ee58.
+		{`"MAY1 00:00 1000"`, `"MAY1 00:00+0000"`},
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s[0]), []byte(s[1]))

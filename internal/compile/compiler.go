@@ -95,6 +95,21 @@ type Field struct {
 }
 
 // FormatDef defines a date format as a sequence of fields.
+//
+// Fields are listed in the order the input writes them, ascending by Offset,
+// and that is a precondition rather than a convention. Execute carries a
+// running delta for every variable-width field that read more bytes than its
+// Len declared and adds it to the offset of every instruction listed after that
+// one, which is the right answer only while the list ascends: a field listed
+// late and positioned early is otherwise given an adjustment for a widening
+// that happened to its right. Detection's TestFieldsAreListedInInputOrder holds
+// its producers to it; a caller building a def by hand owes the same order.
+//
+// A sum of widths cannot see a violation, which is why this is written down
+// here. "\x00MAY1" was compiled with its leading byte's skip listed last, and
+// against "1MAY10" the widened day moved that skip onto byte 1: the leading '1'
+// was described by nothing, the widths still summed to the input length, and
+// the layout answered 2026-05-10 where detection reads 2010-05-01.
 type FormatDef struct {
 	Name     string // e.g. "ISO8601_DATE"
 	GoLayout string // Go time layout equivalent, if any

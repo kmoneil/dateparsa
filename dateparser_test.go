@@ -2440,7 +2440,85 @@ func textualSweepInputs() []string {
 			out = append(out, fmt.Sprintf("%s, 02 Jan 2006 15:04:05 %s", wd, zone))
 		}
 	}
+	// C30's family: a run the format does not read, and a day that is written
+	// with one digit in some rows and two in others.
+	//
+	// Those two together are what made the order the fields are listed in
+	// matter. A skipped run was appended to the list after the fields, wherever
+	// in the input it sat, and Execute adds the width a day gained to every
+	// instruction listed behind it, so a skip at offset 0 examined byte 1 as
+	// soon as a two-digit day was read where a one-digit day was declared.
+	//
+	// The prefixes are what a gap is made of: nothing, a byte that has its own
+	// class, a byte that has none, and a run of two. The NUL is the one byte a
+	// one-byte skip cannot carry literally, because Aux 0 already means "any
+	// byte that is not a digit".
+	for _, prefix := range []string{"", "\x00", "(", "\x01\x02", "- "} {
+		for _, day := range []string{"1", "9", "10", "31"} {
+			for _, year := range []string{"", "10", "2024"} {
+				out = append(out,
+					prefix+"MAY"+day+year,
+					prefix+day+"MAY"+year,
+					strings.TrimSpace(prefix+"MAY "+day+" "+year),
+					strings.TrimSpace(prefix+day+" MAY "+year),
+				)
+			}
+		}
+	}
 	return out
+}
+
+// TestReusedTextualLayoutTakesAWiderDay is the acceptance half of C30, and it
+// is what README.md promises beside the paragraph on padding.
+//
+// A textual format's day is written with one digit or two, and the layout
+// declares the width the first row had. Widening it was already the point of
+// OpDay1or2, and it already worked for the numeric formats, whose fields are
+// listed in the order the input writes them. It did not work for a textual one:
+// the skip that covers the punctuation was listed after the day, so the day's
+// extra byte moved the skip instead of the month name and the reuse failed on
+// whichever of the two the shifted instruction landed in.
+//
+// Narrowing is not the same promise and is not made here. A layout from a
+// two-digit day declares two, and one digit does not fill it.
+func TestReusedTextualLayoutTakesAWiderDay(t *testing.T) {
+	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	for _, p := range [][2]string{
+		{"1 May 2024", "12 May 2024"},
+		{"May 1, 2024", "May 12, 2024"},
+		{"1 May 2024 10:30", "12 May 2024 10:30"},
+		{"Mar 1 10:30:00 2024", "Mar 12 10:30:00 2024"},
+		{"1 MAY", "12 MAY"},
+		{"MAY 1", "MAY 12"},
+
+		// The numeric formats, which have no run to skip and were already
+		// right. They are here so that a change narrowing this to the textual
+		// path shows up as the regression it would be.
+		{"3/1/2024", "3/12/2024"},
+		{"1/3/2024", "12/3/2024"},
+	} {
+		from, to := p[0], p[1]
+		r, err := ParseWith(from, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("Parse(%q): %v", from, err)
+			continue
+		}
+		want, err := ParseWith(to, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("Parse(%q): %v", to, err)
+			continue
+		}
+		got, err := r.Layout.Parse(to)
+		if err != nil {
+			t.Errorf("layout %s from %q refused %q: %v; a one-digit day widens to two",
+				r.Layout, from, to, err)
+			continue
+		}
+		if !got.Equal(want.Time) {
+			t.Errorf("layout %s from %q parsed %q as %v, detection reads %v",
+				r.Layout, from, to, got, want.Time)
+		}
+	}
 }
 
 // TestReusedTextualLayoutAgreesWithDetection is C28's family, swept rather than

@@ -415,6 +415,67 @@ func kindName(k compile.FieldKind) string {
 	return "literal"
 }
 
+// fieldCorpus is the input set the two tests below walk. One asks what the
+// fields cover and the other asks what order they are listed in, and both
+// questions are about the same field lists.
+//
+// The last two rows are here for the order test rather than the coverage one.
+// A gap and a variable-width field in the same format is the pair that makes
+// the order matter, and every row above them either has no gap or has nothing
+// in it that can widen.
+var fieldCorpus = []string{
+	"2024-03-15", "2024/03/15", "2024.03.15",
+	"2024-03-15T10:30:00Z", "2024-03-15T10:30:00+05:30",
+	"2024-03-15T10:30:00.123456+05:30", "2024-03-15T10:30:00.123Z",
+	"2024-03-15 10:30:00", "2024-03-15 10:30:00 UTC", "2024-03-15 10:30:00.123456",
+	"2015-02-08 03:02:00 +0300 MSK", "2012-08-03 18:31:59.257000000 +0000 UTC",
+	"2024-03-15 10:30:00 m=+0.000000001",
+	"0000-001", "2024-074", "2024-W11-5", "2024-W11",
+	"2014年04月08日", "2020-07-20+08:00", "20240315", "20240315T103000Z",
+	"March 15, 2024", "September 17, 2012 at 10:09am", "15 Mar 2024",
+	"December 23rd", "March 2024", "sept. 1, 2020",
+	"Fri Jul 03 2015 18:04:07 GMT+0100", "Thu, 4 Jan 2018 17:53:36 +0000",
+	"3/15/2024", "3/15/2024 10:30:00 AM", "3/15/2024 10:30:00",
+	"15.03.2024", "01/02/2024", "10:30", "10:30:00", "10:30 PM", "10:30:00.123",
+	"\x00MAY1", "1MAY10", "1 MAY", "MAY 1", "MAY 1 2024", "1 May 24",
+	"MAY. 1", "(MAY1)", "Mar 15 10:30:00 2024",
+}
+
+// TestFieldsAreListedInInputOrder asserts the other thing the executor assumes
+// about a field list, and the one a sum of widths cannot see.
+//
+// Execute carries a running delta for every variable-width field that read more
+// bytes than its Len declared, and adds it to the offset of every instruction
+// listed after that one. So a list has to ascend by offset, or an instruction
+// listed late and positioned early is given an adjustment for a widening that
+// happened to its right.
+//
+// C30 is what that cost. "\x00MAY1" detected as MONTH_DAY with the month name
+// at 1, a 1-or-2 digit day at 4, and the leading byte's skip appended last at
+// offset 0, because coverGaps added every gap it found at the end of the list.
+// Reused against "1MAY10" the day widened to two bytes and the skip then
+// examined byte 1: the leading '1' was described by nothing, the widths still
+// summed to the length so the coverage test above could not see it either, and
+// the layout answered 2026-05-10 where detection reads 2010-05-01.
+func TestFieldsAreListedInInputOrder(t *testing.T) {
+	for _, in := range fieldCorpus {
+		r, ok := Detect(in, Config{})
+		if !ok || r.Def == nil {
+			continue // refusing is always allowed
+		}
+		prev := int32(-1)
+		for i, f := range r.Def.Fields {
+			if f.Offset < prev {
+				t.Errorf("Detect(%q) [%s]: field %d sits at offset %d, behind the %d before it;"+
+					" the executor's delta assumes the list ascends",
+					in, r.Def.Name, i, f.Offset, prev)
+				break
+			}
+			prev = f.Offset
+		}
+	}
+}
+
 // TestEveryInputByteIsDescribedExactlyOnce asserts what the executor's coverage
 // check assumes: every byte of an input a format claims belongs to exactly one
 // field, no byte to none and no byte to two.
@@ -428,23 +489,7 @@ func kindName(k compile.FieldKind) string {
 // so a layout built from "0000-001" accepted the compact date "00000101" and
 // read its "0101" as day-of-year 101.
 func TestEveryInputByteIsDescribedExactlyOnce(t *testing.T) {
-	corpus := []string{
-		"2024-03-15", "2024/03/15", "2024.03.15",
-		"2024-03-15T10:30:00Z", "2024-03-15T10:30:00+05:30",
-		"2024-03-15T10:30:00.123456+05:30", "2024-03-15T10:30:00.123Z",
-		"2024-03-15 10:30:00", "2024-03-15 10:30:00 UTC", "2024-03-15 10:30:00.123456",
-		"2015-02-08 03:02:00 +0300 MSK", "2012-08-03 18:31:59.257000000 +0000 UTC",
-		"2024-03-15 10:30:00 m=+0.000000001",
-		"0000-001", "2024-074", "2024-W11-5", "2024-W11",
-		"2014年04月08日", "2020-07-20+08:00", "20240315", "20240315T103000Z",
-		"March 15, 2024", "September 17, 2012 at 10:09am", "15 Mar 2024",
-		"December 23rd", "March 2024", "sept. 1, 2020",
-		"Fri Jul 03 2015 18:04:07 GMT+0100", "Thu, 4 Jan 2018 17:53:36 +0000",
-		"3/15/2024", "3/15/2024 10:30:00 AM", "3/15/2024 10:30:00",
-		"15.03.2024", "01/02/2024", "10:30", "10:30:00", "10:30 PM", "10:30:00.123",
-	}
-
-	for _, in := range corpus {
+	for _, in := range fieldCorpus {
 		r, ok := Detect(in, Config{})
 		if !ok || r.Def == nil {
 			continue // refusing is always allowed

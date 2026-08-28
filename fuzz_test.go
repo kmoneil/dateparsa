@@ -224,6 +224,24 @@ func FuzzLayoutReuse(f *testing.F) {
 		// FuzzUnmarshalJSONAcrossFormats. Inert since the fix, because the
 		// cached layout refuses the second value rather than answering it.
 		{"MAY1 00:00 1000", "MAY1 00:00+0000"},
+
+		// C30 is neither the skip's contents nor the flag but the order the
+		// fields are listed in. "\x00MAY1" detects as MONTH_DAY with the month
+		// name at 1, a 1-or-2 digit day at 4, and the leading byte's skip
+		// appended last at offset 0, because coverGaps put every gap it found
+		// at the end of the list. Execute adds its running delta to every
+		// instruction listed after a field that widened, so against "1MAY10"
+		// the day read two bytes and the skip then examined byte 1 rather than
+		// byte 0: the leading '1' was read by nothing, the widths still summed
+		// to 6 so the coverage check saw a whole input described, and the
+		// layout answered 2026-05-10 where detection reads 2010-05-01.
+		//
+		// A one-byte skip carries the byte it matched and would have refused a
+		// '1' wherever it looked. A NUL is the one byte that cannot use that
+		// encoding, because an Aux of 0 already means "any byte that is not a
+		// digit", so this run carried ClassLetter instead and the 'M' at byte 1
+		// satisfied it. Detection lists its fields in input order now.
+		{"\x00MAY1", "1MAY10"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

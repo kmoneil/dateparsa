@@ -139,7 +139,12 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 
 	// delta tracks the cumulative offset adjustment caused by variable-width
 	// fields (Op*1or2) that consumed more bytes than their minimum Len.
-	// For fixed-width programs (detection path), delta stays 0 — zero cost.
+	// For fixed-width programs (detection path), delta stays 0, at zero cost.
+	//
+	// Adding it to every instruction after the one that widened is only the
+	// right answer because a program's instructions ascend by offset, which is
+	// the precondition on FormatDef. An instruction listed late and positioned
+	// early would otherwise be moved by a widening that happened to its right.
 	var delta int
 
 	// end is one past the last byte any instruction read, and covered is how

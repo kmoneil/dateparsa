@@ -130,6 +130,12 @@ Padding does not break reuse. A column that pads inconsistently, `2024-03-15` on
 one row and `2024-03-15 ` on the next, reuses one layout for both: a layout that
 came from detection trims its input the same way detection did.
 
+Nor does a day written with one digit on one row and two on the next. A layout
+detected from `1 May 2024` parses `12 May 2024`, and `May 1, 2024` parses
+`May 12, 2024`, the same as the numeric forms already did. Widening only: a
+layout from a two-digit day declares two, and `1 May 2024` does not fill it, so
+detect from the narrower row or let `Parser` re-detect.
+
 ### Batch parsing
 
 ```go

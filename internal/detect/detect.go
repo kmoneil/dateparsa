@@ -725,6 +725,52 @@ func coverGaps(fields []compile.Field, s string) []compile.Field {
 		}
 		fields = append(fields, skip(s, start, i-start))
 	}
+	return sortByOffset(fields)
+}
+
+// sortByOffset puts a field list back into the order the input writes it, in
+// place, which is the order the executor reads it in.
+//
+// Execute carries a running delta for every variable-width field that consumed
+// more bytes than its Len, and adds it to the offset of every instruction after
+// that one in the list. That is the right answer only while the list ascends by
+// offset, and two things here leave it not ascending: buildTextualFields emits
+// the month name first whichever side of it the numbers sit on, and the loop
+// above appends a gap's skip at the end wherever in the input the gap was.
+//
+// "\x00MAY1" is what the pair cost. It detects as MONTH_DAY with the month at
+// 1, a 1-or-2 digit day at 4, and the leading byte's skip listed last at 0.
+// Reused against "1MAY10" the day widens to two bytes, delta becomes 1, and the
+// skip then examines byte 1 rather than byte 0: the leading '1' is read by
+// nothing, the widths still sum to the length so the coverage check sees a
+// whole input described, and the layout answers 2026-05-10 where detection
+// reads the same six bytes as 2010-05-01.
+//
+// Insertion sort written out rather than sort.Slice, because the closure and
+// the interface would allocate on a path whose whole allocation budget is the
+// field slice itself.
+//
+// It is a few comparisons per parse and no swaps at all for a list that was in
+// order, which every trie format's is. What keeps the worst case from being
+// quadratic in the input is that the two producers above are each nearly
+// sorted: the gaps are appended in ascending order and only have to pass the
+// handful of fields a format declares, and the month name is one field moving
+// past at most the same handful. Detect refuses an input over
+// MaxDescribableLen before any of this runs, so the list is bounded whatever
+// happens; Compile then refuses one over MaxInstructions.
+//
+// The inner loop walks a reslice rather than indexing fields directly, which is
+// what keeps it free of bounds checks: j is bounded by len(run) at the top and
+// only ever decreases, so the compiler proves both accesses. Written the
+// obvious way with fields[j+1] it cost three, and testdata/codegen/gates.txt
+// counts them.
+func sortByOffset(fields []compile.Field) []compile.Field {
+	for i := 1; i < len(fields); i++ {
+		run := fields[:i+1]
+		for j := len(run) - 1; j > 0 && run[j-1].Offset > run[j].Offset; j-- {
+			run[j], run[j-1] = run[j-1], run[j]
+		}
+	}
 	return fields
 }
 

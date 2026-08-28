@@ -24,7 +24,7 @@ t, err := result.Layout.Parse("2025-01-01T00:00:00Z")
 
 Detection and parsing are separate problems, and the detection result is
 reusable. `Parse` hands back the time **and** a compiled `Layout`, and that
-layout re-parses the same format with zero allocations, at 26.9 ns for an ISO
+layout re-parses the same format with zero allocations, at 25.2 ns for an ISO
 date. The cost of not knowing the format is paid once per column, not once per
 row.
 
@@ -33,7 +33,7 @@ row.
 |  | |
 | --- | --- |
 | **Detect once, reuse forever** | The first call returns a `Layout`. Every row after it skips detection entirely and allocates nothing. |
-| **Faster than `time.Parse`** | 2.9x to 4.0x on the same format, both sides told the layout, zero allocations on either. |
+| **Faster than `time.Parse`** | 3.0x to 3.7x on the same format, both sides told the layout, zero allocations on either. |
 | **One API for two problems** | ISO, RFC, SQL, syslog, epochs and compact formats, plus "3 days ago" and "next friday at 2pm". |
 | **20 languages, compiled in** | Month and day names for 20 locales, registered at init. No file to ship, no path to configure. |
 | **Ambiguity is reported, never hidden** | `DD/MM` against `MM/DD` is a guess, and `ParseResult.Ambiguous` says it was one. Strict mode returns both readings instead. |
@@ -48,7 +48,7 @@ row.
 
 ## Why dateparsa
 
-**When you already know the format**, use `time.Parse`. It's 42 ns on the machine the Performance section names, zero allocs, stdlib. Nothing should replace it.
+**When you already know the format**, use `time.Parse`. It's 43 ns on the machine the Performance section names, zero allocs, stdlib. Nothing should replace it.
 
 **When you don't know the format** — CSV imports, log ingestion, API responses from third parties, user-submitted data, multi-source pipelines — that's where dateparsa comes in.
 
@@ -91,7 +91,7 @@ fmt.Println(result.Ambiguous) // false
 result, _ := dateparsa.Parse("2024-03-15T10:30:00Z")
 layout := result.Layout
 
-// Parse millions, zero alloc, 36 ns/op for this format
+// Parse millions, zero alloc, 35 ns/op for this format
 for _, row := range rows {
     t, err := layout.Parse(row)
     // ...
@@ -520,8 +520,8 @@ instance that produced them, down to the zone, the image and the kernel.
 `make bench-cloud` rents that machine again and measures the same way;
 **Regression tracking** below says what it costs and how it is torn down.
 
-Spread across the ten runs has a median of 1.2%. Six of the 66 benchmarks exceed
-4% and the worst is 6.5%, so a difference smaller than a few percent **within
+Spread across the ten runs has a median of 1.5%. Six of the 68 benchmarks exceed
+4% and the worst is 8.1%, so a difference smaller than a few percent **within
 one run** is the machine and not the code.
 
 Those figures do not carry between runs, and that is the trap they invite.
@@ -532,6 +532,16 @@ a baseline is a snapshot of one host on one day, and a delta between two of them
 says nothing on its own about a change. `make bench-cloud-ab` is what answers
 that question: two commits on one rented machine, alternating, with benchstat
 over the pair.
+
+**Alternating removes the host, and it does not remove the binary.** The four
+`stdlib/` rows below call `time.Parse` and contain none of this library's code,
+so any movement in them is not a change in what they measure. In the
+`bench-cloud-ab` run behind the current baseline they moved by up to 4%, on one
+machine, in one alternating run, between two trees differing by one commit in
+one package: what moved was where the linker put things. So a few percent on a
+single row is not a result even from the comparison built to be trustworthy, and
+the way to price a change that small is to measure the added work directly
+rather than to difference two binaries.
 
 It was an Apple M2 Max until 2026-08-19. The reason for moving is the history of
 this section: the tables were once split across two machines and labelled as
@@ -575,7 +585,7 @@ wider than 32 bytes, and none for the rest, which is most of them.
 ### Hot path (compiled Layout reuse)
 
 Median of the ten runs in `benchmarks/baseline.txt`, on the machine named above.
-These spread at most 4.3% across those ten runs, which is the figure a claimed
+These spread at most 4.7% across those ten runs, which is the figure a claimed
 improvement has to clear **within one run of one machine**.
 
 Between two machines it is a different and larger figure, and treating the
@@ -590,13 +600,13 @@ the only comparison here that measures a change rather than a host.
 
 | Operation                          | ns/op | Allocs | vs `time.Parse` |
 | ---------------------------------- | ----- | ------ | --------------- |
-| `Layout.Parse` (compact date)      | 25.7  | 0      | 0.6x            |
-| `Layout.Parse` (ISO date)          | 26.9  | 0      | 0.6x            |
-| `Layout.Parse` (ISO datetime+Z)    | 36.0  | 0      | 0.9x            |
-| `Parser` (cached layout)           | 36.5  | 0      | 0.9x            |
-| `Layout.Parse` (zone abbreviation) | 42.7  | 0      | 1.0x            |
-| `Layout.Parse` (numeric offset)    | 45.9  | 0      | 1.1x            |
-| `time.Parse` (stdlib baseline)     | 42.2  | 0      | 1.0x            |
+| `Layout.Parse` (compact date)      | 24.3  | 0      | 0.6x            |
+| `Layout.Parse` (ISO date)          | 25.2  | 0      | 0.6x            |
+| `Layout.Parse` (ISO datetime+Z)    | 35.5  | 0      | 0.8x            |
+| `Parser` (cached layout)           | 35.8  | 0      | 0.8x            |
+| `Layout.Parse` (zone abbreviation) | 40.9  | 0      | 1.0x            |
+| `Layout.Parse` (numeric offset)    | 45.3  | 0      | 1.1x            |
+| `time.Parse` (stdlib baseline)     | 42.9  | 0      | 1.0x            |
 
 The two zone rows are new to this table and are the point of the change that
 moved it. A timestamp carrying a zone used to hand the whole instant to
@@ -615,10 +625,10 @@ is the source, same machine and method as above.
 
 | Format       | dateparsa | `time.Parse` |          |
 | ------------ | --------- | ------------ | -------- |
-| SQL datetime | 34.6 ns   | 125 ns       | **3.6x** |
-| ISO date     | 25.6 ns   | 76.6 ns      | **3.0x** |
-| US slash     | 25.3 ns   | 72.5 ns      | **2.9x** |
-| RFC 3339     | 35.2 ns   | 41.9 ns      | **1.2x** |
+| SQL datetime | 34.7 ns   | 128 ns       | **3.7x** |
+| ISO date     | 25.3 ns   | 79.4 ns      | **3.1x** |
+| US slash     | 25.1 ns   | 75.0 ns      | **3.0x** |
+| RFC 3339     | 35.4 ns   | 44.4 ns      | **1.3x** |
 
 Zero allocations on every row, both sides. RFC 3339 is close because it is the
 one layout the standard library hand-writes a dedicated parser for; the other
@@ -642,7 +652,7 @@ library whose reason to exist is parsing the second row through the
 ten-millionth with the format found on the first, that was the right side of the
 trade.
 
-**That planning is no longer done per call and `Detect` is 104 ns**, against the
+**That planning is no longer done per call and `Detect` is 103 ns**, against the
 221 ns this paragraph described. The program a trie format compiles to is
 decided by the format, the timezone and the base year, so it is built once at
 init and the same `Layout` is handed to every caller. The planning cost is still
@@ -655,19 +665,19 @@ paid; it is paid once for the process rather than once for the call.
 
 | Format               | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| Compact date         | 97.7  | 0      |
-| ISO 8601 date        | 103   | 0      |
-| Unix timestamp       | 115   | 1      |
-| Compact datetime     | 123   | 0      |
-| SQL datetime         | 132   | 0      |
-| ISO 8601 datetime    | 136   | 0      |
-| RFC 3339             | 160   | 0      |
-| SQL datetime + frac6 | 161   | 0      |
-| ISO ordinal          | 191   | 2      |
-| Time with AM/PM      | 277   | 1      |
-| ISO week date        | 307   | 2      |
-| Ambiguous slash      | 312   | 2      |
-| Textual month        | 530   | 2      |
+| Compact date         | 96.7  | 0      |
+| ISO 8601 date        | 102   | 0      |
+| Unix timestamp       | 113   | 1      |
+| Compact datetime     | 122   | 0      |
+| SQL datetime         | 131   | 0      |
+| ISO 8601 datetime    | 134   | 0      |
+| RFC 3339             | 158   | 0      |
+| SQL datetime + frac6 | 160   | 0      |
+| ISO ordinal          | 193   | 2      |
+| Time with AM/PM      | 276   | 1      |
+| Ambiguous slash      | 309   | 2      |
+| ISO week date        | 314   | 2      |
+| Textual month        | 557   | 2      |
 
 **Most of these allocate nothing at all**, which is the second column and is
 newer than the first. A format the trie matches compiles to a program decided
@@ -694,8 +704,8 @@ hot path table is what every row after the first costs.
 
 | Operation                     | Time  | Per row |
 | ----------------------------- | ----- | ------- |
-| `Layout.Parse` 10M rows       | 363ms | 36.3 ns |
-| `Parser.ParseColumn` 10M rows | 435ms | 43.5 ns |
+| `Layout.Parse` 10M rows       | 359ms | 35.9 ns |
+| `Parser.ParseColumn` 10M rows | 437ms | 43.7 ns |
 
 A column costs one detection and then a compiled parse per row. The difference
 between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
@@ -705,12 +715,12 @@ between the two rows is the `[]time.Time` that `ParseColumn` fills and returns;
 
 | Expression           | ns/op | Allocs |
 | -------------------- | ----- | ------ |
-| "yesterday"          | 381   | 2      |
-| "in 10 minutes"      | 447   | 2      |
-| "next friday"        | 470   | 2      |
-| "beginning of month" | 479   | 2      |
-| "yesterday at 5pm"   | 508   | 2      |
-| "3 days ago"         | 567   | 2      |
+| "yesterday"          | 396   | 2      |
+| "in 10 minutes"      | 474   | 2      |
+| "next friday"        | 489   | 2      |
+| "beginning of month" | 495   | 2      |
+| "yesterday at 5pm"   | 522   | 2      |
+| "3 days ago"         | 585   | 2      |
 
 </details>
 
@@ -731,16 +741,16 @@ go test -run '^$' -bench . -benchmem ./flextime/
 | `FlexTime.Value`                        | 0.65  | 0      |
 | `UnmarshalJSON`, `null`                 | 1.9   | 0      |
 | `FlexTime.Scan`, `time.Time`            | 2.3   | 0      |
-| `FlexTime.Scan`, `float64`              | 8.0   | 0      |
-| `FlexTime.Scan`, `int64`                | 11.6  | 0      |
-| `Scanner.Scan`, string                  | 38.3  | 0      |
-| `FlexTime.Scan`, string                 | 38.5  | 0      |
-| `UnmarshalJSON`, integer number         | 43.6  | 0      |
-| `FlexTime.Scan`, `[]byte`               | 52.3  | 1      |
-| `UnmarshalText`                         | 53.0  | 1      |
-| `UnmarshalJSON`, string                 | 67.5  | 1      |
-| `MarshalJSON`                           | 167   | 3      |
-| `UnmarshalJSON`, number with a fraction | 241   | 2      |
+| `FlexTime.Scan`, `float64`              | 8.4   | 0      |
+| `FlexTime.Scan`, `int64`                | 11.7  | 0      |
+| `Scanner.Scan`, string                  | 36.3  | 0      |
+| `FlexTime.Scan`, string                 | 37.4  | 0      |
+| `UnmarshalJSON`, integer number         | 44.0  | 0      |
+| `UnmarshalText`                         | 51.9  | 1      |
+| `FlexTime.Scan`, `[]byte`               | 53.0  | 1      |
+| `UnmarshalJSON`, string                 | 65.4  | 1      |
+| `MarshalJSON`                           | 168   | 3      |
+| `UnmarshalJSON`, number with a fraction | 239   | 2      |
 
 Every row that parses is steady state, the second value of a format onward. The
 first value of a format costs one more, the `Layout` its detection returns, and

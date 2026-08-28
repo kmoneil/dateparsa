@@ -37,6 +37,13 @@ benchmarks/current.txt
 benchmarks/current.env
 benchmarks/current.log
 
+# `make bench-cloud-ab` writes both sides of the comparison it just ran. They
+# are the same kind of artefact as current.txt and were not listed here, so the
+# first run of that mode left two 84KB files showing as untracked next to the
+# change they were measuring.
+benchmarks/ab-base.txt
+benchmarks/ab-head.txt
+
 # Secrets / credentials
 *.env
 *.env.*

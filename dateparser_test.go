@@ -2412,6 +2412,109 @@ func TestSkippedRunKeepsTheClassItMatched(t *testing.T) {
 	}
 }
 
+// TestNumberBeforeAColonIsTheHour is C31, and it is the first of these rules
+// that is about the number rather than about the run beside it.
+//
+// A ':' straight after a number puts that number where an hour is written.
+// buildTextualFields read it by value instead: at or under 23 it started the
+// time there, and above 23 it called the number a year and handed
+// parseTimeComponent the ':' behind it, which steps over a leading colon
+// because CLF writes one. So the clock shifted one field left and a date field
+// took the hour's bytes:
+//
+//	"MAY1 70:00:00"  FMonthName@0:3 FDay1or2@3:1 FYear2@5:2  FHour24@8:2 FMinute2@11:2
+//	"MAY1 00:00:00"  FMonthName@0:3 FDay1or2@3:1 FHour24@5:2 FMinute2@8:2 FSecond2@11:2
+//
+// Thirteen bytes either way, both MONTH_DAY_YEAR, every skip matching the byte
+// it matched before, so C24, C26 and C28 all pass and the coverage check sees a
+// whole input described. The layout compiled from the first read the second's
+// hour as a two-digit year: 2000-05-01 against the 2026-05-01 detection takes
+// from the base year, with nil errors and no guess reported on either call.
+//
+// The same misreading is a wrong answer on one call, without any reuse, which
+// is the half the fuzzer could not report: "May 2024 15:04:05" came back as
+// 2024-05-15 04:05:00, the hour read as the day and the minute as the hour.
+//
+// A four-digit year is the one token a ':' may follow, because that is the
+// separator CLF puts between the date and the time.
+func TestNumberBeforeAColonIsTheHour(t *testing.T) {
+	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+
+	// Refused: the number before the ':' is neither an hour nor a four-digit
+	// year, so nothing in the input says what it is.
+	for _, in := range []string{
+		"MAY1 24:00:00", // one over the top of the hour range
+		"MAY1 70:00:00", // the crasher the nightly sweep found
+		"MAY1 99:00:00", // the top of the two-digit range
+		"MAY1 32:00:00", // over 31, so the old code was sure it was a year
+		"MAY 1 24:00:00",
+		// Three digits, and not a year either. This one was already refused
+		// on the parent commit, as an invalid year rather than by this rule,
+		// so it documents the case instead of discriminating on it.
+		"MAY1 100:00:00",
+		"MAY1 0999:00:00", // four digits under 1000, which is not a year here
+	} {
+		if got, err := ParseWith(in, WithBaseTime(base)); err == nil {
+			t.Errorf("Parse(%q) = %v, want an error: %q holds no hour and no "+
+				"four-digit year before its first ':'", in, got.Time, in)
+		}
+	}
+
+	// Read the hour as the hour. The first three were wrong answers before the
+	// fix rather than refusals, and the fourth was a refusal.
+	for _, c := range []struct{ in, want string }{
+		{"May 2024 15:04:05", "2024-05-01 15:04:05"}, // was 2024-05-15 04:05:00
+		{"MAY70 12:00:00", "1970-05-01 12:00:00"},    // was 1970-05-12 00:00:00
+		{"MAY 70 12:00:00", "1970-05-01 12:00:00"},
+		{"Mar 2024 15:04", "2024-03-01 15:04:00"},
+
+		// A four-digit year takes the ':' as CLF's date/time separator, and
+		// this is the arm that keeps that working.
+		{"10/Oct/2000:13:55:36", "2000-10-10 13:55:36"},
+		{"MAY1 2024:00:00", "2024-05-01 00:00:00"},
+
+		// The ordinary forms, which have a day before the hour and never
+		// reached the branch that broke.
+		{"Mar 15 10:30:00 2024", "2024-03-15 10:30:00"},
+		{"Mar 15 2024 10:30:00", "2024-03-15 10:30:00"},
+		{"May 1, 2024 10:30:00", "2024-05-01 10:30:00"},
+		{"15 Mar 2024 10:30:00", "2024-03-15 10:30:00"},
+	} {
+		r, err := ParseWith(c.in, WithBaseTime(base))
+		if err != nil {
+			t.Errorf("Parse(%q): %v", c.in, err)
+			continue
+		}
+		if got := r.Time.Format("2006-01-02 15:04:05"); got != c.want {
+			t.Errorf("Parse(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+
+	// The reuse half, which is what FuzzLayoutReuse asserts and what the
+	// refusal above is there to make unreachable: no layout detected from one
+	// of these rows may read another one's hour as a year.
+	for _, from := range []string{"MAY1 00:00:00", "MAY1 12:00:00", "MAY1 23:00:00"} {
+		cached, err := ParseWith(from, WithBaseTime(base))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", from, err)
+		}
+		for _, to := range []string{"MAY1 00:00:00", "MAY1 01:00:00", "MAY1 23:00:00"} {
+			fresh, err := ParseWith(to, WithBaseTime(base))
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", to, err)
+			}
+			got, err := cached.Layout.Parse(to)
+			if err != nil {
+				continue // refusing is always allowed
+			}
+			if !got.Equal(fresh.Time) {
+				t.Errorf("layout from %q accepted %q and disagreed with detection:\n"+
+					"  reused = %v\n  fresh  = %v", from, to, got, fresh.Time)
+			}
+		}
+	}
+}
+
 // textualSweepInputs is the bounded space the sweep below uses: a textual-month
 // date whose trailing four bytes can be read as a year or as the digits of a
 // zone offset, with every byte that can sit between them.
@@ -2463,6 +2566,23 @@ func textualSweepInputs() []string {
 					strings.TrimSpace(prefix+day+" MAY "+year),
 				)
 			}
+		}
+	}
+	// C31's family: the number that sits where the hour is written, at every
+	// value that decides how detection reads it.
+	//
+	// Everything above varies what follows a fixed time and never the time
+	// itself, so a layout whose year sits at one offset and a layout whose hour
+	// sits at the same offset were never put to each other. That is the pair
+	// this adds. The day stays one digit because a two-digit day makes the row
+	// ambiguous and the sweep skips it.
+	for _, day := range []string{"1", "9"} {
+		for _, h := range []string{"00", "01", "12", "23", "24", "31", "32", "70", "99", "2024"} {
+			out = append(out,
+				"MAY"+day+" "+h+":00:00",
+				"MAY "+day+" "+h+":00:00",
+				"MAY"+day+" "+h+":00",
+			)
 		}
 	}
 	return out

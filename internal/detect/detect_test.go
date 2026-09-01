@@ -439,6 +439,12 @@ var fieldCorpus = []string{
 	"15.03.2024", "01/02/2024", "10:30", "10:30:00", "10:30 PM", "10:30:00.123",
 	"\x00MAY1", "1MAY10", "1 MAY", "MAY 1", "MAY 1 2024", "1 May 24",
 	"MAY. 1", "(MAY1)", "Mar 15 10:30:00 2024",
+
+	// C31's arm: a year in front of the time and no day at all, which is a
+	// field list no other row here produces. The CLF row beside it is the
+	// exemption that arm is narrowed by, and it puts a four-digit year
+	// immediately before a colon.
+	"May 2024 15:04:05", "MAY70 12:00:00", "10/Oct/2000:13:55:36 -0700",
 }
 
 // TestFieldsAreListedInInputOrder asserts the other thing the executor assumes

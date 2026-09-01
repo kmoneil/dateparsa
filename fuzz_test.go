@@ -242,6 +242,21 @@ func FuzzLayoutReuse(f *testing.F) {
 		// digit", so this run carried ClassLetter instead and the 'M' at byte 1
 		// satisfied it. Detection lists its fields in input order now.
 		{"\x00MAY1", "1MAY10"},
+
+		// C31, and it is the value of the number rather than its shape. The
+		// two inputs are the same thirteen bytes to the byte class, and
+		// detection splits them on what the number after the space says: 70
+		// cannot be an hour, so it was read as a two-digit year and the time
+		// then started at the ':' behind it, while 00 can be, so it is the
+		// hour and the year is not written at all. One offset, two kinds, and
+		// the layout compiled from the first read the second's hour as a year:
+		// 2000-05-01 against the 2026-05-01 detection takes from the base
+		// year, nil errors and no guess reported on either call.
+		//
+		// A ':' may follow a four-digit year, which is how CLF writes
+		// "10/Oct/2000:13:55:36", and nothing else. Detection refuses the
+		// first input now, so this seed is inert.
+		{"MAY1 70:00:00", "MAY1 00:00:00"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

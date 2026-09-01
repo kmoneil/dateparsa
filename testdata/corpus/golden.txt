@@ -1,4 +1,4 @@
-# 1370 inputs. Regenerate with: go test -run TestCorpusGolden -corpus-update
+# 1372 inputs. Regenerate with: go test -run TestCorpusGolden -corpus-update
 # input	result	instant (UTC)	offset	format	ambiguous	kind
 "\x00MAY1"	ok	2024-05-01T00:00:00.000000000Z	+00:00	MONTH_DAY	ambiguous=false	kind=absolute
 "0000-001"	ok	0000-01-01T00:00:00.000000000Z	+00:00	ISO_ORDINAL	ambiguous=false	kind=absolute
@@ -1222,6 +1222,8 @@
 "June 7, 1937"	ok	1937-06-07T00:00:00.000000000Z	+00:00	MONTH_DAY_YEAR	ambiguous=false	kind=absolute
 "MAY A1"	ok	2024-05-01T00:00:00.000000000Z	+00:00	MONTH_DAY	ambiguous=false	kind=absolute
 "MAY00\xc30\xae\x840000 At 0"	nomatch
+"MAY1 00:00:00"	ok	2024-05-01T00:00:00.000000000Z	+00:00	MONTH_DAY_YEAR	ambiguous=false	kind=absolute
+"MAY1 70:00:00"	nomatch
 "MAY10"	ok	2024-05-10T00:00:00.000000000Z	+00:00	MONTH_DAY	ambiguous=true	kind=absolute
 "MAY1010"	ok	1010-05-01T00:00:00.000000000Z	+00:00	MONTH_YEAR	ambiguous=false	kind=absolute
 "MAY70"	ok	1970-05-01T00:00:00.000000000Z	+00:00	MONTH_YEAR	ambiguous=false	kind=absolute

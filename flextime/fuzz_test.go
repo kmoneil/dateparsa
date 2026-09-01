@@ -166,6 +166,15 @@ func FuzzUnmarshalJSONAcrossFormats(f *testing.F) {
 		// the byte it matched now. Found by make ci's sweep on 17bb3d9,
 		// crasher ff845c725c12ee58.
 		{`"MAY1 00:00 1000"`, `"MAY1 00:00+0000"`},
+
+		// C31, the same shape one rule further in: a ':' straight after a
+		// number puts that number where an hour is written, and detection read
+		// it as a two-digit year whenever its value could not be an hour. The
+		// cached layout from the first value read the second one's hour as that
+		// year, 2000-05-01 against the 2026-05-01 detection answers. Found by
+		// the nightly sweep on e5adc9f, crasher dfea5cfe9e4a7a05 under
+		// FuzzLayoutReuse.
+		{`"MAY1 70:00:00"`, `"MAY1 00:00:00"`},
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s[0]), []byte(s[1]))

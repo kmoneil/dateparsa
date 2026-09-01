@@ -1638,7 +1638,11 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 
 	// Build field list from actual byte positions.
 	var buf [maxDetectFields]compile.Field
-	fields := coverGaps(buildTextualFields(buf[:0], s, monthNum, monthStart, monthEnd), s)
+	built, ok := buildTextualFields(buf[:0], s, monthNum, monthStart, monthEnd)
+	if !ok {
+		return Result{}, false
+	}
+	fields := coverGaps(built, s)
 	prone, guess := textualDayIsAGuess(s, fields)
 	ambig := AmbigNone
 	if guess {
@@ -1803,7 +1807,10 @@ func classifyTextualPattern(s string, monthStart, monthEnd int) string {
 
 // buildTextualFields constructs compile.Fields for a textual-month date string
 // by scanning the actual byte positions.
-func buildTextualFields(dst []compile.Field, s string, monthNum int, monthStart, monthEnd int) []compile.Field {
+//
+// It returns ok=false when the numbers cannot be assigned to fields, which is
+// detection refusing the input rather than reading it one of several ways.
+func buildTextualFields(dst []compile.Field, s string, monthNum int, monthStart, monthEnd int) ([]compile.Field, bool) {
 	// Use stack-allocated fixed-size arrays to avoid heap allocations.
 	fields := dst
 	var tbuf [maxTimeFields]compile.Field
@@ -1844,7 +1851,7 @@ func buildTextualFields(dst []compile.Field, s string, monthNum int, monthStart,
 		// Two numbers + month name. Smaller is day, larger is year (usually).
 		n0, n1 := nums[0], nums[1]
 		if n0.value > 31 || (n1.value <= 31 && n0.start > monthEnd) {
-			// n0 is year, n1 is day — unlikely but handle it
+			// n0 is year, n1 is day, which is unlikely but handled
 			fields = append(fields, yearField(n0))
 			fields = appendDay(fields, s, n1)
 		} else if n1.value > 31 {
@@ -1883,32 +1890,64 @@ func buildTextualFields(dst []compile.Field, s string, monthNum int, monthStart,
 		fields = append(fields, timeFields...)
 
 	case 0:
-		// Month name only — unusual but valid.
+		// Month name only, which is unusual but valid.
 
 	default:
-		fields = appendMultiNumFields(tbuf[:0], s, nums, fields)
+		var ok bool
+		fields, ok = appendMultiNumFields(tbuf[:0], s, nums, fields)
+		if !ok {
+			return nil, false
+		}
 	}
 
-	return fields
+	return fields, true
 }
 
 // appendMultiNumFields handles the 3+ numeric tokens case in buildTextualFields.
 // Patterns: "day time [year]" (e.g., "Mar 15 10:30:00 2024") or "day year time".
-func appendMultiNumFields(tbuf []compile.Field, s string, nums []numToken, fields []compile.Field) []compile.Field {
+//
+// It returns ok=false for an input whose numbers cannot be assigned, which is a
+// refusal by detection rather than a reading. See the colon rule below.
+func appendMultiNumFields(tbuf []compile.Field, s string, nums []numToken, fields []compile.Field) ([]compile.Field, bool) {
 	n0, n1 := nums[0], nums[1]
 
 	// Detect if nums[1:] form a time pattern (HH:MM or HH:MM:SS).
 	isTimeAtN1 := n1.end < len(s) && s[n1.end] == ':' && len(nums) >= 3
 
-	if isTimeAtN1 && n0.value <= 31 && n1.value <= 23 {
-		// Pattern: "day time [year]", e.g. "Mar 15 10:30:00 2024"
-		fields = appendDay(fields, s, n0)
+	// A ':' straight after n1 puts n1 where an hour is written, and exactly two
+	// things are written there: the hour itself, or the four-digit year CLF
+	// separates from the time with that colon, "10/Oct/2000:13:55:36". Read as
+	// anything else, n1 is a date field standing on the clock, and the rest of
+	// the time then shifts one field left because parseTimeComponent steps over
+	// the leading ':' it was handed. That is how "May 2024 15:04:05" came back
+	// as 2024-05-15 04:05:00, reading the hour as the day.
+	if isTimeAtN1 && !isYear4(n1) {
+		// n1 is the hour, so the time begins at n1 and n0 is the only date
+		// number in front of it: a day at or under 31, a year above it.
+		if n1.value > 23 {
+			// Not an hour, and not a year the ':' can follow. Calling it a
+			// two-digit year is what made "MAY1 24:00:00" a format whose year
+			// sits at the offset "MAY1 00:00:00" writes its hour at, so a
+			// layout compiled from the first answered 2000-05-01 for the
+			// second where detection reads 2026-05-01.
+			return fields, false
+		}
+		if n0.value <= 31 {
+			fields = appendDay(fields, s, n0)
+		} else {
+			fields = append(fields, yearField(n0))
+		}
 		timeFields := parseTimeComponent(tbuf[:0], s, n0.end)
 		fields = append(fields, timeFields...)
-		if yr := findTrailingYear(nums, timeFields, n0.end); yr != nil {
-			fields = append(fields, yearField(*yr))
+		// A trailing year is only there to be found when n0 was the day. When
+		// n0 is the year the format has one already, and appending a second
+		// leaves two year fields in one def.
+		if n0.value <= 31 {
+			if yr := findTrailingYear(nums, timeFields, n0.end); yr != nil {
+				fields = append(fields, yearField(*yr))
+			}
 		}
-		return fields
+		return fields, true
 	}
 
 	// Pattern: "day year time" or "year day time".
@@ -1924,7 +1963,17 @@ func appendMultiNumFields(tbuf []compile.Field, s string, nums []numToken, field
 	}
 	timeFields := parseTimeComponent(tbuf[:0], s, nums[1].end)
 	fields = append(fields, timeFields...)
-	return fields
+	return fields, true
+}
+
+// isYear4 reports whether n is written as a four-digit year, which is the one
+// token a ':' may follow without that ':' opening a time.
+//
+// The range is detection's existing one rather than a new rule: findTrailingYear
+// requires 1000 to 9999 of a four-digit year too, so "0999" is not one here
+// either and "MAY1 0000:00:00" stays refused rather than becoming year zero.
+func isYear4(n numToken) bool {
+	return n.end-n.start == 4 && n.value >= 1000
 }
 
 // findTrailingYear scans for a 4-digit year among nums that is not already

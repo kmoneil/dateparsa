@@ -607,6 +607,24 @@ parse on its own. No instant disagrees, so it is over-acceptance rather than a
 wrong day, and closing it means `OpYear4` enforcing a range that would also
 change what `17/11/0000` parses to.
 
+**The third family is the number itself, and no rule about the skipped run
+reaches it.** `MAY1 70:00:00` and `MAY1 00:00:00` are the same thirteen bytes to
+the byte class, every skip matches what it matched before, and both detect as
+`MONTH_DAY_YEAR`. What separated them was the value: 70 cannot be an hour, so it
+was read as a two-digit year and the time then began at the `:` behind it, while
+00 can be, so it is the hour and no year is written at all. One offset, two
+kinds, and the layout compiled from the first read the second's hour as a year,
+2000-05-01 against the 2026-05-01 detection takes from the base year. The same
+misreading needs no reuse to show: `May 2024 15:04:05` came back as
+2024-05-15 04:05:00, the hour read as the day and the minute as the hour.
+
+The rule is that **a `:` straight after a number means that number is an hour**,
+and the sole exception is a four-digit year, which is the separator Common Log
+Format writes in `10/Oct/2000:13:55:36`. A number there that is neither is not
+read as something else; the input is refused. The cost is that
+`MAY1 24:00:00` and its family no longer parse, which is a refusal rather than a
+wrong answer, and nothing that names a valid hour moved.
+
 **A caller holding the layout is told the same thing, and was not until
 2026-08-20.** `Layout.Reusable()` answered whether the value is one of the two
 sentinels, not whether reusing it is sound, while `README.md` showed it as the

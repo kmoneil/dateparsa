@@ -60,7 +60,12 @@ func buildInternedLayouts() map[*compile.FormatDef]*Layout {
 	defs := detect.PrebuiltDefs()
 	out := make(map[*compile.FormatDef]*Layout, len(defs))
 	for _, def := range defs {
-		program, needsBaseYear, err := compile.Compile(def, time.UTC)
+		// No locales: an interned layout is shared by every caller whatever
+		// they configured, so it may not carry one caller's locale set. No
+		// prebuilt format holds a month name, which is what makes the empty set
+		// the right answer rather than a compromise, and
+		// TestNoInternedFormatReadsAMonthName says so.
+		program, needsBaseYear, err := compile.Compile(def, time.UTC, 0)
 		if err != nil || needsBaseYear {
 			continue
 		}

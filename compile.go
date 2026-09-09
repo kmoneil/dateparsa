@@ -57,7 +57,10 @@ func CompileWithTimezone(layout string, tz *time.Location) (*Layout, error) {
 	// year field parses to year 0, the same as time.Parse("15:04:05", ...).
 	// Only auto-detection via Parse fills it, because only Parse has a base
 	// time to fill it from.
-	program, _, err := compile.Compile(def, tz)
+	// No locales. A Go layout is time.Parse's grammar and time.Parse reads
+	// English month names only, so a layout compiled from one accepts what the
+	// stdlib accepts. Detection is where a configured locale reaches a program.
+	program, _, err := compile.Compile(def, tz, 0)
 	if err != nil {
 		return nil, err
 	}

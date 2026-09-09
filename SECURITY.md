@@ -651,6 +651,29 @@ read as something else; the input is refused. The cost is that
 `MAY1 24:00:00` and its family no longer parse, which is a refusal rather than a
 wrong answer, and nothing that names a valid hour moved.
 
+**The fourth family is the language, and it is the executor knowing more than
+the detector.** `monthNameMatches` verified a month name against every locale
+compiled into the binary, all twenty, while `findMonthNameCI` searched the ones
+the caller configured, which is none by default. So a layout accepted a spelling
+detection would never have found, and answered with a month from a language
+nobody asked for. `mAI` is French and German for May: `Parse("mAI1MAr")` reads
+the input as the first of March, because `MAr` is the only month name in it that
+English spells, and the `MONTH_DAY` layout detected from `MAY1AAA` read the same
+bytes as the first of May. Plainer, and needing no fuzzer:
+`Parse("März 15, 2024")` is `ErrNoMatch`, and those same fourteen bytes through
+the layout detected from `March 15, 2024` were the fifteenth of March.
+
+Only a spelling as wide as the one the layout holds reaches the byte compare at
+all, because a field has a fixed length. That is why French `mars` was refused
+where German `März` was accepted, `ä` being two bytes, and it is why this
+survived the locale tables being added.
+
+A compiled program carries the locales it was compiled with now, as a bit set,
+and the empty set is English only rather than everything. A layout detected under
+`WithLocales(DE)` still re-parses German rows, which is what makes this a set
+rather than a switch to English; a layout from `Compile` is English, because a Go
+layout is `time.Parse`'s grammar and `time.Parse` reads English month names only.
+
 **A caller holding the layout is told the same thing, and was not until
 2026-08-20.** `Layout.Reusable()` answered whether the value is one of the two
 sentinels, not whether reusing it is sound, while `README.md` showed it as the
@@ -803,5 +826,7 @@ Update this document in the same change whenever you:
   `oracleLenient`, which is still empty
 - change the timezone abbreviation table or the fallback in `lookupTZAbbr`
 - change what an exported type promises about concurrent use
+- change what a compiled `Layout` accepts where detection would refuse, which is
+  the over-acceptance the four families above bound
 - share one instance of an exported type between callers who used to get their
   own, or widen the gate on the interned layouts

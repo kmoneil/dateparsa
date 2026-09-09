@@ -567,6 +567,32 @@ the grammar tells them apart; those are settled by an explicit rank now. The
 fifth is `कल`, where both readings are the same kind and nothing can tell them
 apart, so both are carried and the caller is told.
 
+**Which of two month names is the month was decided by a table, not by the
+input.** `findMonthNameCI` tries every spelling in one fixed order, longest
+first, and returns the first that occurs anywhere in the string. Where two
+whole-word month names name two different months the winner is therefore the one
+written earlier in the table: `MAY1MAR` read as the first of March because `mar`
+is listed before `may`, and writing the two names the other way round does not
+change the answer. That is the `sort.Slice` defect above one level up, with the
+order fixed and the input variable.
+
+Nothing reported the reading as a guess, and the losing name landed in a run the
+format skips, so a layout cached from a row holding one month name answered a
+different month for a row holding two: `MONTH_DAY` detected from `MAY1AAA` reads
+`mAY1MAr` as the first of May where detection reads the first of March, nil
+errors and `Ambiguous` false on both calls. The nightly sweep found it as a
+`FuzzLayoutReuse` pair on 2026-09-09.
+
+An input naming two different months is refused now rather than read as one of
+them. There is nothing to report the guess on: `AmbigKind` names a question about
+a value, this one is about which bytes the month is, and the two readings are two
+formats rather than two orderings of one. **What this changes is a locale weekday
+abbreviation spelled like a month.** `mar` is Tuesday in Spanish and Italian,
+English spellings are tried before any locale's, and `mar 15 mag 2024` came back
+as the fifteenth of March for an input that says the fifteenth of May. It is an
+error now. The same name twice is one month and still parses, so
+`mar, 15 mar 2024` is unaffected.
+
 **A guess is never reused across rows.** `Parser` caches the layout it detected
 and skips detection for later values, which is the whole reason it exists. It
 does not do that for a format detection resolved by looking at the values, and

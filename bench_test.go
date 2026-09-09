@@ -42,6 +42,22 @@ func BenchmarkParse_TextualMonth(b *testing.B) {
 	}
 }
 
+// BenchmarkParse_RFC2822_Locales is the textual path with a word in it that is
+// not the month, which is what an RFC 2822 weekday is, and with locales
+// configured so that the whole spelling table is in play.
+//
+// It is here because it is the shape C32's rival sweep costs: one word is
+// enough to say there cannot be a second month name and the sweep returns on a
+// length compare, and a second word is what makes it look. TextualMonth above
+// is the one-word case and this is the other, so a change to either filter
+// moves one of the two and not both.
+func BenchmarkParse_RFC2822_Locales(b *testing.B) {
+	opts := []Option{WithLocales(FR, DE, ES)}
+	for b.Loop() {
+		_, _ = ParseWith("Fri, 15 Mar 2024 10:30:00 +0000", opts...)
+	}
+}
+
 // BenchmarkParse_AmbiguousSlash benchmarks ambiguous numeric dates.
 func BenchmarkParse_AmbiguousSlash(b *testing.B) {
 	for b.Loop() {

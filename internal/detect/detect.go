@@ -1617,8 +1617,21 @@ func trimAtSuffix(s string) string {
 // "March 15, 2024", "15 Mar 2024", "Mar 15, 2024",
 // "Fri, 15 Mar 2024 10:30:00 +0000" (RFC 2822), "March 2024", "15 March".
 func detectTextualMonth(s string, cfg Config) (Result, bool) {
-	monthNum, monthStart, monthEnd := findMonthNameCI(s, cfg.Locales)
+	monthNum, monthStart, monthEnd, rival := findMonthNameCI(s, cfg.Locales)
 	if monthNum == 0 {
+		return Result{}, false
+	}
+
+	// Two whole-word month names naming two different months, and nothing in
+	// the input says which of them the date is written around. The one that
+	// wins today is the one whose spelling is tried first, which is a property
+	// of the table and not of the input: "MAY1MAR" is the first of March
+	// because "mar" is listed before "may", and so is "MAR1MAY", because
+	// swapping the two names moves the format name and not the month. Refuse
+	// rather than pick, because the pick is a guess and there is no channel to
+	// report it on: AmbigKind names a question about a value, and this one is
+	// about which bytes the month is.
+	if rival {
 		return Result{}, false
 	}
 
@@ -2271,27 +2284,69 @@ const (
 // bound to a word length, so its lenBit is every bit and the filter never
 // dismisses it: see wordMatcher.lenMask for why that is safe when the input has
 // no words in it.
+//
+// firstBit is the same argument about the first byte, and it is what separates
+// the twelve three-letter English abbreviations from each other where lenBit
+// cannot: they are all three bytes long and an input holding any three-letter
+// word admits every one of them. A whole-word match begins where its word
+// begins, so a spelling whose first byte begins no word in the input cannot
+// occur in it. Case folds, since the match does, and every byte that is not an
+// ASCII letter shares one bit: a Cyrillic or CJK spelling is filtered only
+// against whether the input has a word starting with a byte like that, which is
+// weaker and still correct.
 type monthSpelling struct {
-	name   string
-	num    int
-	how    spellingLookup
-	lenBit uint64
+	name     string
+	num      int
+	how      spellingLookup
+	lenBit   uint64
+	firstBit uint32
 }
 
-// newMonthSpelling prepares one spelling: which lookup answers it, and the
-// length that lookup matches on.
+// newMonthSpelling prepares one spelling: which lookup answers it, the length
+// that lookup matches on, and the first byte it has to begin at.
 func newMonthSpelling(name string, num int) monthSpelling {
 	sp := monthSpelling{name: name, num: num, how: classifySpelling(name)}
 	switch sp.how {
 	case lookupScan:
 		sp.lenBit = ^uint64(0)
+		sp.firstBit = ^uint32(0)
+		return sp
 	case lookupDotted:
 		sp.lenBit = lenBitFor(len(name) - 1)
 	default:
 		sp.lenBit = lenBitFor(len(name))
 	}
+	// One index expression rather than one per arm, and the length test in
+	// front of it so that no bounds check survives a call nothing can reach
+	// with an empty name: buildLocaleMonths drops those and the English table
+	// is a literal.
+	if len(name) > 0 {
+		sp.firstBit = firstBitFor(name[0])
+	}
 	return sp
 }
+
+// firstBitFor maps the first byte of a word to its bit. ASCII letters get one
+// bit each, folded to lower case; everything else shares firstBitOther, which
+// is every UTF-8 lead byte and so every word of a locale not written in Latin.
+//
+// firstBitSentinel is the bit no byte maps to, and it is wordMatcher.firstMask's
+// counterpart to bit 0 of lenMask: a spelling that must not be filtered carries
+// every bit and meets the mask there, whatever the input holds.
+func firstBitFor(b byte) uint32 {
+	if b >= 'A' && b <= 'Z' {
+		b += 0x20
+	}
+	if b >= 'a' && b <= 'z' {
+		return 1 << uint(b-'a')
+	}
+	return firstBitOther
+}
+
+const (
+	firstBitOther    uint32 = 1 << 26
+	firstBitSentinel uint32 = 1 << 31
+)
 
 // lenBitFor maps a word length to its bit. Lengths at or above 63 share the top
 // bit, so a spelling that long is only dismissed when the input holds no word
@@ -2431,7 +2486,9 @@ const monthWordCap = 48
 //
 // lenMask has bit k set when the input holds a word of k bytes, saturating at
 // 63, and bit 0 set always. Bit 0 is the one no word can claim, so a spelling
-// that must not be filtered carries every bit and meets it there.
+// that must not be filtered carries every bit and meets it there. firstMask is
+// the same shape over the first byte of each word, with firstBitSentinel
+// playing bit 0's part: see firstBitFor.
 //
 // That sentinel is for the input with no word characters at all, "2024-03-15"
 // among them, whose mask would otherwise be zero and dismiss every spelling
@@ -2443,16 +2500,22 @@ const monthWordCap = 48
 // The mask is a filter and never an answer. A set bit means a word of that
 // length exists, not that it is the spelling being looked for.
 type wordMatcher struct {
-	s       string
-	words   []wordSpan
-	lenMask uint64
+	s         string
+	words     []wordSpan
+	lenMask   uint64
+	firstMask uint32
 }
 
 func newWordMatcher(s string, buf []wordSpan) wordMatcher {
 	n := 0
 	mask := uint64(1)
+	first := firstBitSentinel
 	for i := 0; i < len(s); {
-		if !isWordChar(s[i]) {
+		// The first byte of the run is kept rather than read again below.
+		// s[start] is a second index expression and the bounds check on it
+		// survives, which testdata/codegen/gates.txt counts.
+		b := s[i]
+		if !isWordChar(b) {
 			i++
 			continue
 		}
@@ -2462,17 +2525,18 @@ func newWordMatcher(s string, buf []wordSpan) wordMatcher {
 		}
 		if n == len(buf) {
 			// Over the cap: no word list, so every spelling scans, and the
-			// mask has to let all of them through. A zero mask here dismissed
+			// masks have to let all of them through. A zero mask here dismissed
 			// every spelling instead, and an input of fifty words with a month
 			// name in it stopped being a date. TestWordMatcherAgreesWithScanning
 			// found that on the first run.
-			return wordMatcher{s: s, lenMask: ^uint64(0)}
+			return wordMatcher{s: s, lenMask: ^uint64(0), firstMask: ^uint32(0)}
 		}
 		buf[n] = wordSpan{int32(start), int32(i)}
 		mask |= lenBitFor(i - start)
+		first |= firstBitFor(b)
 		n++
 	}
-	return wordMatcher{s: s, words: buf[:n], lenMask: mask}
+	return wordMatcher{s: s, words: buf[:n], lenMask: mask, firstMask: first}
 }
 
 // allWordChars reports whether every byte of word is a word character, which is
@@ -2554,31 +2618,43 @@ func (m *wordMatcher) findSpelling(sp *monthSpelling) (int, int, bool) {
 
 // findMonthNameCI finds the first month name in the string using
 // case-insensitive matching directly on the input (no lowered copy).
-// Returns (month number 1-12, start index, end index) or (0, 0, 0) if not found.
+// Returns (month number 1-12, start index, end index, rival), or (0, 0, 0,
+// false) if not found. rival reports that a second month name is written
+// somewhere else in the input and names a different month, which is
+// hasRivalMonthName's question and detectTextualMonth's reason to refuse.
 //
 // The spelling order is load bearing and it is not the input order. Names are
 // tried longest first and each is looked for anywhere in the string, so a longer
-// name later beats a shorter name earlier: "mar 1 september 2024" is the first
+// name later beats a shorter name earlier: "mar 1 september 2024" was the first
 // of September, because "september" is tried before "mar". Restructuring this
-// into one pass over the input reverses that and answers March. The word list
+// into one pass over the input reverses that and answers March.
+//
+// C32 is that reversal being invisible from outside. Both readings of that
+// input are a guess and the order decides which one a caller gets, so it is
+// refused now and the order no longer decides a month: two spellings that name
+// different months and match different bytes make rival true whichever of them
+// is tried first. What the order still decides is which occurrence a format is
+// built around when both name the same month, "mar, 15 mar 2024" against a
+// configured es, and both readings of that are the same day. The word list
 // changes how each spelling is looked for, never the order they are tried in.
 //
-// The lenMask test in both loops is the same kind of thing: it decides whether a
-// spelling can match, never which one wins, so it dismisses without disturbing
-// the order. It sits here rather than inside findSpelling because a spelling it
-// dismisses should cost no call either, and the call was the larger half.
-func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
+// The mask tests in both loops are the same kind of thing: they decide whether
+// a spelling can match, never which one wins, so they dismiss without
+// disturbing the order. They sit here rather than inside findSpelling because a
+// spelling they dismiss should cost no call either, and the call was the larger
+// half.
+func findMonthNameCI(s string, locales []*locale.Data) (int, int, int, bool) {
 	var buf [monthWordCap]wordSpan
 	m := newWordMatcher(s, buf[:])
 
 	// Search English names (case-insensitive), longest first.
 	for i := range defaultMonths {
 		sp := &defaultMonths[i]
-		if sp.lenBit&m.lenMask == 0 {
+		if sp.lenBit&m.lenMask == 0 || sp.firstBit&m.firstMask == 0 {
 			continue
 		}
 		if idx, end, ok := m.findSpelling(sp); ok {
-			return sp.num, idx, end
+			return sp.num, idx, end, hasRivalMonthName(&m, sp.num, idx, end, locales)
 		}
 	}
 	// Search locale-specific names. The spelling list is the same one the loop
@@ -2588,15 +2664,74 @@ func findMonthNameCI(s string, locales []*locale.Data) (int, int, int) {
 		lm := getLocaleMonths(loc)
 		for i := range lm.spellings {
 			sp := &lm.spellings[i]
-			if sp.lenBit&m.lenMask == 0 {
+			if sp.lenBit&m.lenMask == 0 || sp.firstBit&m.firstMask == 0 {
 				continue
 			}
 			if idx, end, ok := m.findSpelling(sp); ok {
-				return sp.num, idx, end
+				return sp.num, idx, end, hasRivalMonthName(&m, sp.num, idx, end, locales)
 			}
 		}
 	}
-	return 0, 0, 0
+	return 0, 0, 0, false
+}
+
+// hasRivalMonthName reports whether the input holds a second month name, naming
+// a month other than num, outside the bytes [start, end) the first one claimed.
+//
+// It sweeps every spelling again rather than only the ones tried after the
+// winner. The ones tried before it did not occur in the input, so they cannot
+// occur now, and re-asking them costs a length compare each and keeps this one
+// loop instead of two halves that have to agree with findMonthNameCI's order.
+//
+// Same month, no rival. "mar, 15 mar 2024" against a configured es writes
+// Tuesday with the same three bytes as March, and both readings of it are the
+// fifteenth of March: which occurrence the format is built around decides
+// nothing a caller can see. Two different months are what have no answer, so
+// the num compare is what separates a refusal from a spelling written twice.
+//
+// A rival that overlaps the winner is not one. A whole-word match covers one
+// maximal run of word characters, so two matches that overlap are two spellings
+// of the same run: "sept" and "sept." over "sept. 1", or "1월" inside Korean
+// "11월", where the longest-first sort inside a locale has already decided which
+// wins. Comparing spans rather than offsets is what keeps the dotted pair out.
+//
+// Cheap where it runs at all. Digits are not word characters, so "15 Mar 2024"
+// and "March 15, 2024" hold one word each and take the early return; a second
+// word is what an RFC 2822 weekday or a stray word adds, and the length mask
+// then dismisses every spelling that is not as wide as one of them. Nothing
+// runs at all for an input with no month name in it, which is every miss this
+// detector is asked about.
+func hasRivalMonthName(m *wordMatcher, num, start, end int, locales []*locale.Data) bool {
+	// words is nil for an input over the cap, where the count is unknown and
+	// every spelling scans. One word cannot hold two month names at two spans.
+	if m.words != nil && len(m.words) < 2 {
+		return false
+	}
+	outside := func(idx, e int) bool { return idx >= end || e <= start }
+
+	months := defaultMonths
+	for i := range months {
+		sp := &months[i]
+		if sp.num == num || sp.lenBit&m.lenMask == 0 || sp.firstBit&m.firstMask == 0 {
+			continue
+		}
+		if idx, e, ok := m.findSpelling(sp); ok && outside(idx, e) {
+			return true
+		}
+	}
+	for _, loc := range locales {
+		sps := getLocaleMonths(loc).spellings
+		for i := range sps {
+			sp := &sps[i]
+			if sp.num == num || sp.lenBit&m.lenMask == 0 || sp.firstBit&m.firstMask == 0 {
+				continue
+			}
+			if idx, e, ok := m.findSpelling(sp); ok && outside(idx, e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // matchWordCI finds `word` as a whole word in `s`, case-insensitive.

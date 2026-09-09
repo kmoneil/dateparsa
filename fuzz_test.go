@@ -257,6 +257,22 @@ func FuzzLayoutReuse(f *testing.F) {
 		// "10/Oct/2000:13:55:36", and nothing else. Detection refuses the
 		// first input now, so this seed is inert.
 		{"MAY1 70:00:00", "MAY1 00:00:00"},
+
+		// C32, and this pair holds two month names where every pair above it
+		// holds one. "mAY" and "MAr" are both whole words, a digit being the
+		// boundary between them, and the one detection reads as the month is
+		// the one whose spelling is written first in a table sorted longest
+		// first: "mar" before "may", so the layout compiled from the first
+		// input read the leading name and detection of the second read the
+		// trailing one. Two months apart, nil errors, no guess reported on
+		// either call.
+		//
+		// Detection refuses an input naming two different months now, so the
+		// second half never reaches the comparison. The seed stays because it
+		// is the pair that found the rule, and because what it exercises
+		// underneath is unchanged: the trailing skip still accepts "MAr" as
+		// three letters, which is C10's over-acceptance and is allowed.
+		{"MAY1AAA", "mAY1MAr"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

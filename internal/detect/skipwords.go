@@ -26,8 +26,14 @@ import (
 // means. A selector, an ordinal, a boundary, a relative word and a unit name
 // all decide one. Three classes of word deliberately still may:
 //
-//   - Weekday and month names. "Fri, 15 Mar 2024" is RFC 2822 and its weekday
-//     name is the thing skips exist for.
+//   - Weekday names, and a month name that agrees with the one the format was
+//     built around. "Fri, 15 Mar 2024" is RFC 2822 and its weekday name is the
+//     thing skips exist for. C32 narrowed the month half, and not here: a
+//     second month name naming a *different* month refuses the input in
+//     detectTextualMonth, before there is a skipped run to look at, because
+//     which of the two the format is built around was decided by the spelling
+//     table rather than by the input. One that names the same month still
+//     skips, which is what Spanish "mar, 15 mar 2024" needs.
 //   - "of" and "at". "the 3rd of March 2024" and "March 15, 2024 at 10:30" are
 //     ordinary spellings of a date and both put the word in a skipped run.
 //   - Every word the library does not recognise: "invoice 15 March 2024 paid"

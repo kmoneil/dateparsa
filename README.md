@@ -406,6 +406,24 @@ that case apart from the ones above.
 The check reads whole words, so it never fires on a language whose date
 separator is a unit name: `2024年3月15日` is unaffected.
 
+**A second month name is refused for the same reason.** A word a format skips
+can be a weekday name, and `mar` is Tuesday in Spanish and Italian as well as
+the English abbreviation for March. Where an input holds two month names that
+name two different months, nothing in it says which one the date is written
+around, so there is no reading to return:
+
+```go
+_, err := dateparsa.ParseWith("mar 15 mag 2024", dateparsa.WithLocales(dateparsa.IT))
+// *ParseError wrapping ErrNoMatch: mar is Tuesday and mag is May, and this
+// used to come back as the fifteenth of March
+```
+
+Which name won was decided by the order the spelling table is written in rather
+than by the input, and it was not reported as a guess. The same name written
+twice is one month and still parses, so `mar, 15 mar 2024` is the fifteenth of
+March, and one month name beside any other word is untouched: `Fri, 15 Mar 2024`
+is the RFC 2822 form and reads as it always did.
+
 ### Ambiguity Handling
 
 When a date like `01/02/2024` could be MM/DD or DD/MM:

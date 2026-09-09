@@ -169,7 +169,7 @@ func TestFindMonthName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		month, _, _ := findMonthNameCI(tt.input, nil)
+		month, _, _, _ := findMonthNameCI(tt.input, nil)
 		if month != tt.month {
 			t.Errorf("findMonthName(%q) = %d, want %d", tt.input, month, tt.month)
 		}
@@ -571,7 +571,7 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 
 	sawFast, sawSlow := false, false
 	sawList, sawDotted, sawScan := false, false, false
-	sawFiltered := false
+	sawFilteredLen, sawFilteredFirst := false, false
 	for _, in := range inputs {
 		var buf [monthWordCap]wordSpan
 		m := newWordMatcher(in, buf[:])
@@ -595,12 +595,18 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 			// The pair findMonthNameCI uses is the prefilter and the lookup,
 			// so the pair is what has to agree with the scan. A filtered
 			// spelling has to be one the scan does not find, or the filter is
-			// deciding an answer instead of dismissing work.
-			if sp.lenBit&m.lenMask == 0 {
-				sawFiltered = true
+			// deciding an answer instead of dismissing work. Both halves of
+			// the prefilter are asked here, and each has to dismiss something
+			// somewhere in the corpus or it is being tested by nothing.
+			byLen := sp.lenBit&m.lenMask == 0
+			byFirst := sp.firstBit&m.firstMask == 0
+			if byLen || byFirst {
+				sawFilteredLen = sawFilteredLen || byLen
+				sawFilteredFirst = sawFilteredFirst || byFirst
 				if wok {
-					t.Errorf("lenMask dismissed %q (how=%d), but matchWordCI finds it in %q at (%d,%d)",
-						sp.name, sp.how, in, ws, we)
+					t.Errorf("the prefilter dismissed %q (how=%d, byLen=%v byFirst=%v), "+
+						"but matchWordCI finds it in %q at (%d,%d)",
+						sp.name, sp.how, byLen, byFirst, in, ws, we)
 				}
 				continue
 			}
@@ -618,22 +624,28 @@ func TestWordMatcherAgreesWithScanning(t *testing.T) {
 		t.Errorf("corpus did not exercise every lookup: list=%v dotted=%v scan=%v",
 			sawList, sawDotted, sawScan)
 	}
-	if !sawFiltered {
-		t.Error("corpus never had a spelling dismissed by lenMask")
+	if !sawFilteredLen || !sawFilteredFirst {
+		t.Errorf("corpus did not exercise both halves of the prefilter: len=%v first=%v",
+			sawFilteredLen, sawFilteredFirst)
 	}
 }
 
-// TestLenMaskNeverHidesAMatch is the prefilter's own property, stated without
-// the lookup in the way: a spelling the mask dismisses cannot occur in the
-// input as a whole word.
+// TestThePrefilterNeverHidesAMatch is the prefilter's own property, stated
+// without the lookup in the way: a spelling either mask dismisses cannot occur
+// in the input as a whole word.
 //
-// The mask is a length filter over the input's word runs, and the bit a
-// spelling carries is the length its lookup matches on, which is one shorter
-// than the name for a dotted abbreviation. Getting that off by one would
-// dismiss every dotted spelling in an input that holds the word, and every test
-// above would still pass, because a dismissed spelling and an absent one look
-// the same from outside.
-func TestLenMaskNeverHidesAMatch(t *testing.T) {
+// lenMask is a length filter over the input's word runs, and the bit a spelling
+// carries is the length its lookup matches on, which is one shorter than the
+// name for a dotted abbreviation. Getting that off by one would dismiss every
+// dotted spelling in an input that holds the word, and every test above would
+// still pass, because a dismissed spelling and an absent one look the same from
+// outside.
+//
+// firstMask is the same over the first byte of each word run, and it has the
+// same two ways to be wrong: a spelling whose bit is taken from the wrong byte,
+// and a word whose bit is. Case is the third, since the match folds and the
+// mask has to fold with it, which is what the upper-cased inputs below are for.
+func TestThePrefilterNeverHidesAMatch(t *testing.T) {
 	spellings := append([]monthSpelling(nil), defaultMonths...)
 	for _, tag := range locale.Tags() {
 		d := locale.Lookup(tag)
@@ -670,9 +682,13 @@ func TestLenMaskNeverHidesAMatch(t *testing.T) {
 					t.Fatalf("lenMask dismissed %q (how=%d, lenBit=%#x) which occurs in %q (lenMask=%#x)",
 						sp.name, sp.how, sp.lenBit, in, m.lenMask)
 				}
+				if sp.firstBit&m.firstMask == 0 {
+					t.Fatalf("firstMask dismissed %q (how=%d, firstBit=%#x) which occurs in %q (firstMask=%#x)",
+						sp.name, sp.how, sp.firstBit, in, m.firstMask)
+				}
 				continue
 			}
-			if sp.lenBit&m.lenMask == 0 {
+			if sp.lenBit&m.lenMask == 0 || sp.firstBit&m.firstMask == 0 {
 				dismissed++
 			}
 		}
@@ -1120,5 +1136,141 @@ func TestTheBoundRefusesNothingReal(t *testing.T) {
 		t.Errorf("the longest advertised format is %d bytes against a bound of %d, which is "+
 			"closer than this test assumed; re-read the arithmetic before trusting it",
 			len(longest), compile.MaxDescribableLen)
+	}
+}
+
+// TestASecondMonthNameIsRefusedNotChosen is C32.
+//
+// An input holding two whole-word month names that name different months has
+// two readings, and which one it got was decided by the order the spelling
+// table is written in rather than by anything in the input. "MAY1MAR" read as
+// the first of March because "mar" is listed before "may", and the same input
+// with the two names swapped read as the first of March as well.
+//
+// Refusing is the whole rule, and the accepted rows are its edges: two
+// spellings of the same month are not two months, an overlapping pair is one
+// word matched twice, and a weekday name in a run no field reads is what
+// RFC 2822 writes.
+func TestASecondMonthNameIsRefusedNotChosen(t *testing.T) {
+	es, it, ko := locale.Lookup("es"), locale.Lookup("it"), locale.Lookup("ko")
+	if es == nil || it == nil || ko == nil {
+		t.Fatal("es, it and ko are registered locales; one of them did not load")
+	}
+
+	tests := []struct {
+		input   string
+		locales []*locale.Data
+		wantOK  bool
+		desc    string
+	}{
+		// Two names, two months, and the table decided which. The first pair
+		// is the crasher FuzzLayoutReuse wrote, with the leading name in the
+		// run the MONTH_DAY layout skips.
+		{"MAY1MAR", nil, false, "two abbreviations, no separator"},
+		{"mAY1MAr", nil, false, "the same, mixed case"},
+		{"mar 1 september 2024", nil, false, "a longer name later beat a shorter one earlier"},
+		{"March 15, 2024 May", nil, false, "a second name after a complete date"},
+		{"1 may march", nil, false, "day, then two names"},
+
+		// A locale weekday abbreviation that is spelled like a month. Both
+		// answered a wrong March before this rule, because English "mar" is
+		// tried before any locale name and the real month was in the run the
+		// format skipped.
+		{"mar 15 mag 2024", []*locale.Data{it}, false, "it: martedi against maggio"},
+		{"mar 15 maggio 2024", []*locale.Data{it}, false, "it: the wide spelling of the same"},
+
+		// The same three bytes twice is one month written twice, and both
+		// readings of it are the fifteenth of March.
+		{"mar, 15 mar 2024", []*locale.Data{es}, true, "es: martes against marzo"},
+		{"mar 15 mar 2024", []*locale.Data{es}, true, "es: the same without the comma"},
+
+		// The formats this rule may not touch.
+		{"Fri, 15 Mar 2024 10:30:00 +0000", nil, true, "rfc 2822 weekday"},
+		{"sept. 1, 2020", nil, true, "the dotted and dotless spellings overlap"},
+		{"the 15th of March 2024", nil, true, "a word in a skipped run"},
+		{"invoice 15 March 2024 paid", nil, true, "words either side"},
+		{"15 Mar 2024", nil, true, "one name, one word"},
+		{"March 15, 2024", nil, true, "one name, one word, the other order"},
+		{"2024년 11월 11일", []*locale.Data{ko}, true, "ko: 1월 matches inside 11월 and overlaps it"},
+	}
+
+	for _, tt := range tests {
+		result, ok := detectTextualMonth(tt.input, Config{Locales: tt.locales})
+		if ok != tt.wantOK {
+			t.Errorf("%s: detectTextualMonth(%q) ok=%v, want %v (%s)",
+				tt.desc, tt.input, ok, tt.wantOK, result.Def.Name)
+		}
+	}
+}
+
+// TestRivalMonthNameNeedsTwoMonths states the num compare on its own, because
+// the table above reaches it through a detector that can refuse for its own
+// reasons and a row that passes for the wrong reason reads the same.
+func TestRivalMonthNameNeedsTwoMonths(t *testing.T) {
+	es := locale.Lookup("es")
+	if es == nil {
+		t.Fatal("es is a registered locale and did not load")
+	}
+	tests := []struct {
+		input   string
+		locales []*locale.Data
+		want    bool
+	}{
+		{"MAY1MAR", nil, true},
+		{"march 15 may", nil, true},
+		{"march 15 mar", nil, false},
+		{"mar, 15 mar 2024", []*locale.Data{es}, false},
+		{"15 March 2024", nil, false},
+		{"Fri, 15 Mar 2024", nil, false},
+		{"sept. 1, 2020", nil, false},
+	}
+	for _, tt := range tests {
+		num, start, end, rival := findMonthNameCI(tt.input, tt.locales)
+		if num == 0 {
+			t.Errorf("findMonthNameCI(%q) found no month name", tt.input)
+			continue
+		}
+		if rival != tt.want {
+			t.Errorf("findMonthNameCI(%q) = month %d at [%d,%d), rival %v, want %v",
+				tt.input, num, start, end, rival, tt.want)
+		}
+	}
+}
+
+// TestNoSpellingNamesTwoMonths is what hasRivalMonthName's overlap rule rests
+// on.
+//
+// It asks findSpelling for a rival's *first* occurrence and dismisses it when
+// that overlaps the month already found, on the argument that two whole-word
+// matches over the same word are two spellings of one name. A spelling that
+// named a different month in a different locale would break the argument: its
+// first occurrence would be the winner's own word, the dismissal would fire,
+// and a second occurrence elsewhere would go unseen.
+//
+// No such pair exists across the 608 spellings of English and the twenty
+// locales, which is data rather than design, so it is asserted here instead of
+// being assumed in a comment. If a locale ever adds one, the sweep has to look
+// past the first occurrence rather than at it.
+func TestNoSpellingNamesTwoMonths(t *testing.T) {
+	all := append([]monthSpelling(nil), defaultMonths...)
+	for _, tag := range locale.Tags() {
+		if d := locale.Lookup(tag); d != nil {
+			all = append(all, getLocaleMonths(d).spellings...)
+		}
+	}
+	if len(all) < 100 {
+		t.Fatalf("%d spellings, so the locale tables did not load", len(all))
+	}
+
+	seen := make(map[string]int, len(all))
+	for _, sp := range all {
+		key := strings.ToLower(sp.name)
+		if num, ok := seen[key]; ok && num != sp.num {
+			t.Errorf("%q names month %d and month %d; hasRivalMonthName dismisses a "+
+				"rival whose first occurrence overlaps the winner, which this makes unsafe",
+				sp.name, num, sp.num)
+			continue
+		}
+		seen[key] = sp.num
 	}
 }

@@ -273,6 +273,19 @@ func FuzzLayoutReuse(f *testing.F) {
 		// underneath is unchanged: the trailing skip still accepts "MAr" as
 		// three letters, which is C10's over-acceptance and is allowed.
 		{"MAY1AAA", "mAY1MAr"},
+
+		// C33, and the pair reads like C32's because the fuzzer found it by
+		// mutating C32's seed by one byte. It is a different defect: "mAI" is
+		// French and German for May and is not English, so detection with no
+		// locale configured sees one month name, "MAr", and reads the input as
+		// the first of March, while the cached MONTH_DAY layout asked
+		// locale.MatchesMonth, which knew every locale in the binary, and read
+		// "mAI" as May.
+		//
+		// A compiled program carries the locales it was compiled with now, so
+		// the layout refuses this row. Refusing is always allowed, and Parser
+		// re-detects and comes back with the first of March.
+		{"MAY1AAA", "mAI1MAr"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

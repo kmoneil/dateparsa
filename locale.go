@@ -9,8 +9,13 @@ import (
 
 // Locale represents a language/region for date parsing.
 // Locale data is compiled into the binary — no runtime file loading.
+//
+// bit is the locale's place in the set a compiled program carries, resolved
+// once here rather than per parse. It is derived from data and nothing else, so
+// two Locale values for the same locale still compare equal.
 type Locale struct {
 	data *locale.Data
+	bit  locale.LocaleSet
 }
 
 // String returns the BCP 47 tag for this locale (e.g. "fr", "de").
@@ -55,7 +60,11 @@ func LookupLocale(tag string) (Locale, bool) {
 	if d == nil {
 		return Locale{}, false
 	}
-	return Locale{data: d}, true
+	// Safe during this package's variable initialisation: the data registers
+	// from init() in internal/locale/data, which this file blank-imports, and an
+	// imported package is fully initialised before an importing package's
+	// variables are.
+	return Locale{data: d, bit: locale.Bit(d)}, true
 }
 
 // Locales returns all supported locale tags.

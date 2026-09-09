@@ -104,7 +104,7 @@ func TestFastAgreesWithInterpreter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseGoLayout: %v", err)
 			}
-			fast, _, err := Compile(def, time.UTC)
+			fast, _, err := Compile(def, time.UTC, 0)
 			if err != nil {
 				t.Fatalf("Compile: %v", err)
 			}
@@ -149,7 +149,7 @@ func FuzzFastAgreesWithInterpreter(f *testing.F) {
 		if err != nil {
 			t.Skip()
 		}
-		fast, _, err := Compile(def, time.UTC)
+		fast, _, err := Compile(def, time.UTC, 0)
 		if err != nil || !fast.isFast() {
 			t.Skip()
 		}

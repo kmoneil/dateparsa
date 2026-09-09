@@ -1,6 +1,10 @@
 package compile
 
-import "time"
+import (
+	"time"
+
+	"github.com/kmoneil/dateparsa/internal/locale"
+)
 
 // MaxInstructions is the maximum number of instructions in a program, and the
 // bound on the work one Execute can do.
@@ -133,6 +137,18 @@ type Program struct {
 	// TestProgramFitsItsSizeClass is what stops that happening again.
 	Width    uint16
 	WidthAlt uint16
+
+	// Locales are the locales whose month names this program may accept, as a
+	// bit set rather than the tables themselves so that Program's size class
+	// does not move. The zero value means English only, which is what a Go
+	// layout compiles to and what a caller who configured no locale detects
+	// with.
+	//
+	// It is here rather than on the instruction because it is a property of the
+	// configuration the program was compiled under, not of a field. See
+	// monthNameMatches for the defect that reached a caller when this was not
+	// carried at all.
+	Locales locale.LocaleSet
 }
 
 // isFast reports whether the slot region at the end of Insts describes this

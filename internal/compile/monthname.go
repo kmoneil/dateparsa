@@ -67,7 +67,15 @@ func IsWordChar(c byte) bool {
 // word character, so the name is still a whole word. Every path in
 // findMonthNameCI requires the same two boundaries, which is why this cannot
 // refuse an input detection accepted.
-func monthNameMatches(s string, off, length, month int) bool {
+//
+// The locale set is C33 and it is the third way these two packages disagreed
+// about what a month name is. This asked locale.MatchesMonth, which knew every
+// registered locale, while detection searched the ones the caller configured, so
+// a layout accepted a spelling detection would never have found and answered
+// with a month from a language nobody asked for. The set comes from the program,
+// which got it from the config it was compiled under; an empty set is English
+// only, which is what time.Parse accepts and what a Go layout compiles to.
+func monthNameMatches(s string, off, length, month int, allowed locale.LocaleSet) bool {
 	if month < 1 || month > 12 || length <= 0 || off+length > len(s) {
 		return false
 	}
@@ -84,5 +92,5 @@ func monthNameMatches(s string, off, length, month int) bool {
 			return true
 		}
 	}
-	return locale.MatchesMonth(got, month)
+	return locale.MatchesMonth(got, month, allowed)
 }

@@ -149,7 +149,7 @@ func parseWithConfig(input string, cfg config) (ParseResult, error) {
 		// disagreeing by two thousand years, and it could not tell a format
 		// with no year field from a year field that read 0, so
 		// Parse("0000-01-01") returned the current year.
-		program, needsBaseYear, cerr := compile.Compile(result.Def, cfg.timezone)
+		program, needsBaseYear, cerr := compile.Compile(result.Def, cfg.timezone, localeSetFromConfig(cfg))
 		if cerr != nil {
 			return ParseResult{}, &ParseError{Input: input, Message: cerr.Error(), Cause: ErrNoMatch}
 		}
@@ -231,7 +231,7 @@ func Detect(input string, opts ...Option) (*Layout, error) {
 		return l, nil
 	}
 
-	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
+	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone, localeSetFromConfig(cfg))
 	if err != nil {
 		return nil, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
 	}
@@ -322,7 +322,7 @@ func buildAmbiguousError(input, s string, cfg config, result detect.Result) erro
 // return is for the two failures that belong to the call rather than to the
 // reading, a program that will not compile and a base year that will not fit.
 func interpretation(input, s string, cfg config, def *compile.FormatDef, label string) (Interpretation, bool, error) {
-	prog, needsBaseYear, err := compile.Compile(def, cfg.timezone)
+	prog, needsBaseYear, err := compile.Compile(def, cfg.timezone, localeSetFromConfig(cfg))
 	if err != nil {
 		return Interpretation{}, false, &ParseError{Input: input, Message: err.Error(), Cause: ErrNoMatch}
 	}
@@ -391,6 +391,22 @@ func baseYearError(s string, cfg config) error {
 
 // localeDataFromConfig extracts the internal locale data pointers from
 // the user-facing Locale values in the config.
+// localeSetFromConfig is the same list as a bit set, which is what a compiled
+// program carries so that Layout.Parse verifies a month name against the
+// locales this call configured and not against every locale in the binary.
+//
+// It is computed here, on the path that compiles a program, rather than kept on
+// the config: a Parse that answers from an interned layout never asks for it,
+// and no interned format holds a month name. TestNoInternedFormatReadsAMonthName
+// is what keeps that true.
+func localeSetFromConfig(cfg config) locale.LocaleSet {
+	var set locale.LocaleSet
+	for _, l := range cfg.locales {
+		set |= l.bit
+	}
+	return set
+}
+
 func localeDataFromConfig(cfg config) []*locale.Data {
 	if len(cfg.locales) == 0 {
 		return nil

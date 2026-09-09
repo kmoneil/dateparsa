@@ -245,7 +245,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			// The month is carried in Aux, resolved when the format was
 			// detected. Verify the input still names it, or a reused layout
 			// answers with the month it was built from. See monthNameMatches.
-			if !monthNameMatches(s, off, int(inst.Len), int(inst.Aux)) {
+			if !monthNameMatches(s, off, int(inst.Len), int(inst.Aux), p.Locales) {
 				return time.Time{}, fieldError("month name", off, slen)
 			}
 			month = time.Month(inst.Aux)

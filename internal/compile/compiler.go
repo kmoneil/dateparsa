@@ -3,6 +3,8 @@ package compile
 import (
 	"fmt"
 	"time"
+
+	"github.com/kmoneil/dateparsa/internal/locale"
 )
 
 // FormatField describes a component within a date format.
@@ -138,7 +140,7 @@ type FormatDef struct {
 // the only one who knows whether it has a configured base time to use instead.
 // Reporting it from this loop keeps that read off the formats that do carry a
 // year, which is nearly all of them.
-func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, err error) {
+func Compile(def *FormatDef, tz *time.Location, locales locale.LocaleSet) (p Program, needsBaseYear bool, err error) {
 	// The error paths return the named results rather than a fresh Program{}.
 	// A Program is 168 bytes, and materialising a second zero one puts the cost
 	// of the refusal on every call that does not refuse.
@@ -149,6 +151,7 @@ func Compile(def *FormatDef, tz *time.Location) (p Program, needsBaseYear bool, 
 	}
 
 	p.Tz = tz
+	p.Locales = locales
 	needsBaseYear = true
 
 	// The refusal above counts fields, deliberately, and not the instructions

@@ -211,7 +211,7 @@ func TestCompile(t *testing.T) {
 		},
 	}
 
-	prog, _, err := Compile(def, time.UTC)
+	prog, _, err := Compile(def, time.UTC, 0)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -268,14 +268,14 @@ func TestCompileRefusesWhatItCannotAddress(t *testing.T) {
 		{"length past a byte", Field{Kind: FSkip, Offset: 0, Len: 300}},
 	} {
 		def := &FormatDef{Name: "PROBE", Fields: []Field{tt.field}}
-		if _, _, err := Compile(def, time.UTC); err == nil {
+		if _, _, err := Compile(def, time.UTC, 0); err == nil {
 			t.Errorf("%s: Compile accepted a field it cannot address", tt.name)
 		}
 	}
 
 	// The largest addressable field still compiles, or the guard is off by one.
 	def := &FormatDef{Name: "PROBE", Fields: []Field{{Kind: FSkip, Offset: 255, Len: 255}}}
-	if _, _, err := Compile(def, time.UTC); err != nil {
+	if _, _, err := Compile(def, time.UTC, 0); err != nil {
 		t.Errorf("Compile refused the largest addressable field: %v", err)
 	}
 }
@@ -286,11 +286,11 @@ func TestCompileRefusesTooManyInstructions(t *testing.T) {
 	for i := range fields {
 		fields[i] = Field{Kind: FLiteral, Offset: int32(i), Len: 1, Aux: 'x'}
 	}
-	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields}, time.UTC); err == nil {
+	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields}, time.UTC, 0); err == nil {
 		t.Errorf("Compile accepted %d fields, the limit is %d", len(fields), MaxInstructions)
 	}
 
-	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields[:MaxInstructions]}, time.UTC); err != nil {
+	if _, _, err := Compile(&FormatDef{Name: "PROBE", Fields: fields[:MaxInstructions]}, time.UTC, 0); err != nil {
 		t.Errorf("Compile refused exactly %d fields: %v", MaxInstructions, err)
 	}
 }
@@ -521,7 +521,7 @@ func TestFusionMatchesTheUnfusedProgram(t *testing.T) {
 	for _, sh := range shapes {
 		t.Run(sh.name, func(t *testing.T) {
 			def := &FormatDef{Name: sh.name, Fields: sh.fields}
-			fused, _, err := Compile(def, time.UTC)
+			fused, _, err := Compile(def, time.UTC, 0)
 			if err != nil {
 				t.Fatalf("Compile: %v", err)
 			}
@@ -582,7 +582,7 @@ func TestMonthNameMatchesRequiresAWholeWord(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := monthNameMatches(tt.s, tt.off, 3, march); got != tt.want {
+			if got := monthNameMatches(tt.s, tt.off, 3, march, 0); got != tt.want {
 				t.Errorf("monthNameMatches(%q, %d, 3, March) = %v, want %v",
 					tt.s, tt.off, got, tt.want)
 			}

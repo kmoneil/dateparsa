@@ -15,7 +15,7 @@ import (
 // not against a second copy of the replacement.
 func freshLayout(t *testing.T, result detect.Result, cfg config) *Layout {
 	t.Helper()
-	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
+	program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone, 0)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestInternedLayoutsMatchCompile(t *testing.T) {
 
 	interned := 0
 	for _, def := range defs {
-		program, needsBaseYear, err := compile.Compile(def, time.UTC)
+		program, needsBaseYear, err := compile.Compile(def, time.UTC, 0)
 		if err != nil {
 			t.Errorf("%s: Compile: %v", def.Name, err)
 			continue
@@ -350,7 +350,7 @@ func FuzzInternedLayoutMatchesFresh(f *testing.F) {
 			return // epoch, natural language, or no match: nothing to compare
 		}
 
-		program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone)
+		program, needsBaseYear, err := compile.Compile(result.Def, cfg.timezone, 0)
 		if err != nil {
 			return // the compiling path refuses it too; not this test's subject
 		}

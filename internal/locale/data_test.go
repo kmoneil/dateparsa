@@ -93,3 +93,87 @@ func TestNoTwoLocalesSpellDifferentMonthsTheSameWay(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryLocaleHasItsOwnBit is what LocaleSet's arithmetic rests on. Bits are
+// assigned from the sorted tag list, one per locale, and locales past the
+// thirty-second would share the last one. Twenty registered today, so nothing
+// shares anything; if that ever changes, two locales become interchangeable to
+// MatchesMonth and a caller who configured one gets the other's month names.
+func TestEveryLocaleHasItsOwnBit(t *testing.T) {
+	tags := locale.Tags()
+	if len(tags) > 32 {
+		t.Errorf("%d locales are registered and a LocaleSet holds 32; the ones past "+
+			"the thirty-second share a bit and are accepted for each other", len(tags))
+	}
+
+	seen := map[locale.LocaleSet]string{}
+	for _, tag := range tags {
+		d := locale.Lookup(tag)
+		bit := locale.Bit(d)
+		if bit == 0 {
+			t.Errorf("%s is registered and has no bit", tag)
+			continue
+		}
+		if other, dup := seen[bit]; dup {
+			t.Errorf("%s and %s share bit %#x", tag, other, bit)
+			continue
+		}
+		seen[bit] = tag
+	}
+	if locale.Bit(nil) != 0 {
+		t.Error("Bit(nil) is not the empty set")
+	}
+}
+
+// TestMatchesMonthAsksTheSetItWasGiven is C33 at this package's boundary.
+//
+// The set is not a filter over an answer that was already right: it is the
+// question. A month name is a month name in some language, and which languages
+// a caller is parsing is the only thing that says whether this one counts.
+// Before the set existed this function knew all twenty, while detection searched
+// the ones configured, so a compiled layout accepted a spelling detection would
+// never have found.
+func TestMatchesMonthAsksTheSetItWasGiven(t *testing.T) {
+	de, fr := locale.Bit(locale.Lookup("de")), locale.Bit(locale.Lookup("fr"))
+	if de == 0 || fr == 0 {
+		t.Fatal("de and fr are registered locales; one of them has no bit")
+	}
+
+	tests := []struct {
+		name    string
+		month   int
+		allowed locale.LocaleSet
+		want    bool
+	}{
+		// The empty set is a caller who configured no locale, and it is not a
+		// wildcard. Nothing in any locale table answers it.
+		{"März", 3, 0, false},
+		{"mars", 3, 0, false},
+		{"mai", 5, 0, false},
+
+		{"März", 3, de, true},
+		{"märz", 3, de, true},  // the fold, which is not ASCII here
+		{"MÄRZ", 3, de, true},  //
+		{"März", 3, fr, false}, // German spelling, French configured
+		{"mars", 3, fr, true},  // and the other way round
+		{"mars", 3, de, false}, //
+		{"März", 5, de, false}, // right locale, wrong month
+		{"Jan.", 1, de, true},  // the abbreviation as the table spells it
+		{"Jan", 1, de, true},   // and without its dot, which detection accepts
+		{"nonsense", 3, de | fr, false},
+
+		// "mai" is May in both, spelled the same in one and capitalised in the
+		// other, which is two keys in the index and one of them is reached only
+		// by the fold. Answering from the map alone refuses this pair.
+		{"mai", 5, fr, true},
+		{"mai", 5, de, true},
+		{"Mai", 5, fr, true},
+		{"Mai", 5, de, true},
+	}
+	for _, tt := range tests {
+		if got := locale.MatchesMonth(tt.name, tt.month, tt.allowed); got != tt.want {
+			t.Errorf("MatchesMonth(%q, %d, %#x) = %v, want %v",
+				tt.name, tt.month, tt.allowed, got, tt.want)
+		}
+	}
+}

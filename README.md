@@ -197,6 +197,20 @@ dateparsa.ParseWith("demain", dateparsa.WithLocales(fr),
 
 20 built-in locales: `EN`, `ES`, `FR`, `DE`, `IT`, `PT`, `NL`, `RU`, `ZH`, `JA`, `KO`, `AR`, `HI`, `PL`, `SV`, `DA`, `NO`, `FI`, `TR`, `UK`.
 
+**A `Layout` carries the locales it was detected with.** The languages a format
+is written in are part of the format, so a layout detected under
+`WithLocales(DE)` re-parses German rows and refuses French ones, and a layout
+detected with no locale configured reads English month names only:
+
+```go
+_, err := dateparsa.Parse("März 15, 2024")           // ErrNoMatch: no locale configured
+l, _ := dateparsa.Parse("March 15, 2024")
+_, err = l.Layout.Parse("März 15, 2024")             // and the layout refuses it too
+```
+
+A layout from `Compile` is English for the same reason: a Go layout is
+`time.Parse`'s grammar, and `time.Parse` reads English month names only.
+
 Supported patterns: `now`, `today`, `yesterday`, `tomorrow`, `N units ago`,
 `N units from now`, `in N units`, `last/next/this <weekday>`,
 `last/next/this <month>`, `last/next week/month/year`,

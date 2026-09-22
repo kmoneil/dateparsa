@@ -136,6 +136,15 @@ detected from `1 May 2024` parses `12 May 2024`, and `May 1, 2024` parses
 layout from a two-digit day declares two, and `1 May 2024` does not fill it, so
 detect from the narrower row or let `Parser` re-detect.
 
+Punctuation is part of the format, and a weekday name is not. A layout detected
+from `Fri, 15 Mar 2024 10:30:00 +0000` parses `Sat, 16 Mar 2024 11:30:00 -0700`,
+because skipped words take any letters, spaces or accented characters of the
+same width. A layout from
+`March 15, 2024` refuses `March 16; 2024`: every other byte a layout skips has
+to be the byte its first row had there, because detection reads a comma, a tab
+and a sign each differently. `Parser` re-detects a row its layout refuses, so
+the answer is right either way and only the cache is lost.
+
 ### Batch parsing
 
 ```go

@@ -286,6 +286,40 @@ func FuzzLayoutReuse(f *testing.F) {
 		// the layout refuses this row. Refusing is always allowed, and Parser
 		// re-detects and comes back with the first of March.
 		{"MAY1AAA", "mAI1MAr"},
+
+		// C34 is C28 one byte wider, and it is the crasher the nightly sweep
+		// found on fe91d02, committed here as
+		// testdata/fuzz/FuzzLayoutReuse/3a8f2e837986c922.
+		//
+		// C28 gave a skipped run the classes its bytes shared, and '!' and ' '
+		// share none narrower than "not a digit", so "! " carried exactly the
+		// rule C28 replaced. It took "A+" and the year behind it read "0000",
+		// where detection reads the 'A' as a zone name and "+0000" as its
+		// offset. The second pair is the same run in ordinary input: ", " took
+		// " -" and the year read "0700" in UTC. A run is checked byte by byte
+		// now, a letter standing in only for a letter, so both are refused.
+		{"MAY1 00:00! 1000", "MAY1 00:00A+0000"},
+		{"May 1 10:30:00, 2024", "May 1 10:30:00 -0700"},
+
+		// The other half of C34: a class that holds two bytes detection reads
+		// differently. Two spaces carried ClassSpace, which holds a tab, and
+		// detection reads a "PM" behind spaces and skips it behind tabs, so the
+		// layout answered 22:00 for a row detection reads as 10:00.
+		{"MAY1 10:00  PM", "MAY1 10:00\t\tPM"},
+
+		// Found by TestReusedTextualLayoutAgreesWithDetection against drafts
+		// of C34's fix, which is the reason the sweep generates its runs rather
+		// than listing them. All three are the name in front of a zone offset,
+		// the one run of letters that sits where detection reads letters as
+		// tokens of their own. A lone letter as a class let the 'A' take a 'Z',
+		// which is UTC to detection; two letters as a class let "ZA" take "AM",
+		// a meridiem, and that one was already on main; and a class that holds
+		// the space let "GMT" take "  Z", which moves the 'Z' to where
+		// detection starts looking. A name is letters only now, and a name of
+		// one or two letters is carried byte for byte.
+		{"MAY1 00:00A-0000", "MAY1 00:00Z-1000"},
+		{"MAY1 00:00ZA+0000", "MAY1 10:00AM+1000"},
+		{"MAY1 10:00 GMT+0000", "MAY1 10:00   Z+1000"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])
@@ -417,6 +451,13 @@ func FuzzParserAgreesWithParse(f *testing.F) {
 		// because a residual closed sideways is one that can reopen the same
 		// way.
 		{"0000-01-01 00:00:00  0000", "0000-01-01 00:00:00 "},
+
+		// C34, through the API that reuses a layout without being asked. The
+		// cached layout read an offset's digits as a year until a skipped run
+		// was checked byte by byte; it refuses the second row now and Parser
+		// re-detects it. FuzzLayoutReuse holds the rest of the family.
+		{"MAY1 00:00! 1000", "MAY1 00:00A+0000"},
+		{"May 1 10:30:00, 2024", "May 1 10:30:00 -0700"},
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

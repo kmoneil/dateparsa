@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kmoneil/dateparsa/internal/compile"
 )
 
 func TestParse_ISO8601(t *testing.T) {
@@ -2412,6 +2414,161 @@ func TestSkippedRunKeepsTheClassItMatched(t *testing.T) {
 	}
 }
 
+// TestSkippedRunIsCheckedByteByByte is C34, and it is C28 one byte wider.
+//
+// C28 gave a skipped run the classes its bytes had in common. For a run of one
+// kind that is exact, and for a run of two kinds it is less than either: '!' is
+// ClassLetter, ' ' is ClassSpace, they share only "any byte that is not a
+// digit", and that is what "! " carried. The nightly sweep found the pair, as
+// crasher 3a8f2e837986c922:
+//
+//	"MAY1 00:00! 1000"  FMonthName@0:3 FDay1or2@3:1 FHour24@5:2 FMinute2@8:2
+//	                    FSkip@10:2 FYear4@12:4
+//	"MAY1 00:00A+0000"  FMonthName@0:3 FDay1or2@3:1 FHour24@5:2 FMinute2@8:2
+//	                    FSkip@10:1 FTZOffset@11:5
+//
+// Both 16 bytes, both MONTH_DAY_YEAR, no guess reported on either side. The
+// cached layout's skip took "A+" and its year read "0000", where detection
+// reads the 'A' as a zone name, "+0000" as its offset, and takes the base year.
+//
+// ", " is the same run in ordinary input, and it is why this is more than a
+// fuzzer's curiosity: a layout from "May 1 10:30:00, 2024" read
+// "May 1 10:30:00 -0700" as the year 700 in UTC, where detection reads 10:30
+// in -07:00 on the first of May this year.
+//
+// The rule is now the one the executor can check: every byte of a skip is the
+// byte detection skipped at that position, except inside a run that starts
+// with a letter, where letters, spaces and bytes that are not printable ASCII
+// stand in for each other, and inside a run of those bytes alone, where they
+// stand in only for each other. compile.SkipRun has why a run of words is safe
+// to loosen and the name in front of a zone offset is not.
+func TestSkippedRunIsCheckedByteByByte(t *testing.T) {
+	base := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+
+	refuses := func(from string, rows ...string) {
+		t.Helper()
+		cached, err := ParseWith(from, WithBaseTime(base))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", from, err)
+		}
+		for _, in := range rows {
+			if got, err := cached.Layout.Parse(in); err == nil {
+				fresh, ferr := ParseWith(in, WithBaseTime(base))
+				t.Errorf("layout %s from %q accepted %q as %v; detection answers %v (err %v), "+
+					"and the skip holds a byte the row it came from did not",
+					cached.Layout, from, in, got, fresh.Time, ferr)
+			}
+		}
+	}
+
+	// The crasher, and the offsets a skip over two unlike bytes let through.
+	refuses("MAY1 00:00! 1000",
+		"MAY1 00:00A+0000", // the crasher
+		"MAY1 00:00 +0000", // a space before the sign, which is how zones are written
+		"MAY1 00:00 -0500", // a zone that moves the instant as well
+		"MAY1 00:00x-0700",
+	)
+
+	// The ordinary spelling of the same run.
+	refuses("May 1 10:30:00, 2024",
+		"May 1 10:30:00 -0700",
+		"May 1 10:30:00 +0530",
+		"May 1 10:30:00 +0000",
+	)
+
+	// A letter where the row had a byte that is not one. Detection reads "PM"
+	// behind a time and the layout would have skipped it: 10:00 for a row
+	// detection reads as 22:00. The NUL and the accent are one run each and
+	// shared ClassLetter with 'P' and 'M'; "!x" shared nothing and carried 0.
+	refuses("MAY1 10:00\x00\x00 1000", "MAY1 10:00PM 1000")
+	refuses("MAY1 10:00\xc3\xa9 1000", "MAY1 10:00PM 1000")
+	refuses("MAY1 10:00!x 1000", "MAY1 10:00PM 1000")
+
+	// A class that holds two bytes detection reads differently. Two spaces
+	// carried ClassSpace, which holds a tab: detection reads the "PM" behind
+	// spaces and skips it behind tabs, so the layout answered 22:00 for a row
+	// detection reads as 10:00.
+	refuses("MAY1 10:00  PM", "MAY1 10:00\t\tPM")
+
+	// Two commas carried ClassSpecial, which holds the '+'.
+	refuses("MAY1 00:00,,1000", "MAY1 00:00,+0000", "MAY1 00:00,-0700")
+
+	// The name in front of an offset is where detection reads letters as
+	// tokens of their own: a lone 'Z' is UTC and "am" is a meridiem. So it is
+	// letters and nothing else, since "GMT" taking "  Z" moves the 'Z' to where
+	// detection starts looking and 1000 becomes the year, and a name of one or
+	// two letters is carried byte for byte.
+	refuses("MAY1 00:00A-0000", "MAY1 00:00Z-1000")
+	refuses("MAY1 00:00ZA+0000", "MAY1 10:00AM+1000")
+	refuses("MAY1 10:00 GMT+0000", "MAY1 10:00   Z+1000", "MAY1 10:00 PM +1000")
+
+	// The rows the skips exist to serve still reuse. A run that starts with a
+	// letter takes letters, spaces and accents, which is a weekday name and a
+	// zone spelled out in words; the punctuation around it is itself.
+	for _, p := range [][2]string{
+		{"MAY1 00:00! 1000", "MAY1 00:00! 2024"},
+		{"May 1 10:30:00, 2024", "May 2 11:45:00, 2025"},
+		{"Mon, 15 Mar 2024 10:30:00 +0000", "Tue, 16 Mar 2024 10:30:00 +0000"},
+		{"Fri, 15 Mar 2024 10:30:00 +0000", "Sat, 16 Mar 2024 11:30:00 -0700"},
+		{"Mon Jan  2 15:04:05 2006", "Tue Jan  3 15:04:05 2006"},
+		{"Fri Jul 03 2015 18:04:07 GMT+0100", "Sat Jul 04 2015 18:04:07 GMT+0500"},
+		{
+			"Fri Jul 03 2015 18:04:07 GMT+0100 (Central European Summer Time)",
+			"Tue Jul 07 2015 09:15:00 GMT+0100 (Central European Summer Time)",
+		},
+		{"September 17, 2012 at 10:09am", "September 18, 2013 AT 11:09pm"},
+		{"December 23rd, 2024", "December 21st, 2024"},
+		{"2024年3月15日", "2025年4月16日"},
+		{"MAY A1", "MAY B2"},
+		{"\x00MAY1", "\x7fMAY2"},
+	} {
+		from, to := p[0], p[1]
+		cached, err := ParseWith(from, WithBaseTime(base))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", from, err)
+		}
+		want, err := ParseWith(to, WithBaseTime(base))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", to, err)
+		}
+		got, err := cached.Layout.Parse(to)
+		if err != nil {
+			t.Errorf("layout %s from %q refused %q: %v", cached.Layout, from, to, err)
+			continue
+		}
+		if !got.Equal(want.Time) {
+			t.Errorf("layout %s from %q read %q as %v, detection reads %v",
+				cached.Layout, from, to, got, want.Time)
+		}
+	}
+
+	// Parser is the caller that reuses a layout without being asked, and a
+	// refusal is what sends it back to detection. Primed with the crasher's
+	// first row and with the ordinary one, it has to answer the second row the
+	// way Parse does.
+	for _, p := range [][2]string{
+		{"MAY1 00:00! 1000", "MAY1 00:00A+0000"},
+		{"May 1 10:30:00, 2024", "May 1 10:30:00 -0700"},
+	} {
+		parser := NewParser(WithBaseTime(base))
+		if _, err := parser.Parse(p[0]); err != nil {
+			t.Fatalf("Parser.Parse(%q): %v", p[0], err)
+		}
+		got, err := parser.Parse(p[1])
+		if err != nil {
+			t.Fatalf("Parser primed with %q: Parse(%q): %v", p[0], p[1], err)
+		}
+		want, err := ParseWith(p[1], WithBaseTime(base))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", p[1], err)
+		}
+		if !got.Time.Equal(want.Time) {
+			t.Errorf("Parser primed with %q read %q as %v, Parse reads %v",
+				p[0], p[1], got.Time, want.Time)
+		}
+	}
+}
+
 // TestNumberBeforeAColonIsTheHour is C31, and it is the first of these rules
 // that is about the number rather than about the run beside it.
 //
@@ -2585,6 +2742,47 @@ func textualSweepInputs() []string {
 			)
 		}
 	}
+	// C34's family: a skipped run of two bytes, each drawn from every kind a
+	// run can hold, in front of four digits or a meridiem.
+	//
+	// The first family above varies one byte between the time and what follows
+	// it, and C28's fix was exact for one byte. It was not exact for two bytes
+	// of different kinds, which shared no class narrower than "not a digit", so
+	// "! " took "A+" and the year behind it read an offset's digits; nor for two
+	// bytes of one class that detection reads differently, which is two spaces
+	// taking two tabs in front of a "PM" that detection reads behind spaces and
+	// skips behind tabs. The hour is 10 so that a meridiem the layout skips
+	// moves the answer; the offsets move it whatever the hour.
+	alphabet := []string{
+		" ", "\t", ",", ".", "-", "+", ":", "/", "!",
+		"A", "M", "P", "Z", "x",
+		"\x00", "\x7f", "\xc3", "\xa9",
+	}
+	for _, a := range alphabet {
+		for _, b := range alphabet {
+			for _, tail := range []string{"0000", "0700", "1000", "PM", " PM"} {
+				out = append(out, "MAY1 10:00"+a+b+tail)
+			}
+		}
+	}
+	// The letters in front of an offset, which detection skips as the name in
+	// "GMT+0100" and reads as tokens of their own if they are a lone 'Z' or
+	// "am" or "pm". So both are here beside names that are neither, at every
+	// width a name is skipped at, behind a space and not, and as the rows a
+	// class would let stand in for a name: spaces in front of a 'Z' move it to
+	// where detection starts looking.
+	for _, prefix := range []string{"MAY1 00:00", "MAY1 10:00", "MAY1 10:00 "} {
+		for _, name := range []string{
+			"A", "Z", "x", "AM", "PM", "ZA", "xx", "GMT", "EST", "PMx",
+			" Z", "  Z", " AM", "Z  ",
+		} {
+			for _, sign := range []string{"+", "-"} {
+				for _, digits := range []string{"0000", "0700", "1000"} {
+					out = append(out, prefix+name+sign+digits)
+				}
+			}
+		}
+	}
 	return out
 }
 
@@ -2683,15 +2881,67 @@ func TestReusedTextualLayoutAgreesWithDetection(t *testing.T) {
 		t.Fatal("no textual input in the sweep parsed unambiguously; it is checking nothing")
 	}
 
-	accepted := 0
-	for _, i := range distinct {
+	// Each program is paired with the rows it could accept on length alone,
+	// which is what keeps this cheap enough for the -race legs once C34's
+	// family put two thousand rows in it: every row against every program was
+	// 1.4 million pairs and 5.6 seconds under -race.
+	//
+	// A detected program describes its own row byte for byte, and the only
+	// instructions that read a different width from the one they declare are
+	// the 1-or-2 digit fields, which read one more at most, and two that
+	// detection's textual formats never emit. So a program from a row of
+	// length L accepts rows from L to L+k, k its 1-or-2 digit fields, and a
+	// program holding either of the other two is paired with every row.
+	//
+	// That is a premise, and it is checked rather than trusted: every 16th
+	// program is paired with every row, and an acceptance outside its window
+	// fails the test before any disagreement is looked for.
+	window := func(l *Layout, n int) (lo, hi int, ok bool) {
+		lo, hi = n, n
+		for _, inst := range l.program.Insts[:l.program.N] {
+			switch inst.Op {
+			case compile.OpDay1or2, compile.OpMonth1or2, compile.OpHour1or2:
+				hi++
+			case compile.OpTZZOrOffset, compile.OpTail:
+				return 0, 0, false
+			}
+		}
+		return lo, hi, true
+	}
+	byLen := map[int][]int{}
+	for j, r := range rows {
+		n := len(trimPadding(r.in))
+		byLen[n] = append(byLen[n], j)
+	}
+
+	pairs, accepted := 0, 0
+	for k, i := range distinct {
 		from := rows[i]
-		for _, to := range rows {
+		lo, hi, ok := window(from.layout, len(trimPadding(from.in)))
+		var cands []int
+		if !ok || k%16 == 0 {
+			cands = make([]int, len(rows))
+			for j := range rows {
+				cands[j] = j
+			}
+		} else {
+			for n := lo; n <= hi; n++ {
+				cands = append(cands, byLen[n]...)
+			}
+		}
+		for _, j := range cands {
+			to := rows[j]
+			pairs++
 			got, err := from.layout.Parse(to.in)
 			if err != nil {
 				continue // refusing is always allowed
 			}
 			accepted++
+			if n := len(trimPadding(to.in)); ok && (n < lo || n > hi) {
+				t.Fatalf("layout %s detected from %q accepted %q, %d bytes, outside the "+
+					"window [%d, %d] this sweep pairs it within; the length filter is "+
+					"hiding pairs and has to go", from.layout, from.in, to.in, n, lo, hi)
+			}
 			if !got.Equal(to.want) {
 				t.Fatalf("layout %s detected from %q accepted %q and disagreed with detection:\n"+
 					"  reused = %v\n"+
@@ -2702,5 +2952,5 @@ func TestReusedTextualLayoutAgreesWithDetection(t *testing.T) {
 		}
 	}
 	t.Logf("%d textual inputs over %d distinct programs, %d pairs, %d accepted",
-		len(rows), len(distinct), len(distinct)*len(rows), accepted)
+		len(rows), len(distinct), pairs, accepted)
 }

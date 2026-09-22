@@ -673,16 +673,22 @@ func lit(s string, off int) compile.Field {
 	return compile.Field{Kind: compile.FLiteral, Offset: int32(off), Len: 1, Aux: uint16(s[off])}
 }
 
-// coverGaps appends a skip for every run of bytes no field reads, so the
+// coverGaps appends skips for every run of bytes no field reads, so the
 // program accounts for the whole input.
 //
 // The textual formats locate their fields by scanning, so what sits between
 // them is punctuation, a weekday name, or an " at ", and none of it is read.
-// Width is still worth fixing: a run of a different length shifts every field
-// after it, which is how a layout built from "Fri Jul 03 2015" would land its
-// day field in the middle of "Wednesday". Content is not worth checking here,
-// unlike the separators above, because nothing else parses these bytes
-// differently: "March 15; 2024" has only one reading whatever the punctuation.
+// Width is worth fixing: a run of a different length shifts every field after
+// it, which is how a layout built from "Fri Jul 03 2015" would land its day
+// field in the middle of "Wednesday".
+//
+// This comment used to say the content was not worth checking, because
+// "March 15; 2024" has one reading whatever the punctuation. Three cards say
+// otherwise. C26: a run may not hold a word that decides the day. C28: a run
+// that matched a space may not take the '+' of a zone offset. C34: a run is
+// checked byte by byte, because ", " and " +" share no class and a layout that
+// skipped one read the other's offset as a year. appendSkip is where the
+// content goes onto the program.
 func coverGaps(fields []compile.Field, s string) []compile.Field {
 	// One bit per input byte rather than one bool, so the common case needs no
 	// heap at all: coverWords covers 256 bytes, which is every input a program
@@ -723,7 +729,7 @@ func coverGaps(fields []compile.Field, s string) []compile.Field {
 		for i < len(s) && covered[i>>6]&(1<<uint(i&63)) == 0 {
 			i++
 		}
-		fields = append(fields, skip(s, start, i-start))
+		fields = appendSkip(fields, s, start, i-start)
 	}
 	return sortByOffset(fields)
 }
@@ -778,22 +784,40 @@ func sortByOffset(fields []compile.Field) []compile.Field {
 // is every byte a compiled program can address.
 const coverWords = 4
 
-// skip covers a run the format does not read, such as the weekday name of an
-// RFC 2822 date. It fixes the run's width, which is what stops a wider one
-// shifting every field after it, and records the character classes the run
-// matched, which is what stops a different byte taking its place on reuse.
+// appendSkip covers a run the format does not read, such as the weekday name
+// of an RFC 2822 date, with as many skips as it takes to describe every byte of
+// it. The skips fix the run's width, which is what stops a wider one shifting
+// every field after it, and each records what its bytes were, which is what
+// stops a different byte taking their place on reuse.
 //
-// It used to fix the width "without looking at it", and that was the whole of
-// C28: a skip that matched a space accepted the '+' of a zone offset, and the
-// year field behind it read the offset's digits. compile.SkipAux has the
-// reasoning and the case.
-func skip(s string, off, length int) compile.Field {
-	return compile.Field{
-		Kind:   compile.FSkip,
-		Offset: int32(off),
-		Len:    int32(length),
-		Aux:    compile.SkipAux(s, off, length),
+// It was one skip per run, holding the classes the run's bytes shared, and
+// that was C34: "! " shares no class narrower than any-non-digit, so it took
+// "A+" and the year behind it read a zone offset's digits. compile.SkipRun has
+// the reasoning and the cases, and decides where a run is cut.
+//
+// A run that holds several pieces is several fields, so a caller walking the
+// field list for runs has to join the skips that abut. skipRunCarriesMeaning
+// does: "último" starts with a byte that is not ASCII, so it is two pieces, the
+// "ú" and the "ltimo", and one word.
+func appendSkip(fields []compile.Field, s string, off, length int) []compile.Field {
+	for end := off + length; off < end; {
+		n, aux := compile.SkipRun(s, off, end)
+		if n == 0 {
+			// A run outside s. Nothing is appended, so the program describes
+			// fewer bytes than the input holds and the executor's coverage
+			// check refuses it, which is what the one-field version's
+			// out-of-range skip came to as well.
+			break
+		}
+		fields = append(fields, compile.Field{
+			Kind:   compile.FSkip,
+			Offset: int32(off),
+			Len:    int32(n),
+			Aux:    aux,
+		})
+		off += n
 	}
+	return fields
 }
 
 // detectISO8601Frac handles ISO 8601/RFC 3339 with variable-length fractional seconds:
@@ -859,7 +883,7 @@ func detectISO8601Frac(s string) (Result, bool) {
 	)
 
 	// Parse timezone immediately after fractional seconds (no space).
-	// If there's a space, bail — let detectGoTimeString handle it.
+	// If there's a space, bail and let detectGoTimeString handle it.
 	pos := fracEnd
 	if pos < n {
 		if s[pos] == 'Z' && (pos+1 == n) {
@@ -869,7 +893,7 @@ func detectISO8601Frac(s string) (Result, bool) {
 			if tzLen == 5 || tzLen == 6 {
 				fields = append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(pos), Len: int32(tzLen)})
 			} else {
-				return Result{}, false // complex tz — let other handlers deal with it
+				return Result{}, false // a complex zone, which other handlers deal with
 			}
 		} else {
 			// Anything else after the fraction, a space included, is not this
@@ -1043,15 +1067,16 @@ func detectCJKDate(s string) (Result, bool) {
 		return Result{}, false
 	}
 
-	// Build fields using byte offsets.
-	fields := []compile.Field{
-		{Kind: compile.FYear4, Offset: 0, Len: int32(len(yearStr))},
-		skip(s, yearIdx, len("年")),
-		{Kind: compile.FMonth1or2, Offset: int32(yearIdx + len("年")), Len: int32(len(monStr))},
-		skip(s, monthIdx, len("月")),
-		{Kind: compile.FDay1or2, Offset: int32(monthIdx + len("月")), Len: int32(len(dayStr))},
-		skip(s, dayIdx, len("日")),
-	}
+	// Build fields using byte offsets. Each unit character is three bytes over
+	// 0x7f and so one skip, but it goes through appendSkip like every other run
+	// rather than trusting that.
+	var buf [maxDetectFields]compile.Field
+	fields := append(buf[:0], compile.Field{Kind: compile.FYear4, Offset: 0, Len: int32(len(yearStr))})
+	fields = appendSkip(fields, s, yearIdx, len("年"))
+	fields = append(fields, compile.Field{Kind: compile.FMonth1or2, Offset: int32(yearIdx + len("年")), Len: int32(len(monStr))})
+	fields = appendSkip(fields, s, monthIdx, len("月"))
+	fields = append(fields, compile.Field{Kind: compile.FDay1or2, Offset: int32(monthIdx + len("月")), Len: int32(len(dayStr))})
+	fields = appendSkip(fields, s, dayIdx, len("日"))
 	return newResult("CJK_DATE", "", fields, AmbigNone, false), true
 }
 
@@ -1293,7 +1318,7 @@ func resolveYearMonthDay(parts []string, first, second, third int, cfg Config) (
 		// Second must be day.
 		month, day = p1, p2
 	} else {
-		// Genuinely ambiguous — both could be month or day.
+		// Genuinely ambiguous: both could be month or day.
 		ambig = AmbigFieldOrder
 		if cfg.PreferDayFirst {
 			day, month = p1, p2
@@ -1636,8 +1661,8 @@ func detectTextualMonth(s string, cfg Config) (Result, bool) {
 	}
 
 	// If the post-month text contains " at " without a 4-digit year,
-	// this is a NL expression like "december 25th at 5pm" — bail so the
-	// NL parser handles it.
+	// this is a NL expression like "december 25th at 5pm". Bail so the NL
+	// parser handles it.
 	after := strings.TrimSpace(s[monthEnd:])
 	if indexFoldASCII(after, " at ") >= 0 && !hasFourDigitYear(after) {
 		return Result{}, false
@@ -2054,7 +2079,7 @@ func boundaryAfter(s string, at int) int {
 func appendDay(fields []compile.Field, s string, n numToken) []compile.Field {
 	fields = append(fields, dayField(n))
 	if w := ordinalSuffixLen(s, n.end); w > 0 {
-		fields = append(fields, skip(s, n.end, w))
+		fields = appendSkip(fields, s, n.end, w)
 	}
 	return fields
 }
@@ -2151,7 +2176,7 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 		return fields
 	}
 
-	// Check AM/PM first — "AM"/"PM" would be misidentified as timezone abbreviations.
+	// Check AM/PM first, or "AM" and "PM" would be read as timezone abbreviations.
 	if j+2 <= len(s) {
 		c0 := s[j] | 0x20
 		c1 := s[j+1] | 0x20
@@ -2190,10 +2215,48 @@ func appendTimeSuffix(s string, j int, fields []compile.Field) []compile.Field {
 			if rem >= 6 && s[tzEnd+3] == ':' {
 				tzLen = 6
 			}
-			fields = append(fields, skip(s, j, tzEnd-j))
+			fields = appendZoneNameSkip(fields, s, j, tzEnd)
 			return append(fields, compile.Field{Kind: compile.FTZOffset, Offset: int32(tzEnd), Len: int32(tzLen)})
 		}
 		return append(fields, compile.Field{Kind: compile.FTZName, Offset: int32(j), Len: int32(tzEnd - j)})
+	}
+	return fields
+}
+
+// appendZoneNameSkip covers the name in front of an offset, the "GMT" in
+// "GMT+0100", which is skipped because the offset decides the instant.
+//
+// compile.SkipRun lets a run of words stand in for another because a word never
+// starts where detection reads letters as a token of their own. This one does:
+// it starts where appendTimeSuffix looks behind a time, and a lone 'Z' there is
+// UTC and "am" or "pm" is a meridiem. As a class, the 'A' in front of "-0000"
+// took a 'Z', and "ZA" in front of "+0000" took "AM", so a layout read
+// "MAY1 10:00AM+1000" as 10:00 at +10:00 where detection reads ten in the
+// morning of the year 1000. And a piece of words holds the space, so "GMT"
+// took "  Z": the spaces moved where detection starts looking, and the 'Z'
+// was UTC again.
+//
+// So the name is letters and nothing else, and from three letters on it is
+// any letters of that width: both tokens need a byte that is not a letter
+// straight after them, so a run of three or more is read as a name whatever
+// it spells, and "GMT" reuses for "EST". A shorter name is carried byte for
+// byte.
+//
+// One append in one loop, rather than a branch for each shape, because this is
+// inlined into appendTimeSuffix and testdata/codegen/gates.txt counts every
+// append site that can grow a slice onto the heap in both places.
+func appendZoneNameSkip(fields []compile.Field, s string, off, end int) []compile.Field {
+	// The unsigned compare is the bound the compiler can use for s[off], which
+	// also has to know off is not negative.
+	for off < end && uint(off) < uint(len(s)) {
+		// isLetter found these, and a letter is never the NUL that an Aux of 0
+		// cannot carry.
+		f := compile.Field{Kind: compile.FSkip, Offset: int32(off), Len: 1, Aux: uint16(s[off])}
+		if end-off >= 3 {
+			f.Len, f.Aux = int32(end-off), compile.AuxClass(compile.ClassAlpha)
+		}
+		fields = append(fields, f)
+		off += int(f.Len)
 	}
 	return fields
 }

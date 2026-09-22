@@ -175,6 +175,17 @@ func FuzzUnmarshalJSONAcrossFormats(f *testing.F) {
 		// the nightly sweep on e5adc9f, crasher dfea5cfe9e4a7a05 under
 		// FuzzLayoutReuse.
 		{`"MAY1 70:00:00"`, `"MAY1 00:00:00"`},
+
+		// C34, which is C28 one byte wider. A skipped run of two unlike bytes
+		// shared no class narrower than "not a digit", so the cached layout
+		// from the first value took "A+" and read the second one's offset as
+		// the year 0000. The second pair is the same run as a caller writes
+		// it: ", " took " -", and the warm cache answered 0700-05-01 10:30 UTC
+		// where the cold one answers 10:30 at -07:00 this year. A run is
+		// checked byte by byte now. Found by the nightly sweep on fe91d02,
+		// crasher 3a8f2e837986c922 under FuzzLayoutReuse.
+		{`"MAY1 00:00! 1000"`, `"MAY1 00:00A+0000"`},
+		{`"May 1 10:30:00, 2024"`, `"May 1 10:30:00 -0700"`},
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s[0]), []byte(s[1]))

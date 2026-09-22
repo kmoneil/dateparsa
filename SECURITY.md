@@ -218,12 +218,13 @@ property one package down, where the mechanism is: a `Parser` must parse whateve
 
 What they can change is whether a value parses at all, and that is the honest
 cost of this. A layout that fits an input accepts bytes detection would have
-refused, because a skip covers a weekday name or punctuation and its bytes have
-no single character class. `"2024-03-15 10:30:00 "`, with a trailing space, is an
-error against a cold cache and 2024-03-15 10:30:00 against one primed by a Go
-time string, which is the instant detection would have returned had it accepted
-the value. So acceptance through a `FlexTime` is a property of the value and of
-what the process parsed before it. A caller who needs it to be a property of the
+refused, because a skip that covers a weekday name takes any letters of the same
+width. `"Now, 02 Jan 2006 15:04:05 -0700"` is an error against a cold cache,
+because detection reads `now` as a word that decides the day, and
+2006-01-02 15:04:05 -0700 against one primed by the same date written with
+`Mon`, which is the instant the rest of the value writes. So acceptance through
+a `FlexTime` is a property of the value and of what the process parsed before
+it. A caller who needs it to be a property of the
 value alone should call `dateparsa.Parse` rather than scanning or unmarshalling
 into a `FlexTime`.
 
@@ -619,12 +620,23 @@ base year. `Parser` gave the same answer, because the format is not
 ambiguity-prone and the gate never fired.
 
 That is the third rule about what a skipped run may hold, after "not a digit"
-and "not a word that decides the day": **a run carries the byte or the classes
-it matched, and refuses anything else.** A one-byte run carries the byte,
-because the character classes are not narrow enough to separate a comma from a
-plus and a run that matched a comma went on taking a plus. The cost is that a
-skipped space no longer stands in for a tab on the reuse path, which is a
-refusal rather than a wrong answer, and detection reads both rows either way.
+and "not a word that decides the day": **every byte of a run is checked against
+the byte it stands in for.** A byte carries itself, with two exceptions. In a
+run that starts with a letter, letters, spaces and accented bytes stand in for
+each other, because a weekday name has to go on reusing for the next day's
+weekday and a JavaScript date's spelled-out zone for the next row's. In a run
+of bytes that are not printable ASCII, those stand in for each other. The first
+version of this rule gave a run the character classes its bytes shared, and the
+hole in it was a run of two unlike bytes: `!` and a space share none narrower
+than "not a digit", so a layout from `MAY1 00:00! 1000` took the `A+` in
+`MAY1 00:00A+0000` and read the year 0000. The same run in ordinary input is
+`, `, and a layout from `May 1 10:30:00, 2024` read `May 1 10:30:00 -0700` as
+the year 700 in UTC. The name in front of a zone offset is letters only, and one
+or two letters are carried byte for byte, because a lone `Z` there is UTC and
+`am` or `pm` is a meridiem. The cost is that rows punctuated differently no
+longer share a layout: a skipped space does not stand in for a tab, nor `, `
+for `; `. That is a refusal rather than a wrong answer, and detection reads both
+rows either way.
 
 The residual is written down rather than left implicit: a cached layout still
 accepts a four-digit year under 1000, where detection requires 1000 to 9999 and

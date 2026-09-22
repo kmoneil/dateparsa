@@ -140,7 +140,7 @@ func TestDetectTextualMonth_AllPatterns(t *testing.T) {
 		// Should NOT match (NL expressions with "at" and no year)
 		{"december 25th at 5pm", false, "", "NL expression should bail"},
 
-		// No match — no month name
+		// No match, because there is no month name
 		{"2024-03-15", false, "", "ISO date has no textual month"},
 	}
 
@@ -415,6 +415,158 @@ func kindName(k compile.FieldKind) string {
 	return "literal"
 }
 
+// TestSkippedRunAcceptsWhatItsBytesWere is C34's rule stated without the
+// code that implements it, and swept.
+//
+// A layout skips a run the format does not read, and the executor holds each
+// byte of the run to its skip's Aux. C28 made that Aux the classes the run's
+// bytes shared, which for "! " was nothing narrower than "not a digit", so a
+// layout from "MAY1 00:00! 1000" took "A+" and read an offset's digits as a
+// year. The rule now is positional, and the oracle below writes it from the
+// bytes alone rather than from litClassSet. A run is cut into pieces by the
+// byte each piece starts with:
+//
+//   - a letter starts a piece that runs on over letters, spaces, tabs and
+//     opaque bytes, and any of those stands in for any other inside it
+//   - an opaque byte, one that is not printable ASCII and not a tab, starts a
+//     piece of opaque bytes, and any opaque byte stands in inside it
+//   - any other byte starts a piece of itself repeated, and only it stands in
+//   - nothing stands in for a digit, or with one
+//
+// The same pass pins the cost: one skip per piece, and no more, so a change
+// that cut runs finer than the rule needs shows up here as well as in a
+// benchmark.
+func TestSkippedRunAcceptsWhatItsBytesWere(t *testing.T) {
+	letter := func(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+	opaque := func(c byte) bool { return (c < ' ' && c != '\t') || c >= 0x7f }
+	word := func(c byte) bool { return letter(c) || c == ' ' || c == '\t' || opaque(c) }
+	digit := func(c byte) bool { return c >= '0' && c <= '9' }
+
+	const (
+		kWord = iota
+		kOpaque
+		kExact
+		kDigit
+	)
+	// pieces returns, for each byte of run, the kind of piece it belongs to,
+	// and how many pieces there are.
+	pieces := func(run []byte) ([]int, int) {
+		kind := make([]int, len(run))
+		n := 0
+		for i := 0; i < len(run); n++ {
+			c, j := run[i], i+1
+			k := kExact
+			switch {
+			case digit(c):
+				k = kDigit
+				for j < len(run) && digit(run[j]) {
+					j++
+				}
+			case letter(c):
+				k = kWord
+				for j < len(run) && word(run[j]) {
+					j++
+				}
+			case opaque(c):
+				k = kOpaque
+				for j < len(run) && opaque(run[j]) {
+					j++
+				}
+			default:
+				for j < len(run) && run[j] == c {
+					j++
+				}
+			}
+			for ; i < j; i++ {
+				kind[i] = k
+			}
+		}
+		return kind, n
+	}
+	accepts := func(run, cand []byte) bool {
+		kind, _ := pieces(run)
+		for i, c := range cand {
+			if digit(c) {
+				return false
+			}
+			switch kind[i] {
+			case kWord:
+				if !word(c) {
+					return false
+				}
+			case kOpaque:
+				if !opaque(c) {
+					return false
+				}
+			case kDigit:
+				return false
+			default:
+				if c != run[i] {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	// every returns every string of length n over the given bytes.
+	every := func(bytes []byte, n int) [][]byte {
+		out := [][]byte{{}}
+		for range n {
+			var next [][]byte
+			for _, p := range out {
+				for _, b := range bytes {
+					next = append(next, append(append([]byte{}, p...), b))
+				}
+			}
+			out = next
+		}
+		return out
+	}
+
+	wide := []byte{' ', '\t', ',', '.', '-', '+', ':', '/', '!', 'A', 'z', 'P', 'M', 0x00, 0x01, 0x7f, 0xc3, 0xa9}
+	narrow := []byte{' ', ',', '+', 'A', 'M', 0x00, 0xc3}
+	sets := []struct {
+		bytes []byte
+		n     int
+	}{{wide, 1}, {wide, 2}, {narrow, 3}}
+
+	checked, accepted := 0, 0
+	for _, set := range sets {
+		cands := every(append(append([]byte{}, set.bytes...), '5'), set.n)
+		for _, run := range every(set.bytes, set.n) {
+			in := string(run) + "2024"
+			fields := appendSkip(nil, in, 0, len(run))
+			if _, want := pieces(run); len(fields) != want {
+				t.Errorf("appendSkip(%q) = %d skips, want %d: one per piece", run, len(fields), want)
+			}
+			fields = append(fields, compile.Field{Kind: compile.FYear4, Offset: int32(len(run)), Len: 4})
+			p, _, err := compile.Compile(&compile.FormatDef{Name: "PROBE", Fields: fields}, time.UTC, 0)
+			if err != nil {
+				t.Fatalf("Compile for run %q: %v", run, err)
+			}
+			for _, cand := range cands {
+				_, err := p.Execute(string(cand) + "2024")
+				got, want := err == nil, accepts(run, cand)
+				checked++
+				if got {
+					accepted++
+				}
+				if got != want {
+					t.Fatalf("a skip over %q: accepted %q = %v, want %v (err %v)",
+						run, cand, got, want, err)
+				}
+			}
+		}
+	}
+	if accepted == 0 || accepted == checked {
+		t.Fatalf("%d of %d candidates accepted; the sweep is not telling anything apart",
+			accepted, checked)
+	}
+	t.Logf("%d candidates checked against the runs they stand in for, %d accepted",
+		checked, accepted)
+}
+
 // fieldCorpus is the input set the two tests below walk. One asks what the
 // fields cover and the other asks what order they are listed in, and both
 // questions are about the same field lists.
@@ -435,6 +587,14 @@ var fieldCorpus = []string{
 	"March 15, 2024", "September 17, 2012 at 10:09am", "15 Mar 2024",
 	"December 23rd", "March 2024", "sept. 1, 2020",
 	"Fri Jul 03 2015 18:04:07 GMT+0100", "Thu, 4 Jan 2018 17:53:36 +0000",
+
+	// JavaScript's Date.prototype.toString spells the zone out after the
+	// offset, and it is here for the MaxInstructions check below. C34's first
+	// fix cut a skipped run at every space and put this at 26 fields, so a
+	// format that parses on main was refused. It is 19 now, which is over the
+	// 16 a fallback scratch holds, so it is not in fallbackCorpus: its cold
+	// parse allocates twice, and that is the accepted cost.
+	"Fri Jul 03 2015 18:04:07 GMT+0100 (Central European Summer Time)",
 	"3/15/2024", "3/15/2024 10:30:00 AM", "3/15/2024 10:30:00",
 	"15.03.2024", "01/02/2024", "10:30", "10:30:00", "10:30 PM", "10:30:00.123",
 	"\x00MAY1", "1MAY10", "1 MAY", "MAY 1", "MAY 1 2024", "1 May 24",

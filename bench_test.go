@@ -161,6 +161,25 @@ func BenchmarkLayout_Parse_ISODate(b *testing.B) {
 	}
 }
 
+// BenchmarkLayout_Parse_TextualMonth is the compiled path for a textual format,
+// which the two above never reach: a month name the executor verifies as a
+// whole word, and skipped runs around it.
+//
+// C34 describes a skipped run one piece at a time, so the ", " here is two
+// instructions where it was one. That is the cost of checking each byte against
+// the byte it stands in for, and this is where it lands.
+func BenchmarkLayout_Parse_TextualMonth(b *testing.B) {
+	result, err := Parse("March 15, 2024")
+	if err != nil {
+		b.Fatal(err)
+	}
+	layout := result.Layout
+	b.ResetTimer()
+	for b.Loop() {
+		layout.Parse("March 16, 2025")
+	}
+}
+
 // BenchmarkDetect_Only benchmarks detection without parsing.
 func BenchmarkDetect_Only(b *testing.B) {
 	for b.Loop() {

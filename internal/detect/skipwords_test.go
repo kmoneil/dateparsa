@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kmoneil/dateparsa/internal/locale"
@@ -98,6 +99,42 @@ func TestSkipRun_LocaleWords(t *testing.T) {
 	// another locale does know it: "viime" is fi Relative.Last.
 	if _, ok := Detect("viime 15 mars 2024", cfg); !ok {
 		t.Error(`Detect("viime 15 mars 2024") refused; fr does not know the word and only fr is configured`)
+	}
+}
+
+// TestSkipRun_AccentedWordSpansSkips is what C34 costs this file, and why
+// skipRunCarriesMeaning joins the skips that abut.
+//
+// A skipped run is described by one skip per piece now. A piece of words has to
+// start with an ASCII letter, and one that starts with a byte over 0x7f is a
+// piece of those bytes alone, so a word that starts with an accent is two
+// skips: "último" is the two bytes of "ú", and then "ltimo". Read one skip at a
+// time neither is a Spanish word, and the selector would go through as though
+// it were a weekday. The words with the accent inside stay one piece and are
+// here so that a rule cutting finer than today's fails too.
+func TestSkipRun_AccentedWordSpansSkips(t *testing.T) {
+	for _, tt := range []struct {
+		tag, input string
+	}{
+		{"es", "último 15 marzo 2024"},  // es Relative.Last, and two skips
+		{"pt", "última 15 março 2024"},  // pt Relative.Last, the same shape
+		{"es", "próximo 15 marzo 2024"}, // es Relative.Next, one skip
+		{"de", "nächsten 15 März 2024"}, // de Relative.Next, one skip
+	} {
+		loc := locale.Lookup(tt.tag)
+		if loc == nil {
+			t.Fatalf("%s locale not registered", tt.tag)
+		}
+		cfg := Config{Locales: []*locale.Data{loc}}
+		if r, ok := Detect(tt.input, cfg); ok {
+			t.Errorf("Detect(%q) with %s = %s, want refused on the selector", tt.input, tt.tag, r.Def.Name)
+		}
+
+		// The date on its own still parses, so the refusal is the word.
+		date := tt.input[strings.IndexByte(tt.input, ' ')+1:]
+		if _, ok := Detect(date, cfg); !ok {
+			t.Errorf("Detect(%q) with %s refused; the refusal above has to be the word", date, tt.tag)
+		}
 	}
 }
 

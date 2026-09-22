@@ -107,15 +107,34 @@ const maxMeaningWord = 16
 // once per row: a compiled Layout carries the program and never comes back
 // here. A separator-only skip, which is every skip a trie format produces,
 // costs one isWordChar call per byte and finds no word to compare.
+//
+// A run is read whole, across as many skips as describe it. appendSkip cuts a
+// run into pieces a single Aux can describe exactly (C34), and a piece of
+// words has to start with an ASCII letter, so a word that starts with an
+// accent is not one piece: "último" is the two bytes of "ú" and then "ltimo".
+// Walked one skip at a time it holds no Spanish word at all, and the selector
+// in "último 15 marzo 2024" would be skipped as though it were a weekday. So
+// skips that abut are joined before any word is read.
 func skipRunCarriesMeaning(s string, def *compile.FormatDef, locales []*locale.Data) bool {
 	if def == nil {
 		return false
 	}
-	for _, f := range def.Fields {
+	// The list is consumed from the front rather than indexed, because the
+	// inner loop advances past the skips it joins, and an index the loop body
+	// moves is one the compiler cannot bound: written that way it cost two
+	// bounds checks, which testdata/codegen/gates.txt counts.
+	fields := def.Fields
+	for len(fields) > 0 {
+		f := fields[0]
+		fields = fields[1:]
 		if f.Kind != compile.FSkip {
 			continue
 		}
 		off, end := int(f.Offset), int(f.Offset)+int(f.Len)
+		for len(fields) > 0 && fields[0].Kind == compile.FSkip && int(fields[0].Offset) == end {
+			end += int(fields[0].Len)
+			fields = fields[1:]
+		}
 		if off < 0 || off > len(s) {
 			continue
 		}

@@ -12,7 +12,7 @@ bce:internal/compile/fast.go 15
 bce:internal/compile/instructions.go 2
 bce:internal/compile/layout_parser.go 2
 bce:internal/compile/monthname.go 3
-bce:internal/detect/detect.go 97
+bce:internal/detect/detect.go 96
 bce:internal/detect/signature.go 5
 bce:internal/detect/skipwords.go 3
 bce:internal/detect/trie.go 19

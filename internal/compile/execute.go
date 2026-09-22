@@ -8,7 +8,7 @@ import (
 
 // parse2Bounded extracts a 2-digit field at s[off:off+2] and validates it is within [lo, hi].
 // Returns (value, true) on success, (0, false) on failure.
-// Kept minimal for inlining — callers handle error construction.
+// Kept minimal for inlining, so callers construct the error.
 //
 // The length comes from s and is not passed in. It used to be a slen parameter,
 // which every caller filled with len(s) and the compiler could not know that:
@@ -547,7 +547,7 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			// Nothing to extract, but the run is not unconstrained either: it
 			// may not contain a digit.
 			//
-			// A skip covers bytes the detector scanned past — a weekday name,
+			// A skip covers bytes the detector scanned past: a weekday name,
 			// punctuation, an ordinal suffix. What made them skippable is that
 			// they held no value, and what told the detector they held no value
 			// is that they were not digits. Every textual detector dispatches
@@ -572,11 +572,22 @@ func (p *Program) executeInner(s string) (time.Time, error) {
 			// those bytes, which reads them as a zone offset. A space carries
 			// ClassSpace and ClassSpace does not hold '+'.
 			//
+			// C34 is the third rule, and it is about how much one Aux can say.
+			// A run whose bytes differ shared no class narrower than ClassAny,
+			// so "! " carried 0 and took "A+"; a layout from
+			// "MAY1 00:00! 1000" read "MAY1 00:00A+0000" as year 0000 where
+			// detection reads a zone name and an offset. A run is described
+			// piece by piece now, one skip per piece: a byte repeated, a run
+			// of words that starts with a letter, or a run of bytes that are
+			// not printable ASCII. So this loop checks every byte against what
+			// stood at that position in the input the layout came from, and
+			// nothing looser than a word where a word was.
+			//
 			// litAccepts reads an Aux of 0 as "any byte that is not a digit",
-			// which is exactly the rule this arm enforced on its own, so a skip
-			// from a caller-written Compile and a run whose bytes share no
-			// class narrower than ClassAny both behave as they always did.
-			// detect.skip is what stamps the class; compile.SkipAux computes it.
+			// which is exactly the rule this arm enforced on its own. Detection
+			// gives it only to a run of digits, which it therefore refuses, and
+			// a hand-built Program gets what it always got. detect.appendSkip
+			// cuts the run and compile.SkipRun describes each piece.
 			//
 			// The bound is needed because this reads the bytes. It refuses
 			// nothing the coverage check below would have allowed: a skip
@@ -1061,7 +1072,7 @@ func parseTZOffset(s string, off, length int) (*time.Location, int, bool) {
 	return fallbackZone(totalSeconds), totalSeconds, true
 }
 
-// Pre-built timezone abbreviation Locations — allocated once at init.
+// Pre-built timezone abbreviation Locations, allocated once at init.
 //
 // Every abbreviation this library accepts is a fixed offset, taken as written.
 // The four European names carried a second meaning until now, because they are

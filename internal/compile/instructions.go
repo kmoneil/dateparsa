@@ -105,6 +105,11 @@ const (
 // The enum lives here rather than in detect because detect imports compile.
 // detect maps its own CharClass onto these; the two sets have to stay in step,
 // and TestLitClassSupersetsScan is what checks that they do.
+//
+// The last two are not Scan's and no literal carries one. They describe a
+// skipped run, and SkipRun has the reason they are narrower than ClassLetter:
+// a skip that matched a weekday name may take another weekday name, but not an
+// "AM" where it matched a NUL or an accent.
 type LitClass uint16
 
 const (
@@ -114,6 +119,8 @@ const (
 	ClassColon                   // :
 	ClassSpecial                 // T Z - + ,
 	ClassLetter                  // anything Scan would call a letter
+	ClassAlpha                   // A-Z a-z, and only in a skipped run
+	ClassOpaque                  // a control byte other than tab, DEL, 0x80 and up; skips only
 
 	numLitClasses // sentinel, must be last
 )
@@ -136,56 +143,116 @@ func AuxFor(k LitClass) uint16 {
 // accept every byte in c, whether or not c holds only one.
 func AuxClass(c LitClass) uint16 { return auxClassBase | 1<<uint16(c) }
 
-// SkipAux is the Aux a skipped run carries: the classes every byte in it
-// belongs to, so the executor can refuse a byte the run did not match.
+// SkipRun describes a skipped run one instruction at a time. It returns how
+// many bytes from off, and short of end, a single skip can describe, and the
+// Aux that skip carries; the caller covers the rest of the run with further
+// calls. The executor holds every byte of a skip to its Aux, so the Aux is the
+// whole of what a reused layout knows about the bytes detection scanned past.
 //
-// A skip covers bytes the detector scanned past, and until now the only thing
-// it checked was that they were not digits. That is C24's rule and it is the
-// right rule for a digit, but it is not the whole of what a skip has to hold
-// on to. "MAY1 00:00 1000" skips the space at offset 10 and reads a year at 11.
-// Applied to "MAY1 00:00+0000" the skip swallowed the '+' and the year read
-// "0000", for a wrong instant 2026 years out, where detection reads those five
-// bytes as a zone offset and takes the base year.
+// C28 is why a skip carries anything. "MAY1 00:00 1000" skips the space at
+// offset 10 and reads a year at 11, and applied to "MAY1 00:00+0000" the skip
+// swallowed the '+' and the year read "0000", 2026 years from what detection
+// answers for those bytes, which it reads as a zone offset.
 //
-// The class is what tells the two apart, and it is the same answer C24 gave a
-// literal. A run of spaces carries ClassSpace, which does not hold '+'. A run
-// of '-' carries ClassSep and ClassSpecial, which do, so "70-MAY-01" keeps
-// working: its skips matched '-' and a '-' is what they meet.
+// C34 is why one Aux may not describe a run whose bytes differ. C28 gave the
+// run the classes its bytes had in common, which is exact for a run of spaces
+// and empty for "! ": '!' is ClassLetter, ' ' is ClassSpace, and a run whose
+// bytes shared nothing narrower fell back to 0, which is any byte that is not
+// a digit. So a layout from "MAY1 00:00! 1000" accepted "MAY1 00:00A+0000" and
+// read year 0000, where detection reads the 'A' as a zone name and "+0000" as
+// its offset. ", " is the same run in real input: a layout from
+// "May 1 10:30:00, 2024" read "May 1 10:30:00 -0700" as the year 700 in UTC. A
+// run whose bytes did share a class was loose too. Two spaces carried
+// ClassSpace and took two tabs, and detection reads an AM/PM behind spaces and
+// skips the same two letters behind tabs, so the layout answered 22:00 for a
+// row detection reads as 10:00.
 //
-// ClassAny is cleared before the mask is returned, because it holds every byte
-// that is not a digit and an intersection including it can never be empty. A
-// run whose bytes share nothing narrower comes back as 0, which litAccepts
-// already reads as "any non-digit": exactly the behaviour every skip had
-// before, and what a caller-written Compile still gets.
-func SkipAux(s string, off, length int) uint16 {
-	if off < 0 || length <= 0 || off+length > len(s) {
-		return 0
+// So a run is cut into pieces, each its own skip, and what a piece is depends
+// on the byte it starts with:
+//
+//	a letter        it and the letters, spaces,   "Mon ", "th", "Miércoles",
+//	                tabs and opaque bytes after   "Central European Time"
+//	                it: ClassAlpha, ClassSpace
+//	                and ClassOpaque
+//	an opaque byte  it and the opaque bytes       "年", "é", "\x00"
+//	                after it: ClassOpaque
+//	a digit         0, which refuses it
+//	anything else   that byte, repeated           " ", "  ", ",", "--"
+//
+// Words are the one thing a piece gives anything up for, and it has to: the
+// weekday a column's first row skipped is not the weekday of its second row,
+// and a JavaScript date's "(Central European Summer Time)" is not the same
+// words on every row. What makes that safe is where a word can sit. Detection
+// reads letters as a token of their own in one place, behind a time and the
+// spaces after it, where a lone 'Z' is UTC, "am" or "pm" is a meridiem, and any
+// other letters are a zone name; and it tells a space from a tab in the same
+// place, since it steps over one on its way there and not the other. Letters
+// there are always a field, or the name in front of an offset, which
+// detect.appendZoneNameSkip describes and never through here. So a piece that
+// starts with a letter never starts where a letter means something, and inside
+// one nothing detection reads changes when a letter, a space, a tab or an
+// accented byte stands in for another.
+//
+// An opaque piece can start there, because isLetter is ASCII:
+// "MAY1 10:00é 1000" skips the 'é' straight after the time. So an opaque piece
+// takes no letters and no spaces, or "PM" would stand in for the 'é' and the
+// layout would answer 10:00 for a row detection reads as 22:00. NUL is opaque,
+// which matters: it is the one byte the exact form cannot carry, because an Aux
+// of 0 already means any byte that is not a digit.
+//
+// Everything else is carried byte for byte, which is C28's one-byte rule
+// applied to every length. ClassSpecial holds ',' and '+' together, and a
+// space and a tab are different bytes wherever a piece of them can start, so
+// no class narrower than the byte is safe.
+//
+// The cost is instructions, against a budget of MaxInstructions for the whole
+// format. "Mon, " is three skips where it was one, because the comma and the
+// space are each themselves. A run of words is one skip whatever its length:
+// cutting at every space put a JavaScript date with its zone spelled out in
+// brackets at 26 instructions, and Compile refused a format that parses on
+// main.
+func SkipRun(s string, off, end int) (n int, aux uint16) {
+	if off < 0 || end > len(s) || off >= end {
+		return 0, 0
 	}
-	// A one-byte run carries the byte itself, through the same sole-byte
-	// encoding a literal uses. The class is not narrow enough here: ClassSpecial
-	// holds 'T', 'Z', '-', '+' and ',' together, so a run that matched a comma
-	// would go on accepting a '+' and the year behind it would go on reading a
-	// zone offset. That is the defect with one character changed, and the sweep
-	// in TestReusedTextualLayoutAgreesWithDetection found it from
-	// "MAY1 00:00,1000" within a minute of the class version being written.
-	//
-	// The cost is that a run of one space no longer stands in for a tab. That
-	// is a refusal rather than a wrong answer, it only reaches a caller reusing
-	// a layout across rows that are punctuated differently, and detection still
-	// reads both rows correctly on its own.
-	if length == 1 && s[off] != 0 {
-		return uint16(s[off])
+	// Resliced so that every index below is provably in range.
+	run := s[off:end]
+	c := run[0]
+	n = 1
+	switch k := litClassSet[c]; {
+	case c >= '0' && c <= '9':
+		// No detector leaves a digit unread, and TestNoUnreadRunCoversADigit
+		// holds them to that. If one did, the program refuses the input it was
+		// detected from rather than describing a number as noise.
+		for n < len(run) && run[n] >= '0' && run[n] <= '9' {
+			n++
+		}
+		return n, 0
+	case k&alphaBit != 0:
+		for n < len(run) && litClassSet[run[n]]&wordsMask != 0 {
+			n++
+		}
+		return n, auxClassBase | uint16(wordsMask)
+	case k&opaqueBit != 0:
+		for n < len(run) && litClassSet[run[n]]&opaqueBit != 0 {
+			n++
+		}
+		return n, AuxClass(ClassOpaque)
 	}
-	mask := uint8(0xFF)
-	for j := off; j < off+length; j++ {
-		mask &= litClassSet[s[j]]
+	for n < len(run) && run[n] == c {
+		n++
 	}
-	mask &^= 1 << uint8(ClassAny)
-	if mask == 0 {
-		return 0
-	}
-	return auxClassBase | uint16(mask)
+	return n, uint16(c)
 }
+
+// alphaBit and opaqueBit select the two skip classes in a litClassSet entry,
+// and wordsMask is what a piece of words may hold: those two and a space or a
+// tab.
+const (
+	alphaBit  = uint8(1) << ClassAlpha
+	opaqueBit = uint8(1) << ClassOpaque
+	wordsMask = alphaBit | opaqueBit | uint8(1)<<ClassSpace
+)
 
 // AuxAccepts reports whether c satisfies an Aux code.
 //
@@ -224,7 +291,8 @@ var litClassSet = buildLitClassSet()
 
 // One bit per class in a uint8, so the enum may not outgrow a byte. A wider
 // entry would need a wider table, and this fails the build rather than
-// silently dropping the classes past the eighth.
+// silently dropping the classes past the eighth. The two skip classes took the
+// last two bits, so a ninth class is a change to the encoding and not an entry.
 var _ [8 - int(numLitClasses)]struct{}
 
 // buildLitClassSet spells out which bytes each class holds.
@@ -265,6 +333,18 @@ func buildLitClassSet() [256]uint8 {
 			if !digit {
 				add(ClassLetter)
 			}
+		}
+		// The skip classes, which are not supersets of anything Scan assigns
+		// and do not need to be, since no trie literal carries one. ClassAlpha
+		// is what detection's isLetter accepts, the bytes an AM/PM, a zone name
+		// or an English month is spelled with. ClassOpaque is the rest of what
+		// is not printable ASCII, less the tab, which parseTimeComponent steps
+		// over on its way to a time and so is not inert.
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			add(ClassAlpha)
+		}
+		if (c < ' ' && c != '\t') || c >= 0x7f {
+			add(ClassOpaque)
 		}
 	}
 	return t
